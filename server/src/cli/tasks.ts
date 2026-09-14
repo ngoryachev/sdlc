@@ -7,6 +7,7 @@ import { createApp } from '../app.js';
 import { ServerClient, untilTaskSettles } from './client.js';
 import type { Task, HilRequest as Hil } from '@sdlc/shared';
 import { summarize } from '../claude/render.js';
+import { currentPhase } from '../http/routes/tasks.js';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
 function printEvent(e: SdlcEvent) {
@@ -62,6 +63,24 @@ export function registerTaskCommands(program: Command) {
   program.command('list').description('List tasks').option('--status <s>', 'filter by status').action((o) => {
     const app = createApp();
     for (const t of app.store.listTasks(o.status ? [o.status] : undefined)) console.log(`${t.id}  ${t.status.padEnd(12)} $${t.totalCostUsd.toFixed(2).padStart(6)}  ${t.pipelineName.padEnd(8)} ${t.title}`);
+  });
+
+  program.command('status').description('Show active tasks and open HIL count').action(async () => {
+    const active = ['running', 'waiting_hil', 'paused', 'pr_open'];
+    const print = (tasks: (Task & { currentPhase: string | null })[], openHil: number) => {
+      if (!tasks.length) console.log('no active tasks');
+      for (const t of tasks) console.log(`${t.id}  ${t.status.padEnd(12)} $${t.totalCostUsd.toFixed(2).padStart(6)}  ${(t.currentPhase ?? '-').padEnd(10)} ${t.title}`);
+      console.log(`open HIL requests: ${openHil}`);
+    };
+    const remote = await ServerClient.detect();
+    if (remote) {
+      const { tasks } = await remote.call<{ tasks: (Task & { currentPhase: string | null })[] }>('GET', `/tasks?status=${active.join(',')}`);
+      const { requests } = await remote.call<{ requests: Hil[] }>('GET', '/hil?status=open');
+      console.log(`[server ${remote.base}]`);
+      return print(tasks.filter((t) => active.includes(t.status)), requests.length);
+    }
+    const app = createApp();
+    print(app.store.listTasks(active).map((t) => ({ ...t, currentPhase: currentPhase(app, t.id) })), app.store.listHil({ status: 'open' }).length);
   });
 
   program.command('show <taskId>').description('Show a task').action((id) => {

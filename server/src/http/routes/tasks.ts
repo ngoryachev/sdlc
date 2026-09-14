@@ -85,7 +85,7 @@ export function tasksRoutes(app: App) {
   return r;
 }
 
-function currentPhase(app: App, taskId: string): string | null {
+export function currentPhase(app: App, taskId: string): string | null {
   const run = app.store.latestRunForTask(taskId);
   if (!run) return null;
   const spec = (run.pipelineSnapshot as { spec?: { phases?: { name: string }[] } })?.spec;
