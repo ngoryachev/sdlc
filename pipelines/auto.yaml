@@ -1,0 +1,36 @@
+name: auto
+description: "No human checkpoints (for tests and truly trivial tasks): implement -> commit -> test -> review"
+defaults:
+  setting_sources: [project]
+  effort: medium
+phases:
+  - name: implement
+    type: claude
+    prompt: prompts/implement_direct.md
+    permission_mode: bypassPermissions
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch]
+    max_turns: 50
+    max_budget_usd: 4
+    on_fail: { retry: 1, then: fail }
+  - name: commit_impl
+    type: git
+    git: commit
+    message: "sdlc({{task.id}}): {{task.title}}"
+  - name: test
+    type: shell
+    when: repo.test_command
+    command: "{{repo.test_command}}"
+    on_fail:
+      back_to: implement
+      feedback: "Tests failed. Fix the code. Output tail:\n\n{{phases.test.output}}"
+      max_loops: 1
+      then: fail
+  - name: review
+    type: claude
+    prompt: prompts/review.md
+    mode: "{{task.review_mode}}"
+    permission_mode: bypassPermissions
+    disallowed_tools: [Write, Edit, NotebookEdit, Agent, WebSearch, WebFetch]
+    output_schema: schemas/review.json
+    max_turns: 20
+    max_budget_usd: 1.5

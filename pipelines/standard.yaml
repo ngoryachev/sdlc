@@ -1,0 +1,100 @@
+name: standard
+description: "clarify -> refine(HIL) -> plan -> approve_plan(HIL) -> implement -> commit -> test -> review -> approve_result(HIL) -> PR"
+defaults:
+  setting_sources: [project]
+  effort: high
+
+phases:
+  - name: clarify
+    type: claude
+    prompt: prompts/clarify.md
+    permission_mode: dontAsk
+    allowed_tools: [Read, Glob, Grep, "Bash(git log*)", "Bash(git status*)", "Bash(ls*)", "Bash(rg *)", "Bash(cat *)"]
+    disallowed_tools: [Write, Edit, NotebookEdit, Agent, WebSearch, WebFetch]
+    output_schema: schemas/clarify.json
+    max_turns: 15
+    max_budget_usd: 0.5
+    on_fail: { then: fail }          # clarify is optional: on failure the refine HIL shows the raw prompt
+
+  - name: refine
+    type: hil
+    hil: refine_prompt
+
+  - name: plan
+    type: claude
+    prompt: prompts/plan.md
+    permission_mode: dontAsk
+    allowed_tools: [Read, Glob, Grep, WebFetch, "Bash(git log*)", "Bash(git diff*)", "Bash(git status*)", "Bash(ls*)", "Bash(rg *)", "Bash(find *)", "Bash(cat *)"]
+    disallowed_tools: [Edit, NotebookEdit, Agent]
+    write_scope: [".sdlc/**"]
+    artifacts: { plan_md: .sdlc/plan.md }
+    max_turns: 40
+    max_budget_usd: 2
+
+  - name: approve_plan
+    type: hil
+    hil: approve_plan
+    back_to: plan
+
+  - name: implement
+    type: claude
+    prompt: prompts/implement.md
+    session: fresh
+    permission_mode: bypassPermissions
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch]
+    max_turns: 80
+    max_budget_usd: 8
+    on_fail: { retry: 1, then: hil }
+
+  - name: commit_impl
+    type: git
+    git: commit
+    message: "sdlc({{task.id}}): implement (attempt {{phases.implement.attempt}})"
+
+  - name: test
+    type: shell
+    when: repo.test_command
+    command: "{{repo.test_command}}"
+    timeout_sec: 900
+    on_fail:
+      back_to: implement
+      feedback: |
+        The test command `{{repo.test_command}}` failed. Fix the code (or the tests if they are genuinely wrong, and say so). Output tail:
+
+        {{phases.test.output}}
+      max_loops: 2
+      then: hil
+
+  - name: review
+    type: claude
+    prompt: prompts/review.md
+    mode: "{{task.review_mode}}"
+    session: fresh
+    permission_mode: bypassPermissions
+    disallowed_tools: [Write, Edit, NotebookEdit, Agent, WebSearch, WebFetch]
+    output_schema: schemas/review.json
+    fail_if: "structured.verdict == 'request_changes'"
+    max_turns: 30
+    max_budget_usd: 2
+    on_fail:
+      back_to: implement
+      feedback: |
+        A reviewer requested changes. Address every blocking finding, keep changes minimal, then stop.
+
+        {{phases.review.structured}}
+      max_loops: 2
+      then: fail                     # after max_loops proceed to approve_result; the human sees the review
+
+  - name: approve_result
+    type: hil
+    hil: approve_result
+    back_to: implement
+
+  - name: pr
+    type: git
+    git: pr
+    pr:
+      draft: true
+      title: "{{task.title}}"
+      body: prompts/pr_body.md
+      post_review: "{{task.post_review}}"

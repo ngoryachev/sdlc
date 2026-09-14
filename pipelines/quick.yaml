@@ -1,0 +1,68 @@
+name: quick
+description: "clarify -> refine(HIL) -> implement (plan inline) -> commit -> test -> review -> approve_result(HIL) -> PR"
+defaults:
+  setting_sources: [project]
+  effort: medium
+
+phases:
+  - name: clarify
+    type: claude
+    prompt: prompts/clarify.md
+    permission_mode: dontAsk
+    allowed_tools: [Read, Glob, Grep, "Bash(git log*)", "Bash(git status*)", "Bash(ls*)", "Bash(rg *)", "Bash(cat *)"]
+    disallowed_tools: [Write, Edit, NotebookEdit, Agent, WebSearch, WebFetch]
+    output_schema: schemas/clarify.json
+    max_turns: 15
+    max_budget_usd: 0.5
+    on_fail: { then: fail }
+  - name: refine
+    type: hil
+    hil: refine_prompt
+  - name: implement
+    type: claude
+    prompt: prompts/implement_direct.md
+    permission_mode: bypassPermissions
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch]
+    max_turns: 50
+    max_budget_usd: 4
+    on_fail: { retry: 1, then: hil }
+  - name: commit_impl
+    type: git
+    git: commit
+    message: "sdlc({{task.id}}): {{task.title}}"
+  - name: test
+    type: shell
+    when: repo.test_command
+    command: "{{repo.test_command}}"
+    on_fail:
+      back_to: implement
+      feedback: "Tests failed. Fix the code (or the tests if they are genuinely wrong, and say so). Output tail:\n\n{{phases.test.output}}"
+      max_loops: 1
+      then: hil
+  - name: review
+    type: claude
+    prompt: prompts/review.md
+    mode: "{{task.review_mode}}"
+    permission_mode: bypassPermissions
+    disallowed_tools: [Write, Edit, NotebookEdit, Agent, WebSearch, WebFetch]
+    output_schema: schemas/review.json
+    fail_if: "structured.verdict == 'request_changes'"
+    max_turns: 20
+    max_budget_usd: 1.5
+    on_fail:
+      back_to: implement
+      feedback: "A reviewer requested changes. Address every blocking finding, then stop.\n\n{{phases.review.structured}}"
+      max_loops: 1
+      then: fail
+  - name: approve_result
+    type: hil
+    hil: approve_result
+    back_to: implement
+  - name: pr
+    type: git
+    git: pr
+    pr:
+      draft: false
+      title: "{{task.title}}"
+      body: prompts/pr_body.md
+      post_review: "{{task.post_review}}"

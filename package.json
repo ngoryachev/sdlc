@@ -1,0 +1,21 @@
+{
+  "name": "sdlc",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": ["shared", "server", "ui"],
+  "scripts": {
+    "dev": "concurrently -n server,ui -c blue,green \"npm -w server run dev\" \"npm -w ui run dev\"",
+    "build": "npm -w shared run build && npm -w server run build && npm -w ui run build",
+    "start": "node server/dist/index.js serve",
+    "typecheck": "tsc -b shared server",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "concurrently": "^9.1.0",
+    "typescript": "^5.8.0",
+    "tsx": "^4.19.0",
+    "vitest": "^3.2.0"
+  }
+}
