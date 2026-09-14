@@ -1,4 +1,7 @@
 import fs from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const execFileP = promisify(execFile);
 import path from 'node:path';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import type { AskUserQuestionItem, HilRequest, HilResponse, PhaseRun, PipelineRun, Task, TaskStatus } from '@sdlc/shared';
@@ -71,6 +74,15 @@ export class Engine {
     const id = newId('t');
     const worktreesDir = config.worktrees_dir ?? path.join(path.dirname(repoPath), '.sdlc-worktrees', path.basename(repoPath));
     const wt = await createWorktree({ repo: repoPath, worktreesDir, taskId: id, baseRemote, baseBranch, copyUntracked: repoConfig.copy_untracked });
+    if (repoConfig.setup_command) {
+      try {
+        await execFileP('sh', ['-c', repoConfig.setup_command], { cwd: wt.worktreePath, timeout: repoConfig.setup_timeout_sec * 1000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env } });
+      } catch (e) {
+        await removeWorktree(repoPath, wt.worktreePath, wt.branch, { deleteBranchIfEmpty: wt.baseRef }).catch(() => {});
+        const err = e as { stderr?: string; message: string };
+        throw new HttpError(500, `setup_command failed in worktree: ${(err.stderr || err.message).slice(0, 2000)}`);
+      }
+    }
     const slug = (await repoSlug(repoPath))?.slug ?? null;
     const now = nowIso();
     const task: Task = {

@@ -38,6 +38,7 @@ Per-repository settings in `<repo>/.sdlc.yaml`:
 
 ```yaml
 test_command: npm test          # enables the `test` phase; failures loop back into implementation
+setup_command: npm ci           # run once in every new worktree (dependencies); task creation fails if it fails
 base_branch: main               # default base; the task form can override (remote/branch)
 allow: ["Bash(make *)"]         # extra allow rules for phases that are not in bypassPermissions
 copy_untracked: [.env]          # copied into each new worktree

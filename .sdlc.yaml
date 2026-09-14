@@ -1,2 +1,3 @@
 test_command: npm test
+setup_command: npm ci --no-audit --no-fund
 base_branch: main

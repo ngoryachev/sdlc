@@ -106,6 +106,8 @@ export type OnFailSpec = z.infer<typeof OnFailSchema>;
 
 export const RepoConfigSchema = z.object({
   test_command: z.string().optional(),
+  setup_command: z.string().optional(),   // run once in a new worktree (e.g. npm ci)
+  setup_timeout_sec: z.number().int().positive().default(600),
   lint_command: z.string().optional(),
   base_branch: z.string().optional(),
   base_remote: z.string().optional(),
