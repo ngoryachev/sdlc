@@ -64,6 +64,24 @@ export function registerTaskCommands(program: Command) {
     for (const t of app.store.listTasks(o.status ? [o.status] : undefined)) console.log(`${t.id}  ${t.status.padEnd(12)} $${t.totalCostUsd.toFixed(2).padStart(6)}  ${t.pipelineName.padEnd(8)} ${t.title}`);
   });
 
+  program.command('status').description('Show active tasks and open HIL count').action(async () => {
+    const active = ['running', 'waiting_hil', 'paused', 'pr_open'];
+    const print = (tasks: Task[], openHil: number) => {
+      if (!tasks.length) console.log('no active tasks');
+      for (const t of tasks) console.log(`${t.id}  ${t.status.padEnd(12)} $${t.totalCostUsd.toFixed(2).padStart(6)}  ${t.title}`);
+      console.log(`open HIL requests: ${openHil}`);
+    };
+    const remote = await ServerClient.detect();
+    if (remote) {
+      const { tasks } = await remote.call<{ tasks: Task[] }>('GET', `/tasks?status=${active.join(',')}`);
+      const { requests } = await remote.call<{ requests: Hil[] }>('GET', '/hil?status=open');
+      console.log(`[server ${remote.base}]`);
+      return print(tasks.filter((t) => active.includes(t.status)), requests.length);
+    }
+    const app = createApp();
+    print(app.store.listTasks(active), app.store.listHil({ status: 'open' }).length);
+  });
+
   program.command('show <taskId>').description('Show a task').action((id) => {
     const app = createApp();
     const t = app.store.getTask(id); if (!t) throw new Error('not found');
