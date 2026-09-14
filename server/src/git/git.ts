@@ -68,6 +68,19 @@ export async function createWorktree(opts: { repo: string; worktreesDir: string;
   return { worktreePath, branch, baseRef };
 }
 
+/** Re-attach a worktree for an existing task branch (after cleanup), e.g. for a PR feedback round. */
+export async function recreateWorktree(o: { repo: string; worktreePath: string; branch: string; remote: string | null }): Promise<void> {
+  if (fs.existsSync(path.join(o.worktreePath, '.git'))) return;
+  await git(o.repo, ['worktree', 'prune'], { allowFail: true });
+  if (o.remote) await git(o.repo, ['fetch', o.remote, o.branch], { allowFail: true });
+  const local = await git(o.repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${o.branch}`], { allowFail: true });
+  fs.mkdirSync(path.dirname(o.worktreePath), { recursive: true });
+  if (local) await git(o.repo, ['worktree', 'add', o.worktreePath, o.branch]);
+  else await git(o.repo, ['worktree', 'add', '-b', o.branch, o.worktreePath, `${o.remote}/${o.branch}`]);
+  if (o.remote) await git(o.worktreePath, ['reset', '--hard', `${o.remote}/${o.branch}`], { allowFail: true });
+  fs.mkdirSync(path.join(o.worktreePath, '.sdlc'), { recursive: true });
+}
+
 export async function removeWorktree(repo: string, worktreePath: string, branch: string, opts: { deleteBranchIfEmpty?: string } = {}): Promise<{ removed: boolean; branchDeleted: boolean }> {
   let removed = false;
   if (fs.existsSync(worktreePath)) { await git(repo, ['worktree', 'remove', '--force', worktreePath]); removed = true; }

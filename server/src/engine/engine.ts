@@ -13,7 +13,7 @@ import type { PhaseSpec, PipelineSpec, RepoConfig } from '../pipeline/schema.js'
 import { PipelineSchema } from '../pipeline/schema.js';
 import { evalExpr } from '../pipeline/expr.js';
 import { renderTemplate } from '../pipeline/template.js';
-import { createWorktree, defaultBase, removeWorktree, repoToplevel } from '../git/git.js';
+import { createWorktree, defaultBase, recreateWorktree, removeWorktree, repoToplevel } from '../git/git.js';
 import { prFeedback, repoSlug } from '../git/gh.js';
 import type { Store } from '../store/repo.js';
 import type { EventBus } from '../store/events.js';
@@ -74,15 +74,8 @@ export class Engine {
     const id = newId('t');
     const worktreesDir = config.worktrees_dir ?? path.join(path.dirname(repoPath), '.sdlc-worktrees', path.basename(repoPath));
     const wt = await createWorktree({ repo: repoPath, worktreesDir, taskId: id, baseRemote, baseBranch, copyUntracked: repoConfig.copy_untracked });
-    if (repoConfig.setup_command) {
-      try {
-        await execFileP('sh', ['-c', repoConfig.setup_command], { cwd: wt.worktreePath, timeout: repoConfig.setup_timeout_sec * 1000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env } });
-      } catch (e) {
-        await removeWorktree(repoPath, wt.worktreePath, wt.branch, { deleteBranchIfEmpty: wt.baseRef }).catch(() => {});
-        const err = e as { stderr?: string; message: string };
-        throw new HttpError(500, `setup_command failed in worktree: ${(err.stderr || err.message).slice(0, 2000)}`);
-      }
-    }
+    try { await runSetup(repoConfig, wt.worktreePath); }
+    catch (e) { await removeWorktree(repoPath, wt.worktreePath, wt.branch, { deleteBranchIfEmpty: wt.baseRef }).catch(() => {}); throw e; }
     const slug = (await repoSlug(repoPath))?.slug ?? null;
     const now = nowIso();
     const task: Task = {
@@ -304,11 +297,17 @@ export class Engine {
       }
       case 'pr_feedback': {
         if (response.decision === 'approve') {
+          await this.ensureWorktree(task);
           const p = hil.payload as Extract<typeof hil.payload, { kind: 'pr_feedback' }>;
           const text = p.comments.map((c) => `- ${c.author}${c.path ? ` (${c.path}${c.line ? `:${c.line}` : ''})` : ''}: ${c.body}`).join('\n');
           task.prFeedbackCursor = p.comments.at(-1)?.id ?? task.prFeedbackCursor;
           goBack(backTarget(['implement']), `Reviewers left comments on the pull request. Address each one, keep changes minimal, then stop.\n\n${text}${response.comment ? `\n\nAdditional guidance: ${response.comment}` : ''}`);
-        } // skip: nothing
+        } else { // skip: stay idle with the PR open
+          closePhase('skipped', 'skipped');
+          run.status = 'succeeded'; this.saveRun(run);
+          this.setTaskStatus(task, 'pr_open');
+          return hil;
+        }
         break;
       }
       case 'question': {
@@ -347,7 +346,7 @@ export class Engine {
     if (!task.prNumber) throw new HttpError(409, 'task has no pull request');
     if (task.status !== 'pr_open') throw new HttpError(409, `task is ${task.status}; PR feedback can be pulled only while the PR is open and the task idle`);
     if (store.openHilForTask(taskId).some((h) => h.kind === 'pr_feedback')) throw new HttpError(409, 'a pr_feedback request is already open');
-    const fb = await prFeedback(task.worktreePath, task.prNumber);
+    const fb = await prFeedback(task.repoPath, task.prNumber);
     if (fb.state === 'MERGED' || fb.state === 'CLOSED') {
       const run = store.latestRunForTask(taskId)!;
       this.finishTask(task, run, fb.state === 'MERGED' ? 'succeeded' : 'aborted');
@@ -476,6 +475,14 @@ export class Engine {
     }
   }
 
+  /** Worktrees are removed by the cleanup policy; a PR feedback round needs it back. */
+  private async ensureWorktree(task: Task): Promise<void> {
+    if (fs.existsSync(path.join(task.worktreePath, '.git'))) return;
+    await recreateWorktree({ repo: task.repoPath, worktreePath: task.worktreePath, branch: task.branch, remote: task.baseRemote });
+    await runSetup(loadRepoConfig(task.repoPath), task.worktreePath);
+    this.d.events.emit('engine.warning', { taskId: task.id, message: 'worktree re-created for a new round' }, { taskId: task.id });
+  }
+
   // ------------------------------------------------------------------ helpers
   private newPhaseRun(run: PipelineRun, task: Task, phase: PhaseSpec): PhaseRun {
     return { id: newId('p'), runId: run.id, taskId: task.id, phaseName: phase.name, phaseType: phase.type, attempt: this.d.store.countAttempts(run.id, phase.name) + 1,
@@ -508,6 +515,16 @@ export class Engine {
       const r = await removeWorktree(task.repoPath, task.worktreePath, task.branch, { deleteBranchIfEmpty: status === 'aborted' ? baseRef : undefined });
       if (r.removed) this.d.events.emit('engine.warning', { taskId: task.id, message: `worktree removed${r.branchDeleted ? ', empty branch deleted' : `, branch ${task.branch} kept`}` }, { taskId: task.id });
     } catch (e) { this.d.events.emit('engine.warning', { taskId: task.id, message: `cleanup failed: ${e instanceof Error ? e.message : String(e)}` }, { taskId: task.id }); }
+  }
+}
+
+async function runSetup(repoConfig: RepoConfig, cwd: string): Promise<void> {
+  if (!repoConfig.setup_command) return;
+  try {
+    await execFileP('sh', ['-c', repoConfig.setup_command], { cwd, timeout: repoConfig.setup_timeout_sec * 1000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env } });
+  } catch (e) {
+    const err = e as { stderr?: string; message: string };
+    throw new HttpError(500, `setup_command failed in worktree: ${(err.stderr || err.message).slice(0, 2000)}`);
   }
 }
 
