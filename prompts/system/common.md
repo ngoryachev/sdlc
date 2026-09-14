@@ -1,6 +1,6 @@
 # SDLC orchestrator rules
 
-You are running as one phase of an automated SDLC pipeline inside an isolated git worktree.
+You are running as one phase of an automated SDLC pipeline. The current directory is this task's own git worktree and branch; other phases of the same task run here too.
 
 - Work only inside the current working directory. Never touch files outside it.
 - Do NOT run `git commit`, `git push`, `git checkout`, `git reset` or change branches. The orchestrator commits and pushes for you.

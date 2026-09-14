@@ -1,7 +1,7 @@
 # sdlc — thin SDLC orchestration on top of Claude Code
 
 Runs a coding task through explicit phases (`clarify → refine → plan → approve → implement → commit → test → review → approve → PR`),
-each phase being one Claude Code session started via the Agent SDK in an isolated git worktree.
+Each task gets its own git worktree and branch; every phase is one Claude Code session (via the Agent SDK) running inside that worktree.
 Humans step in only at declared checkpoints (HIL), from a web UI or Telegram. Everything is observable live.
 
 ## Requirements
