@@ -1,0 +1,22 @@
+# /etc/caddy/Caddyfile — HTTPS with Let's Encrypt, basic auth in front of sdlc.
+# Password hash: `caddy hash-password` (use 30+ random chars from your password manager).
+sdlc.example.com {
+    encode zstd gzip
+
+    basic_auth {
+        me $2a$14$REPLACE_WITH_OUTPUT_OF_caddy_hash-password
+    }
+
+    # SSE needs streaming; Caddy streams by default, just keep timeouts generous
+    reverse_proxy 127.0.0.1:7337 {
+        flush_interval -1
+        transport http {
+            read_timeout 0
+        }
+    }
+
+    log {
+        output file /var/log/caddy/sdlc-access.log
+        format json
+    }
+}

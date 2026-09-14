@@ -19,6 +19,7 @@ export interface ClaudeRunSpec {
   effort?: EffortLevel;
   settingSources?: SettingSource[];
   writeScope?: string[];
+  readAllow?: string[];
   canUseTool?: CanUseTool;
   env?: Record<string, string | undefined>;
   includePartialMessages?: boolean;
@@ -119,7 +120,7 @@ export class SdkClaudeRunner implements ClaudeRunner {
       settingSources: spec.settingSources ?? ['project'],
       resume: spec.resume,
       canUseTool: spec.canUseTool,
-      hooks: buildHooks({ cwd: spec.cwd, writeScope: spec.writeScope, onToolUse: spec.onToolUse }),
+      hooks: buildHooks({ cwd: spec.cwd, writeScope: spec.writeScope, readAllow: spec.readAllow, onToolUse: spec.onToolUse }),
       env: filteredEnv(spec.env),
       includePartialMessages: spec.includePartialMessages ?? false,
       abortController,

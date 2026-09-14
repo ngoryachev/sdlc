@@ -112,6 +112,7 @@ export const RepoConfigSchema = z.object({
   base_branch: z.string().optional(),
   base_remote: z.string().optional(),
   allow: z.array(z.string()).default([]),
+  read_allow: z.array(z.string()).default([]),   // extra readable dirs outside the worktree
   copy_untracked: z.array(z.string()).default([]),
   review_mode: z.enum(['conceptual', 'line']).optional(),
   post_review: z.boolean().optional(),

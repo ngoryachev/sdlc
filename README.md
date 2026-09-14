@@ -84,3 +84,12 @@ Shipped: `standard` (all checkpoints), `quick` (no separate plan), `auto` (no ch
 ## Tests
 
 `npm test` — unit tests (templates, expressions, schema, store, hooks) and end-to-end pipeline tests against a scratch git repo with a scripted fake Claude runner (`test/fakes/fake-runner.ts`). No API calls.
+
+## Deploy on a server
+
+`deploy/install.sh` (Ubuntu) installs Node 22, `gh`, Claude Code, clones this repo, builds it, writes a public-safe `~/.sdlc/config.yaml`
+(`token_in_url: false`, `pr_feedback_from: collaborators`) and registers `deploy/sdlc.service`. Then:
+
+- **Auth:** `gh auth login`; for Claude either log in once with `claude`, or put `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on your laptop) into `/etc/sdlc.env`. Never set `ANTHROPIC_API_KEY` there unless you want API billing.
+- **Access:** simplest is a VPN (Tailscale) with `server.host: 0.0.0.0` and no proxy. For a public host use `deploy/Caddyfile` (HTTPS + basic auth, long random password) plus `deploy/fail2ban/` (bans IPs after 5 × 401), and keep `token_in_url: false`: the sdlc token is then entered once per device in the login form and never travels in URLs or Telegram links.
+- **Blast radius to keep in mind:** whoever can open the UI can run code on this server as the sdlc user with its `gh` and Claude credentials. Read/Write of Claude phases are confined to the task worktree by hooks (`read_allow` in `.sdlc.yaml` widens reads), secrets-looking env vars are not passed to phases, and PR comments are only ingested from repository collaborators by default.

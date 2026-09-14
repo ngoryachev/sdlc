@@ -2,12 +2,15 @@ import path from 'node:path';
 import type { HookCallback, HookCallbackMatcher, HookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+const READ_TOOLS = new Set(['Read', 'NotebookRead', 'Glob', 'Grep', 'LS']);
 
 export interface HookOptions {
   /** Absolute path of the worktree; writes outside it are always denied. */
   cwd: string;
   /** Globs relative to cwd; when set, writes outside them are denied and writes inside are allowed. */
   writeScope?: string[];
+  /** Extra directories readable besides cwd (e.g. shared fixtures). */
+  readAllow?: string[];
   /** Called for every PostToolUse (progress reporting). Never awaited by the hook. */
   onToolUse?: (info: { toolName: string; toolInput: unknown; toolUseId: string }) => void;
 }
@@ -87,6 +90,18 @@ export function buildHooks(opts: HookOptions): Partial<Record<'PreToolUse' | 'Po
     return {};
   };
 
+  const readGuard: HookCallback = async (input: HookInput) => {
+    const i = input as PreToolUseHookInput;
+    if (!READ_TOOLS.has(i.tool_name)) return {};
+    const inp = (i.tool_input ?? {}) as { file_path?: string; notebook_path?: string; path?: string };
+    const target = inp.file_path ?? inp.notebook_path ?? inp.path;
+    if (!target) return {}; // Glob/Grep without path search cwd
+    const abs = path.resolve(root, target);
+    const inside = (base: string) => { const rel = path.relative(path.resolve(base), abs); return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel)); };
+    if (inside(root) || (opts.readAllow ?? []).some(inside)) return {};
+    return deny(`Reading outside the worktree is not allowed: ${target}`);
+  };
+
   const bashGuard: HookCallback = async (input: HookInput) => {
     const i = input as PreToolUseHookInput;
     if (i.tool_name !== 'Bash') return {};
@@ -108,6 +123,7 @@ export function buildHooks(opts: HookOptions): Partial<Record<'PreToolUse' | 'Po
   return {
     PreToolUse: [
       { matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks: [writeGuard] },
+      { matcher: 'Read|NotebookRead|Glob|Grep|LS', hooks: [readGuard] },
       { matcher: 'Bash', hooks: [bashGuard] },
     ],
     PostToolUse: [{ hooks: [progress] }],

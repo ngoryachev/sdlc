@@ -14,7 +14,7 @@ import { PipelineSchema } from '../pipeline/schema.js';
 import { evalExpr } from '../pipeline/expr.js';
 import { renderTemplate } from '../pipeline/template.js';
 import { createWorktree, defaultBase, recreateWorktree, removeWorktree, repoToplevel } from '../git/git.js';
-import { prFeedback, repoSlug } from '../git/gh.js';
+import { prFeedback, repoSlug, TRUSTED_ASSOCIATIONS } from '../git/gh.js';
 import type { Store } from '../store/repo.js';
 import type { EventBus } from '../store/events.js';
 import { newId, nowIso } from '../store/ids.js';
@@ -353,7 +353,10 @@ export class Engine {
       return { new: 0, state: fb.state };
     }
     const cursorIdx = task.prFeedbackCursor ? fb.comments.findIndex((c) => c.id === task.prFeedbackCursor) : -1;
-    const fresh = fb.comments.slice(cursorIdx + 1).filter((c) => c.body.trim());
+    const all = fb.comments.slice(cursorIdx + 1).filter((c) => c.body.trim());
+    const fresh = this.d.config.pr_feedback_from === 'anyone' ? all : all.filter((c) => !c.association || TRUSTED_ASSOCIATIONS.has(c.association));
+    if (all.length !== fresh.length) events.emit('engine.warning', { taskId, message: `pr feedback: ignored ${all.length - fresh.length} comment(s) from non-collaborators (pr_feedback_from: collaborators)` }, { taskId });
+    if (!fresh.length && all.length) { task.prFeedbackCursor = all.at(-1)!.id; task.updatedAt = nowIso(); store.updateTask(task); }
     if (!fresh.length) return { new: 0, state: fb.state };
     const hil = newHilRequest({ taskId, phaseRunId: null, kind: 'pr_feedback', title: task.title, summary: `${fresh.length} new comment(s) on the PR`,
       payload: { kind: 'pr_feedback', prUrl: task.prUrl ?? '', comments: fresh.map((c) => ({ id: c.id, author: c.author, body: c.body, path: c.path, line: c.line, url: c.url, reviewState: c.reviewState })) } });

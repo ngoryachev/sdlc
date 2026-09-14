@@ -1,0 +1,21 @@
+[Unit]
+Description=sdlc orchestrator (Claude Code SDLC)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@SDLC_DIR@
+Environment=HOME=@HOME@
+Environment=PATH=@HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin
+# optional: CLAUDE_CODE_OAUTH_TOKEN, SDLC_TELEGRAM_TOKEN, SDLC_TOKEN
+EnvironmentFile=-/etc/sdlc.env
+ExecStart=@NODE@ server/dist/cli/index.js serve
+Restart=always
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

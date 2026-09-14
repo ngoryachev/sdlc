@@ -1,0 +1,14 @@
+# /etc/fail2ban/jail.d/caddy.local
+[caddy-auth]
+enabled  = true
+port     = http,https
+filter   = caddy-auth
+logpath  = /var/log/caddy/sdlc-access.log
+maxretry = 5
+findtime = 10m
+bantime  = 24h
+
+[sshd]
+enabled  = true
+maxretry = 4
+bantime  = 24h

@@ -9,7 +9,7 @@ export class TelegramNotifier implements Notifier {
   readonly name = 'telegram';
   private running = false;
   private offset = 0;
-  constructor(private app: App, private o: { botToken: string; chatId?: string; token: string }) {}
+  constructor(private app: App, private o: { botToken: string; chatId?: string; token: string | null }) {}
 
   private async api<T = unknown>(method: string, body: Record<string, unknown>): Promise<T> {
     const res = await fetch(`https://api.telegram.org/bot${this.o.botToken}/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -31,7 +31,7 @@ export class TelegramNotifier implements Notifier {
     if (positive) row.push({ text: `✅ ${positive}`, callback_data: `h:${req.id}:${positive}` });
     if (req.allowedDecisions.includes('skip')) row.push({ text: '⏭ skip', callback_data: `h:${req.id}:skip` });
     if (negative) row.push({ text: `✖ ${negative}`, callback_data: `h:${req.id}:${negative}` });
-    const withToken = link.includes('?') ? `${link}&t=${this.o.token}` : `${link}?t=${this.o.token}`;
+    const withToken = this.o.token ? (link.includes('?') ? `${link}&t=${this.o.token}` : `${link}?t=${this.o.token}`) : link;
     const r = await this.api<{ message_id: number }>('sendMessage', { chat_id: this.o.chatId, text, parse_mode: 'HTML', reply_markup: { inline_keyboard: [row, [{ text: '🔗 Open', url: withToken }]] } });
     this.app.store.setNotificationRef(req.id, this.name, String(r.message_id));
   }
@@ -47,7 +47,7 @@ export class TelegramNotifier implements Notifier {
   async onTaskStatus(task: Task, _from: string, to: string, link: string) {
     if (!this.o.chatId) return;
     const icon = to === 'succeeded' || to === 'pr_open' ? '🎉' : to === 'failed' ? '💥' : to === 'aborted' ? '🛑' : '⏸';
-    await this.api('sendMessage', { chat_id: this.o.chatId, parse_mode: 'HTML', text: `${icon} <b>${esc(task.title)}</b> → ${to}${task.prUrl ? `\n${task.prUrl}` : ''}`, reply_markup: { inline_keyboard: [[{ text: '🔗 Open', url: `${link}?t=${this.o.token}` }]] } });
+    await this.api('sendMessage', { chat_id: this.o.chatId, parse_mode: 'HTML', text: `${icon} <b>${esc(task.title)}</b> → ${to}${task.prUrl ? `\n${task.prUrl}` : ''}`, reply_markup: { inline_keyboard: [[{ text: '🔗 Open', url: this.o.token ? `${link}?t=${this.o.token}` : link }]] } });
   }
 
   private async poll() {

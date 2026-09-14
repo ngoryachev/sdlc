@@ -20,6 +20,7 @@ export const ConfigSchema = z.object({
   question_timeout: z.string().regex(/^\d+(m|h|d)$/).default('2h'),
   auto_resume_on_restart: z.boolean().default(true),
   cleanup: z.enum(['on_pr', 'on_approve', 'never']).default('on_pr'),
+  pr_feedback_from: z.enum(['collaborators', 'anyone']).default('collaborators'),
   env_allow: z.array(z.string()).default([]),
   git_author: z.string().default('SDLC <sdlc@local>'),
   repos: z.array(z.object({ name: z.string(), path: z.string() })).default([]),
@@ -28,7 +29,8 @@ export const ConfigSchema = z.object({
     port: z.number().int().default(7337),
     public_url: z.string().optional(),
     token: z.string().optional(),
-  }).default({ host: '127.0.0.1', port: 7337 }),
+    token_in_url: z.boolean().default(true),   // false for public deployments: login only via the form / Bearer
+  }).default({ host: '127.0.0.1', port: 7337, token_in_url: true }),
   telegram: z.object({
     enabled: z.boolean().default(false),
     bot_token: z.string().optional(),

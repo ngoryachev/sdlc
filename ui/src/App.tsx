@@ -57,7 +57,7 @@ function Login() {
       <div className="card" style={{ maxWidth: 480, margin: '10vh auto' }}>
         <h2>sdlc</h2>
         <p className="muted">This browser is not authorized. Open the link printed by <code>sdlc serve</code> (it contains <code>?t=…</code>), or paste the token:</p>
-        <form onSubmit={(e) => { e.preventDefault(); const t = (new FormData(e.currentTarget).get('t') as string).trim(); location.href = `/?t=${encodeURIComponent(t)}`; }}>
+        <form onSubmit={async (e) => { e.preventDefault(); const t = (new FormData(e.currentTarget).get('t') as string).trim(); const r = await fetch('/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: t }) }); if (r.ok) location.href = '/'; else alert('bad token'); }}>
           <input name="t" placeholder="token" autoFocus />
           <div style={{ marginTop: 8 }}><button className="primary">Continue</button></div>
         </form>

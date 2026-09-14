@@ -58,21 +58,22 @@ export async function postReview(o: { cwd: string; number: number; review: Revie
   finally { fs.rmSync(tmp, { force: true }); }
 }
 
-export interface PrComment { id: string; author: string; body: string; path?: string; line?: number; url: string; reviewState?: string; createdAt: string }
+export interface PrComment { id: string; author: string; body: string; path?: string; line?: number; url: string; reviewState?: string; createdAt: string; association?: string }
+export const TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 export async function prFeedback(cwd: string, number: number): Promise<{ state: string; comments: PrComment[] }> {
   const slug = await prSlugFor(cwd);
   const view = JSON.parse(await gh(['pr', 'view', String(number), '--json', 'state,reviews,comments,url'], cwd)) as {
     state: string; url: string;
-    reviews: { id: string; author: { login: string }; body: string; state: string; submittedAt: string }[];
-    comments: { id: string; author: { login: string }; body: string; createdAt: string; url: string }[];
+    reviews: { id: string; author: { login: string }; authorAssociation?: string; body: string; state: string; submittedAt: string }[];
+    comments: { id: string; author: { login: string }; authorAssociation?: string; body: string; createdAt: string; url: string }[];
   };
   const inline = JSON.parse(await gh(['api', `repos/${slug}/pulls/${number}/comments`, '--paginate'], cwd)) as
-    { id: number; user: { login: string }; body: string; path: string; line: number | null; original_line: number | null; html_url: string; created_at: string }[];
+    { id: number; user: { login: string }; author_association?: string; body: string; path: string; line: number | null; original_line: number | null; html_url: string; created_at: string }[];
   const comments: PrComment[] = [
-    ...view.reviews.filter((r) => r.body || r.state === 'CHANGES_REQUESTED').map((r) => ({ id: `review:${r.id}`, author: r.author.login, body: r.body, url: view.url, reviewState: r.state, createdAt: r.submittedAt })),
-    ...view.comments.map((c) => ({ id: `comment:${c.id}`, author: c.author.login, body: c.body, url: c.url, createdAt: c.createdAt })),
-    ...inline.map((c) => ({ id: `inline:${c.id}`, author: c.user.login, body: c.body, path: c.path, line: c.line ?? c.original_line ?? undefined, url: c.html_url, createdAt: c.created_at })),
+    ...view.reviews.filter((r) => r.body || r.state === 'CHANGES_REQUESTED').map((r) => ({ id: `review:${r.id}`, author: r.author.login, association: r.authorAssociation, body: r.body, url: view.url, reviewState: r.state, createdAt: r.submittedAt })),
+    ...view.comments.map((c) => ({ id: `comment:${c.id}`, author: c.author.login, association: c.authorAssociation, body: c.body, url: c.url, createdAt: c.createdAt })),
+    ...inline.map((c) => ({ id: `inline:${c.id}`, author: c.user.login, association: c.author_association, body: c.body, path: c.path, line: c.line ?? c.original_line ?? undefined, url: c.html_url, createdAt: c.created_at })),
   ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   return { state: view.state, comments };
 }
