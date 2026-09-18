@@ -12,11 +12,9 @@ Approved plan (if present, it was reviewed by a human and takes precedence over 
 
 {{artifacts.plan_md?}}
 
-Test output (empty if tests were not run):
+Result of the test phase (empty if it did not run):
 
-```
-{{phases.test.output?}}
-```
+{{phases.test.structured?}}
 
 Evaluate the result against the intent, not against style preferences:
 - Does it do what was asked, fully? Anything silently simplified, skipped or over-built?

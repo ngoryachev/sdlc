@@ -3,7 +3,7 @@ import type { PhaseRun } from '@sdlc/shared';
 import type { GitPhaseSpec } from '../pipeline/schema.js';
 import { renderTemplate } from '../pipeline/template.js';
 import { resolvePipelineFile } from '../pipeline/loader.js';
-import { commitAll, push } from '../git/git.js';
+import { commitAll, push, pushBranch, remoteHasBranch } from '../git/git.js';
 import { createPr, postReview, prComment } from '../git/gh.js';
 import { nowIso } from '../store/ids.js';
 import type { PhaseContext, PhaseExecutor, PhaseOutcome } from './executor.js';
@@ -22,8 +22,19 @@ export class GitPhaseExecutor implements PhaseExecutor<GitPhaseSpec> {
         await push(task.worktreePath, remote, task.branch);
         pr.resultText = `pushed ${task.branch} to ${remote}`;
         events.emit('git.pushed', { taskId: task.id, branch: task.branch }, { taskId: task.id, phaseRunId: pr.id });
+      } else if (phase.git === 'comment') {
+        if (!task.prNumber) { pr.resultText = 'no pull request; nothing to comment on'; pr.endedAt = nowIso(); return { kind: 'skipped' }; }
+        const body = phase.body ? renderTemplate(fs.readFileSync(resolvePipelineFile(ctx.loaded, phase.body), 'utf8'), ctx.tpl) : renderTemplate(phase.message ?? '', ctx.tpl);
+        if (!body.trim()) { pr.resultText = 'empty comment; skipped'; pr.endedAt = nowIso(); return { kind: 'skipped' }; }
+        await prComment(task.worktreePath, task.prNumber, body.slice(0, 60_000));
+        pr.resultText = `commented on PR #${task.prNumber}`;
       } else {
         const remote = task.baseRemote ?? 'origin';
+        // a local-only base branch cannot be the base of a PR: publish it first
+        if (!task.baseRemote && !task.prNumber && !(await remoteHasBranch(task.worktreePath, remote, task.baseBranch))) {
+          await pushBranch(task.worktreePath, remote, task.baseBranch);
+          events.emit('git.pushed', { taskId: task.id, branch: task.baseBranch }, { taskId: task.id, phaseRunId: pr.id });
+        }
         await push(task.worktreePath, remote, task.branch);
         events.emit('git.pushed', { taskId: task.id, branch: task.branch }, { taskId: task.id, phaseRunId: pr.id });
         if (task.prNumber) {

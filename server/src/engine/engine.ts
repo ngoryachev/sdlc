@@ -13,8 +13,8 @@ import type { PhaseSpec, PipelineSpec, RepoConfig } from '../pipeline/schema.js'
 import { PipelineSchema } from '../pipeline/schema.js';
 import { evalExpr } from '../pipeline/expr.js';
 import { renderTemplate } from '../pipeline/template.js';
-import { createWorktree, defaultBase, recreateWorktree, removeWorktree, repoToplevel } from '../git/git.js';
-import { prFeedback, repoSlug, TRUSTED_ASSOCIATIONS } from '../git/gh.js';
+import { createWorktree, defaultBase, recreateWorktree, refExists, remotes, removeWorktree, repoToplevel } from '../git/git.js';
+import { ghLogin, prFeedback, repoSlug, TRUSTED_ASSOCIATIONS } from '../git/gh.js';
 import type { Store } from '../store/repo.js';
 import type { EventBus } from '../store/events.js';
 import { newId, nowIso } from '../store/ids.js';
@@ -69,8 +69,12 @@ export class Engine {
     const pipelineFile = findPipelineFile(input.pipeline ?? config.default_pipeline, config.pipelines_dirs);
     const loaded = loadPipeline(pipelineFile);
     const def = await defaultBase(repoPath);
-    const baseRemote = input.baseRemote === undefined ? (repoConfig.base_remote ?? def.remote) : input.baseRemote;
-    const baseBranch = input.baseBranch ?? repoConfig.base_branch ?? def.branch;
+    let baseRemote = input.baseRemote === undefined ? (repoConfig.base_remote ?? def.remote) : input.baseRemote;
+    let baseBranch = input.baseBranch ?? repoConfig.base_branch ?? def.branch;
+    // "sdlc/t_123" split on the first slash is not remote "sdlc": when the remote does not exist, treat the whole ref as a local branch.
+    if (baseRemote && !(await remotes(repoPath)).includes(baseRemote)) { baseBranch = `${baseRemote}/${baseBranch}`; baseRemote = null; }
+    const baseRef = baseRemote ? `${baseRemote}/${baseBranch}` : baseBranch;
+    if (!(await refExists(repoPath, baseRef))) throw new Error(`base ref ${baseRef} does not exist in ${repoPath}`);
     const id = newId('t');
     const worktreesDir = config.worktrees_dir ?? path.join(path.dirname(repoPath), '.sdlc-worktrees', path.basename(repoPath));
     const wt = await createWorktree({ repo: repoPath, worktreesDir, taskId: id, baseRemote, baseBranch, copyUntracked: repoConfig.copy_untracked });
@@ -227,6 +231,7 @@ export class Engine {
             // then: fail
             if (isSoftFailure(phase)) { run.cursor++; this.saveRun(run); continue; }
           }
+          if (policy?.then === 'continue') { run.cursor++; this.saveRun(run); continue; }   // best-effort phase: go on without it
           if (!policy || policy.then === 'hil') { this.escalate(fresh, run, pr, outcome.error); return; }
           this.finishTask(fresh, run, 'failed');
           return;
@@ -354,8 +359,10 @@ export class Engine {
     }
     const cursorIdx = task.prFeedbackCursor ? fb.comments.findIndex((c) => c.id === task.prFeedbackCursor) : -1;
     const all = fb.comments.slice(cursorIdx + 1).filter((c) => c.body.trim());
-    const fresh = this.d.config.pr_feedback_from === 'anyone' ? all : all.filter((c) => !c.association || TRUSTED_ASSOCIATIONS.has(c.association));
-    if (all.length !== fresh.length) events.emit('engine.warning', { taskId, message: `pr feedback: ignored ${all.length - fresh.length} comment(s) from non-collaborators (pr_feedback_from: collaborators)` }, { taskId });
+    const me = await ghLogin();
+    const others = me ? all.filter((c) => c.author !== me) : all;   // never ingest sdlc's own comments (QA report, "addressed" notes)
+    const fresh = this.d.config.pr_feedback_from === 'anyone' ? others : others.filter((c) => !c.association || TRUSTED_ASSOCIATIONS.has(c.association));
+    if (others.length !== fresh.length) events.emit('engine.warning', { taskId, message: `pr feedback: ignored ${others.length - fresh.length} comment(s) from non-collaborators (pr_feedback_from: collaborators)` }, { taskId });
     if (!fresh.length && all.length) { task.prFeedbackCursor = all.at(-1)!.id; task.updatedAt = nowIso(); store.updateTask(task); }
     if (!fresh.length) return { new: 0, state: fb.state };
     const hil = newHilRequest({ taskId, phaseRunId: null, kind: 'pr_feedback', title: task.title, summary: `${fresh.length} new comment(s) on the PR`,
@@ -483,7 +490,7 @@ export class Engine {
     if (fs.existsSync(path.join(task.worktreePath, '.git'))) return;
     await recreateWorktree({ repo: task.repoPath, worktreePath: task.worktreePath, branch: task.branch, remote: task.baseRemote });
     await runSetup(loadRepoConfig(task.repoPath), task.worktreePath);
-    this.d.events.emit('engine.warning', { taskId: task.id, message: 'worktree re-created for a new round' }, { taskId: task.id });
+    this.d.events.emit('task.worktree', { taskId: task.id, action: 'recreated' }, { taskId: task.id });
   }
 
   // ------------------------------------------------------------------ helpers
@@ -509,15 +516,28 @@ export class Engine {
     this.setTaskStatus(task, final);
     void this.cleanup(task, status);
   }
+  /** Automatic cleanup runs only with `cleanup: on_pr|on_approve`; the default (`never`) leaves worktrees for an explicit `removeTaskWorktree`. */
   private async cleanup(task: Task, status: 'succeeded' | 'failed' | 'aborted') {
     const policy = this.d.config.cleanup;
-    const shouldRemove = status === 'aborted' || (status === 'succeeded' && policy !== 'never');
-    if (!shouldRemove) return;
-    try {
-      const baseRef = task.baseRemote ? `${task.baseRemote}/${task.baseBranch}` : task.baseBranch;
-      const r = await removeWorktree(task.repoPath, task.worktreePath, task.branch, { deleteBranchIfEmpty: status === 'aborted' ? baseRef : undefined });
-      if (r.removed) this.d.events.emit('engine.warning', { taskId: task.id, message: `worktree removed${r.branchDeleted ? ', empty branch deleted' : `, branch ${task.branch} kept`}` }, { taskId: task.id });
-    } catch (e) { this.d.events.emit('engine.warning', { taskId: task.id, message: `cleanup failed: ${e instanceof Error ? e.message : String(e)}` }, { taskId: task.id }); }
+    if (policy === 'never') return;
+    if (status === 'failed') return;
+    try { await this.dropWorktree(task, status === 'aborted'); }
+    catch (e) { this.d.events.emit('engine.warning', { taskId: task.id, message: `cleanup failed: ${e instanceof Error ? e.message : String(e)}` }, { taskId: task.id }); }
+  }
+
+  /** Explicit worktree removal (UI button / `sdlc cleanup`). The branch is kept; a PR feedback round re-creates the worktree. */
+  async removeTaskWorktree(taskId: string): Promise<{ removed: boolean }> {
+    const task = this.d.store.getTask(taskId);
+    if (!task) throw new HttpError(404, 'task not found');
+    if (!['succeeded', 'failed', 'aborted', 'pr_open'].includes(task.status)) throw new HttpError(409, `task is ${task.status}; the worktree can be removed only when the task is idle`);
+    return this.dropWorktree(task, task.status === 'aborted');
+  }
+
+  private async dropWorktree(task: Task, deleteEmptyBranch: boolean): Promise<{ removed: boolean }> {
+    const baseRef = task.baseRemote ? `${task.baseRemote}/${task.baseBranch}` : task.baseBranch;
+    const r = await removeWorktree(task.repoPath, task.worktreePath, task.branch, { deleteBranchIfEmpty: deleteEmptyBranch ? baseRef : undefined });
+    if (r.removed) this.d.events.emit('task.worktree', { taskId: task.id, action: 'removed', branchDeleted: r.branchDeleted }, { taskId: task.id });
+    return { removed: r.removed };
   }
 }
 

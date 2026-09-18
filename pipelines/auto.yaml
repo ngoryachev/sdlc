@@ -1,5 +1,5 @@
 name: auto
-description: "No human checkpoints (for tests and truly trivial tasks): implement -> commit -> test -> review"
+description: "No human checkpoints (for tests and truly trivial tasks): implement -> commit -> test(agent) -> review"
 defaults:
   setting_sources: [project]
   effort: medium
@@ -17,14 +17,28 @@ phases:
     git: commit
     message: "sdlc({{task.id}}): {{task.title}}"
   - name: test
-    type: shell
-    when: repo.test_command
-    command: "{{repo.test_command}}"
+    type: claude
+    prompt: prompts/test.md
+    session: fresh
+    permission_mode: bypassPermissions
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch, WebFetch]
+    output_schema: schemas/test.json
+    fail_if: "structured.verdict == 'fail'"
+    max_turns: 40
+    max_budget_usd: 2
     on_fail:
       back_to: implement
-      feedback: "Tests failed. Fix the code. Output tail:\n\n{{phases.test.output}}"
+      feedback: |
+        The test phase found defects in your change. Fix the code (or the tests if they are genuinely wrong, and say so), then stop.
+
+        {{phases.test.structured}}
       max_loops: 1
       then: fail
+
+  - name: commit_tests
+    type: git
+    git: commit
+    message: "sdlc({{task.id}}): tests"
   - name: review
     type: claude
     prompt: prompts/review.md

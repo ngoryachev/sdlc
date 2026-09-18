@@ -27,6 +27,8 @@ export class EventBus {
   on(l: EventListener): () => void { this.listeners.add(l); return () => this.listeners.delete(l); }
   onMessage(l: MessageListener): () => void { this.msgListeners.add(l); return () => this.msgListeners.delete(l); }
 
+  lastId(): number { return Number((this.db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM events').get() as { id: number }).id); }
+
   replay(since: number, taskId?: string, limit = 1000): SdlcEvent[] {
     const rows = taskId
       ? this.db.prepare('SELECT * FROM events WHERE id > ? AND task_id = ? ORDER BY id LIMIT ?').all(since, taskId, limit)

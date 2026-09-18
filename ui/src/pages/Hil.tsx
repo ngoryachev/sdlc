@@ -112,7 +112,7 @@ function ArmedAbort({ onClick, disabled }: { onClick: () => void; disabled: bool
 }
 
 function Payload({ p, edited, setEdited, answers, setAnswers, readOnly }: { p: HilPayload; edited: { prompt?: string; planMd?: string; title?: string }; setEdited: (e: { prompt?: string; planMd?: string; title?: string }) => void; answers: Record<string, string>; setAnswers: (a: Record<string, string>) => void; readOnly: boolean }) {
-  const [tab, setTab] = useState<'review' | 'diff' | 'tests' | 'findings'>('review');
+  const [tab, setTab] = useState<'review' | 'diff' | 'tests' | 'findings' | 'qa'>('review');
   const [editPlan, setEditPlan] = useState(false);
   switch (p.kind) {
     case 'refine_prompt': {
@@ -140,10 +140,11 @@ function Payload({ p, edited, setEdited, answers, setAnswers, readOnly }: { p: H
     case 'approve_result':
       return (
         <div>
-          <Tabs tabs={[{ id: 'review', label: `review${p.review ? ` · ${p.review.verdict}` : ''}` }, { id: 'diff', label: `diff · ${p.commits.length} commits` }, { id: 'tests', label: 'tests' }, { id: 'findings', label: `findings${p.review ? ` (${p.review.findings.length})` : ''}` }]} value={tab} onChange={setTab} />
+          <Tabs tabs={[{ id: 'review', label: `review${p.review ? ` · ${p.review.verdict}` : ''}` }, { id: 'diff', label: `diff · ${p.commits.length} commits` }, { id: 'tests', label: 'tests' }, { id: 'findings', label: `findings${p.review ? ` (${p.review.findings.length})` : ''}` }, ...(p.qa ? [{ id: 'qa', label: `qa · ${p.qa.verdict}${p.qa.issues.length ? ` (${p.qa.issues.length})` : ''}` }] : [])]} value={tab} onChange={(t) => setTab(t as typeof tab)} />
           {tab === 'review' && (p.review ? <Markdown text={p.review.summary} /> : <div className="muted">no review</div>)}
           {tab === 'diff' && <><pre className="small muted">{p.diffStat}</pre><DiffView patch={p.diff} /></>}
-          {tab === 'tests' && <pre className="log">{p.testOutput ?? '(tests were not run)'}</pre>}
+          {tab === 'tests' && (p.test ? <div><div><span className={`chip ${p.test.verdict === 'fail' ? 'failed' : ''}`}>{p.test.verdict}</span></div><Markdown text={p.test.summary} />{p.test.commands.length > 0 && <pre className="small muted">{p.test.commands.map((c) => `$ ${c}`).join('\n')}</pre>}{p.test.failures.length > 0 && <ul>{p.test.failures.map((f, i) => <li key={i}><b>{f.title}</b>{f.file ? <span className="mono small"> {f.file}{f.line ? `:${f.line}` : ''}</span> : null}<div className="small">{f.description}</div></li>)}</ul>}{p.test.tests_added.length > 0 && <div className="small muted">tests: {p.test.tests_added.join(', ')}</div>}{p.test.notes && <div className="small muted">{p.test.notes}</div>}</div> : <pre className="log">{p.testOutput ?? '(tests were not run)'}</pre>)}
+          {tab === 'qa' && p.qa && <div><Markdown text={p.qa.summary} /><ul>{p.qa.checks.map((c, i) => <li key={i}><span className={`chip ${c.result === 'failed' ? 'failed' : ''}`}>{c.result}</span> {c.name} <span className="small muted">{c.method}</span></li>)}</ul>{p.qa.issues.length > 0 && <ul>{p.qa.issues.map((f, i) => <li key={i}><span className={`chip ${f.severity === 'blocking' ? 'failed' : ''}`}>{f.severity}</span> <b>{f.title}</b><div className="small">{f.description}</div></li>)}</ul>}</div>}
           {tab === 'findings' && <ul>{(p.review?.findings ?? []).map((f, i) => <li key={i}><span className={`chip ${f.severity === 'blocking' ? 'failed' : ''}`}>{f.severity}</span> <b>{f.title}</b>{f.file ? <span className="mono small"> {f.file}{f.line ? `:${f.line}` : ''}</span> : null}<div className="small">{f.description}</div>{f.suggestion && <div className="small muted">→ {f.suggestion}</div>}</li>)}{!p.review?.findings.length && <li className="muted">none</li>}</ul>}
         </div>
       );

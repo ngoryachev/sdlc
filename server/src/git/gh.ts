@@ -18,6 +18,14 @@ export async function gh(args: string[], cwd?: string): Promise<string> {
   }
 }
 
+let loginCache: string | null | undefined;
+/** Login of the gh account in use (cached); null when gh is unavailable. sdlc never ingests its own PR comments. */
+export async function ghLogin(): Promise<string | null> {
+  if (loginCache !== undefined) return loginCache;
+  try { loginCache = (await gh(['api', 'user', '-q', '.login'])).trim() || null; } catch { loginCache = null; }
+  return loginCache;
+}
+
 export async function ghAvailable(): Promise<boolean> { try { await gh(['--version']); return true; } catch { return false; } }
 
 export async function repoSlug(cwd: string): Promise<{ slug: string; parent: string | null } | null> {

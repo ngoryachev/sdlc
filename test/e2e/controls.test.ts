@@ -14,7 +14,7 @@ describe('controls: pause / resume / inject / abort / recover', () => {
     const prompts: { prompt: string; resume?: string; injected: string[] }[] = [];
     const runner = new FakeRunner((spec) => ({
       act: async (_s, api) => {
-        if (spec.prompt.includes('implement') && !spec.resume) {
+        if (spec.prompt.includes('Phase: implement') && !spec.resume) {
           await new Promise<void>((r) => { release = r; }); // hang until paused
           prompts.push({ prompt: spec.prompt, resume: spec.resume, injected: api.injected });
           return { text: 'interrupted' };
@@ -56,7 +56,7 @@ describe('controls: pause / resume / inject / abort / recover', () => {
     const repo = makeRepo(dir, { 'a.txt': 'x\n' });
     let release: (() => void) | null = null;
     const runner = new FakeRunner(() => ({ act: async () => { await new Promise<void>((r) => { release = r; }); return { text: 'x' }; } }));
-    const app = testApp(dir, runner);
+    const app = testApp(dir, runner, { cleanup: 'on_pr' });
     const task = await app.engine.createTask({ prompt: 'x', repoPath: repo, pipeline: 'auto', baseRemote: null });
     await tick(200);
     const aborting = app.engine.abort(task.id);

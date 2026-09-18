@@ -12,7 +12,7 @@ const text = async (path: string) => { const r = await fetch(`/api${path}`); if 
 
 export type TaskRow = Task & { openHil: number; currentPhase: string | null };
 export type HilRow = HilRequest & { task: { id: string; title: string; status: string } };
-export interface TaskDetail { task: Task; run: PipelineRun | null; phaseRuns: PhaseRun[]; openHil: HilRequest[] }
+export interface TaskDetail { task: Task; run: PipelineRun | null; phaseRuns: PhaseRun[]; openHil: HilRequest[]; worktreeExists: boolean }
 export interface Config { publicUrl: string; repos: { name: string; path: string }[]; reposDir: string; defaultPipeline: string; maxParallelTasks: number; taskBudgetUsd: number; cleanup: string; telegram: { enabled: boolean; configured: boolean; chatId: string | null } }
 export interface PipelineInfo { name: string; description?: string; phases: { name: string; type: string; hil?: string }[] }
 
@@ -24,6 +24,7 @@ export const api = {
   createTask: (b: { prompt: string; repoPath: string; pipeline?: string; baseRemote?: string | null; baseBranch?: string; reviewMode?: string; postReview?: boolean }) => req<Task>('POST', '/tasks', b),
   control: (id: string, action: 'pause' | 'resume' | 'abort', body?: unknown) => req<Task>('POST', `/tasks/${id}/${action}`, body),
   inject: (id: string, t: string) => req<{ deliveredTo: string }>('POST', `/tasks/${id}/inject`, { text: t }),
+  worktreeRemove: (id: string) => req<{ removed: boolean }>('POST', `/tasks/${id}/worktree/remove`),
   prPoll: (id: string) => req<{ new: number; hilId?: string; state?: string }>('POST', `/tasks/${id}/pr/poll`),
   diff: (id: string) => req<{ stat: string; patch: string; commits: string[]; missing?: boolean }>('GET', `/tasks/${id}/diff`),
   artifacts: (id: string) => req<{ artifacts: { name: string; size: number }[] }>('GET', `/tasks/${id}/artifacts`),

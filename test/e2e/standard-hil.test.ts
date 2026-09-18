@@ -17,7 +17,9 @@ describe('standard pipeline with HIL (fake runner)', () => {
         if (p.includes('requested changes') && p.includes('plan.md')) { calls.push('plan-resume:' + spec.resume); fs.writeFileSync(path.join(spec.cwd, '.sdlc/plan.md'), '# Plan v2\n'); return { text: 'plan summary v2' }; }
         if (p.includes('Phase: implement')) { calls.push('implement'); expect(p).toContain('# Plan v2 (edited)'); fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'y\n'); return { text: 'implemented' }; }
         if (p.includes('reviewed the result and requested changes')) { calls.push('implement-resume:' + spec.resume); fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'z\n'); return { text: 'fixed per human' }; }
+        if (p.includes('Phase: test')) { calls.push('test'); return { structured: { verdict: 'pass', summary: 'ok', commands: ['node test.js'], tests_added: [], failures: [], notes: '' } }; }
         if (p.includes('Phase: review')) { calls.push('review'); return { structured: { verdict: 'approve', summary: 'fine', findings: [] } }; }
+        if (p.includes('Phase: QA')) { calls.push('qa'); return { structured: { verdict: 'pass', summary: 'works', checks: [{ name: 'smoke', method: 'node test.js', result: 'ok' }], issues: [] } }; }
         throw new Error('unexpected prompt: ' + p.slice(0, 100));
       },
     }));
@@ -54,6 +56,8 @@ describe('standard pipeline with HIL (fake runner)', () => {
     expect(hil.kind).toBe('approve_result');
     expect(hil.payload.kind === 'approve_result' && hil.payload.commits.length).toBe(1);
     expect(hil.payload.kind === 'approve_result' && hil.payload.review?.verdict).toBe('approve');
+    expect(hil.payload.kind === 'approve_result' && hil.payload.test?.verdict).toBe('pass');
+    expect(hil.payload.kind === 'approve_result' && hil.payload.testOutput).toMatch(/^pass: ok/);
     await app.engine.respondHil(hil.id, { decision: 'request_changes', comment: 'make it z' }, 'web');
     await app.engine.advance(task.id);
     hil = app.store.openHilForTask(task.id)[0]!;
@@ -72,14 +76,17 @@ describe('standard pipeline with HIL (fake runner)', () => {
     await app.engine.respondHil(hil.id, { decision: 'skip' }, 'web');
     await app.engine.advance(task.id);
     expect(app.store.getTask(task.id)!.status).toBe('succeeded');
-    expect(calls).toEqual(['clarify', 'plan', expect.stringMatching(/^plan-resume:/), 'implement', 'review', expect.stringMatching(/^implement-resume:/), 'review']);
+    // qa ran (best effort), qa_report skipped (no PR), qa_gate skipped (no issues)
+    const byName = Object.fromEntries(app.store.phaseRunsForTask(task.id).map((p) => [p.phaseName, p.status]));
+    expect(byName.qa).toBe('succeeded'); expect(byName.qa_report).toBe('skipped'); expect(byName.qa_gate).toBe('skipped');
+    expect(calls).toEqual(['clarify', 'plan', expect.stringMatching(/^plan-resume:/), 'implement', 'test', 'review', expect.stringMatching(/^implement-resume:/), 'test', 'review', 'qa']);
   });
 
   it('abort from HIL cancels the task and removes the worktree', async () => {
     const dir = tmpDir('sdlc-abort-');
     const repo = makeRepo(dir, { 'a.txt': 'x\n' });
     const runner = new FakeRunner(() => ({ act: () => ({ structured: { questions: [], suggestedPrompt: 'p', assumptions: [] } }) }));
-    const app = testApp(dir, runner);
+    const app = testApp(dir, runner, { cleanup: 'on_pr' });
     const task = await app.engine.createTask({ prompt: 'x', repoPath: repo, pipeline: 'standard', baseRemote: null });
     await app.engine.advance(task.id);
     const hil = app.store.openHilForTask(task.id)[0]!;

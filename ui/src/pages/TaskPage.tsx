@@ -20,7 +20,8 @@ export function TaskPage() {
   useEffect(() => { void reload(); }, [id, tasksVersion]);
   useEffect(() => { const t = setInterval(reload, 15000); return () => clearInterval(t); }, [id]);
   if (!d) return <div className="muted">loading…</div>;
-  const { task, phaseRuns, openHil } = d;
+  const { task, phaseRuns, openHil, worktreeExists } = d;
+  const idle = ['succeeded', 'failed', 'aborted', 'pr_open'].includes(task.status);
   const running = phaseRuns.find((p) => p.status === 'running' || p.status === 'waiting_hil');
   const selected = phaseRuns.find((p) => p.id === phaseRunId) ?? running ?? phaseRuns.at(-1) ?? null;
   const act = async (a: 'pause' | 'resume' | 'abort', body?: unknown) => { try { await api.control(task.id, a, body); toast(`${a} ok`); void reload(); } catch (e) { toast((e as Error).message, 'error'); } };
@@ -37,6 +38,8 @@ export function TaskPage() {
           {!['succeeded', 'failed', 'aborted'].includes(task.status) && <ConfirmButton label="Abort" onClick={() => act('abort')} />}
           {task.status === 'pr_open' && <button onClick={async () => { try { const r = await api.prPoll(task.id); toast(r.new ? `${r.new} new comment(s) → HIL` : `no new comments (PR ${r.state})`); void reload(); } catch (e) { toast((e as Error).message, 'error'); } }}>Poll PR comments</button>}
           <Inject taskId={task.id} disabled={['succeeded', 'failed', 'aborted'].includes(task.status)} />
+          {idle && worktreeExists && <ConfirmButton label="Remove worktree" className="" onClick={async () => { try { await api.worktreeRemove(task.id); toast('worktree removed'); void reload(); } catch (e) { toast((e as Error).message, 'error'); } }} />}
+          {idle && !worktreeExists && <span className="small muted">worktree removed</span>}
         </div>
       </div>
       <div className="card">

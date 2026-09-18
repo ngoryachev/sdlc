@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import type { ClarifyOutput, HilDecision, HilKind, HilPayload, HilRequest, PhaseRun, ReviewOutput } from '@sdlc/shared';
+import type { ClarifyOutput, HilDecision, HilKind, HilPayload, HilRequest, PhaseRun, QaOutput, ReviewOutput, TestOutput } from '@sdlc/shared';
 import { HIL_DECISIONS } from '@sdlc/shared';
 import type { HilPhaseSpec } from '../pipeline/schema.js';
 import { diffAgainst } from '../git/git.js';
@@ -55,7 +55,10 @@ async function buildPayload(kind: HilPhaseSpec['hil'], ctx: PhaseContext): Promi
       const baseRef = (tpl.task as { base_ref: string }).base_ref;
       const d = await diffAgainst(task.worktreePath, baseRef);
       const review = (phases.review?.structured as ReviewOutput | null) ?? null;
-      return { kind, diffStat: d.stat, diff: d.patch, testOutput: phases.test?.output ?? null, review, commits: d.commits, branch: task.branch };
+      const test = (phases.test?.structured as TestOutput | null) ?? null;
+      const qa = (phases.qa?.structured as QaOutput | null) ?? null;
+      const testOutput = test ? [`${test.verdict}: ${test.summary}`, test.commands.length ? `\ncommands:\n${test.commands.map((c) => `  $ ${c}`).join('\n')}` : '', test.failures.length ? `\nfailures:\n${test.failures.map((f) => `  - ${f.title}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ''})` : ''}: ${f.description}`).join('\n')}` : '', test.notes ? `\nnotes: ${test.notes}` : ''].join('\n') : (phases.test?.output || null);
+      return { kind, diffStat: d.stat, diff: d.patch, testOutput, test, review, qa, commits: d.commits, branch: task.branch };
     }
   }
 }
@@ -64,7 +67,7 @@ function summaryFor(p: HilPayload): string {
   switch (p.kind) {
     case 'refine_prompt': return p.questions.length ? `${p.questions.length} clarifying question(s)` : 'Confirm the prompt';
     case 'approve_plan': return p.summary.slice(0, 200) || 'Plan is ready for review';
-    case 'approve_result': return `${p.commits.length} commit(s); ${p.diffStat.split('\n').pop() ?? ''}${p.review ? `; review: ${p.review.verdict}` : ''}`;
+    case 'approve_result': return `${p.commits.length} commit(s); ${p.diffStat.split('\n').pop() ?? ''}${p.test ? `; tests: ${p.test.verdict}` : ''}${p.review ? `; review: ${p.review.verdict}` : ''}${p.qa ? `; qa: ${p.qa.verdict}${p.qa.issues.length ? ` (${p.qa.issues.length} issue(s))` : ''}` : ''}`;
     case 'pr_feedback': return `${p.comments.length} new comment(s) on the PR`;
     case 'question': return p.questions.map((q) => q.question).join(' / ').slice(0, 200);
     case 'escalation': return `${p.phaseName} failed: ${p.error.slice(0, 160)}`;

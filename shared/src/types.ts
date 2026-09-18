@@ -88,6 +88,9 @@ export interface ReviewFinding {
 }
 export interface ReviewOutput { verdict: 'approve' | 'request_changes'; summary: string; findings: ReviewFinding[] }
 
+export interface TestOutput { verdict: 'pass' | 'fail' | 'skipped'; summary: string; commands: string[]; tests_added: string[]; failures: { title: string; description: string; file?: string; line?: number }[]; notes: string }
+export interface QaOutput { verdict: 'pass' | 'issues' | 'skipped'; summary: string; checks: { name: string; method: string; result: 'ok' | 'failed' | 'not_run' }[]; issues: { severity: 'blocking' | 'should_fix' | 'nit'; title: string; description: string }[] }
+
 export interface ClarifyQuestion { question: string; header: string; options?: string[] }
 export interface ClarifyOutput { title?: string; questions: ClarifyQuestion[]; suggestedPrompt: string; assumptions: string[] }
 
@@ -99,7 +102,7 @@ export interface AskUserQuestionItem {
 export type HilPayload =
   | { kind: 'refine_prompt'; prompt: string; questions: ClarifyQuestion[]; suggestedPrompt: string | null; assumptions: string[]; suggestedTitle: string | null }
   | { kind: 'approve_plan'; planMd: string; summary: string; costUsd: number }
-  | { kind: 'approve_result'; diffStat: string; diff: string; testOutput: string | null; review: ReviewOutput | null; commits: string[]; branch: string }
+  | { kind: 'approve_result'; diffStat: string; diff: string; testOutput: string | null; test: TestOutput | null; review: ReviewOutput | null; qa: QaOutput | null; commits: string[]; branch: string }
   | { kind: 'pr_feedback'; prUrl: string; comments: { id: string; author: string; body: string; path?: string; line?: number; url: string; reviewState?: string }[] }
   | { kind: 'question'; questions: AskUserQuestionItem[] }
   | { kind: 'escalation'; phaseName: string; error: string; resultSubtype: string | null };

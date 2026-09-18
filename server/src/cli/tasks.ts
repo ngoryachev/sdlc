@@ -19,6 +19,7 @@ function printEvent(e: SdlcEvent) {
     case 'hil.requested': { const h = p.hil as HilRequest; console.log(`\n>>> HIL ${h.kind} [${h.id}] ${h.summary}`); break; }
     case 'git.committed': console.log(`[git] committed ${(p.sha as string).slice(0, 8)} ${p.message}`); break;
     case 'git.pr_created': console.log(`[git] PR ${p.url}`); break;
+    case 'task.worktree': console.log(`[worktree] ${p.action as string}${p.branchDeleted ? ' (empty branch deleted)' : ''}`); break;
     case 'engine.error': console.error(`[error] ${p.message}`); break;
     case 'engine.warning': console.error(`[warn] ${p.message}`); break;
     default: break;
@@ -75,14 +76,28 @@ export function registerTaskCommands(program: Command) {
     for (const h of app.store.listHil({ status: 'open' })) console.log(`${h.id}  ${h.kind.padEnd(14)} ${h.taskId}  ${h.summary}`);
   });
 
+  program.command('hil-show <hilId>').alias('show-hil').description('Show a HIL request with its payload (prompt, plan, review, tests, QA, diff stat)').option('--diff', 'also print the patch').action(async (id, o) => {
+    const remote = await ServerClient.detect();
+    const h = remote ? await remote.call<Hil>('GET', `/hil/${id}`) : createApp().store.getHil(id);
+    if (!h) throw new Error('hil not found');
+    console.log(`${h.id}  ${h.kind}  task ${h.taskId}  [${h.status}]\n${h.summary}\nallowed: ${h.allowedDecisions.join(', ')}\n`);
+    printHilPayload(h.payload, !!o.diff);
+  });
+  program.command('cleanup <taskId>').description('Remove the task worktree (branch is kept; a PR feedback round re-creates it)').action(async (id) => {
+    const remote = await ServerClient.detect();
+    const r = remote ? await remote.call<{ removed: boolean }>('POST', `/tasks/${id}/worktree/remove`) : await createApp().engine.removeTaskWorktree(id);
+    console.log(r.removed ? 'worktree removed' : 'no worktree to remove');
+  });
+
   const respond = async (hilId: string, decision: string, o: { message?: string; prompt?: string; plan?: string; answer?: string[] }, run = true) => {
     const answers0: Record<string, string> = {};
     for (const a of o.answer ?? []) { const i = a.indexOf('='); if (i > 0) answers0[a.slice(0, i)] = a.slice(i + 1); }
     const remote = await ServerClient.detect();
     if (remote) {
+      const since = (await remote.call<{ id: number }>('GET', '/events/last')).id;
       const h = await remote.call<Hil>('POST', `/hil/${hilId}/respond`, { decision, comment: o.message, edited: { prompt: o.prompt, planMd: o.plan }, answers: answers0 });
       console.log(`[server] ${h.kind} → ${decision}`);
-      if (run) await remote.tail(h.taskId, printEvent, (m) => { const s = summarize(m.sdk as SDKMessage); if (s) console.log(s); }, untilTaskSettles);
+      if (run) await remote.tail(h.taskId, printEvent, (m) => { const s = summarize(m.sdk as SDKMessage); if (s) console.log(s); }, untilTaskSettles, since);
       return;
     }
     const app = createApp();
@@ -109,4 +124,38 @@ export function registerTaskCommands(program: Command) {
   program.command('inject <taskId> <text>').action(async (id, text) => { const remote = await ServerClient.detect(); if (remote) return console.log(await remote.call('POST', `/tasks/${id}/inject`, { text })); const app = createApp(); console.log(app.engine.inject(id, text)); });
   program.command('pr <taskId>').description('Pull new PR comments via gh and open a pr_feedback HIL').action(async (id) => { const remote = await ServerClient.detect(); if (remote) return console.log(await remote.call('POST', `/tasks/${id}/pr/poll`)); const app = createApp(); console.log(await app.engine.pollPrFeedback(id)); });
   program.command('tail <taskId>').description('Stream events of a task from the server').action(async (id) => { const remote = await ServerClient.detect(); if (!remote) throw new Error('server not running'); await remote.tail(id, printEvent, (m) => { const s = summarize(m.sdk as SDKMessage); if (s) console.log(s); }, () => false); });
+}
+
+function printHilPayload(p: Hil['payload'], withDiff: boolean) {
+  const hr = (t: string) => console.log(`\n--- ${t} ---`);
+  switch (p.kind) {
+    case 'refine_prompt':
+      if (p.suggestedTitle) console.log(`title: ${p.suggestedTitle}`);
+      if (p.questions.length) { hr('questions'); for (const q of p.questions) console.log(`- [${q.header}] ${q.question}${q.options?.length ? `\n    options: ${q.options.join(' | ')}` : ''}`); }
+      hr('suggested prompt'); console.log(p.suggestedPrompt ?? '(none)');
+      if (p.assumptions.length) { hr('assumptions'); for (const a of p.assumptions) console.log(`- ${a}`); }
+      hr('original prompt'); console.log(p.prompt);
+      break;
+    case 'approve_plan':
+      if (p.summary) console.log(p.summary);
+      hr('plan'); console.log(p.planMd || '(empty)');
+      break;
+    case 'approve_result':
+      hr(`commits (${p.commits.length}) on ${p.branch}`); for (const c of p.commits) console.log(`  ${c}`);
+      hr('diff stat'); console.log(p.diffStat || '(empty)');
+      hr('tests'); console.log(p.testOutput ?? '(not run)');
+      hr(`review: ${p.review?.verdict ?? '(none)'}`); if (p.review) { console.log(p.review.summary); for (const f of p.review.findings) console.log(`- [${f.severity}] ${f.title}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ''})` : ''}\n    ${f.description}${f.suggestion ? `\n    → ${f.suggestion}` : ''}`); }
+      if (p.qa) { hr(`qa: ${p.qa.verdict}`); console.log(p.qa.summary); for (const c of p.qa.checks) console.log(`- ${c.result.padEnd(7)} ${c.name} (${c.method})`); for (const i of p.qa.issues) console.log(`- [${i.severity}] ${i.title}\n    ${i.description}`); }
+      if (withDiff) { hr('diff'); console.log(p.diff); }
+      break;
+    case 'pr_feedback':
+      console.log(p.prUrl); for (const c of p.comments) console.log(`- ${c.author}${c.path ? ` ${c.path}${c.line ? `:${c.line}` : ''}` : ''}${c.reviewState ? ` [${c.reviewState}]` : ''}: ${c.body}`);
+      break;
+    case 'question':
+      for (const q of p.questions) console.log(`- [${q.header}] ${q.question}${q.options.length ? `\n    options: ${q.options.map((o) => o.label).join(' | ')}` : ''}`);
+      break;
+    case 'escalation':
+      console.log(`${p.phaseName} failed${p.resultSubtype ? ` (${p.resultSubtype})` : ''}:\n${p.error}`);
+      break;
+  }
 }

@@ -8,7 +8,7 @@ export const OnFailSchema = z.object({
   back_to: z.string().optional(),
   feedback: z.string().optional(),
   max_loops: z.number().int().min(0).default(2),
-  then: z.enum(['hil', 'fail']).default('hil'),
+  then: z.enum(['hil', 'fail', 'continue']).default('hil'),   // continue: skip the phase and go on (best-effort phases)
 }).strict();
 
 const Common = {
@@ -60,8 +60,9 @@ export const HilPhaseSchema = z.object({
 export const GitPhaseSchema = z.object({
   ...Common,
   type: z.literal('git'),
-  git: z.enum(['commit', 'push', 'pr']),
+  git: z.enum(['commit', 'push', 'pr', 'comment']),
   message: z.string().optional(),
+  body: z.string().optional(),      // comment: markdown template file (pipeline-relative)
   pr: z.object({
     draft: z.union([z.boolean(), z.string()]).default(true),
     title: z.string().optional(),

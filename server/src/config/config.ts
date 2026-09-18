@@ -19,7 +19,7 @@ export const ConfigSchema = z.object({
   task_budget_usd: z.number().positive().default(20),
   question_timeout: z.string().regex(/^\d+(m|h|d)$/).default('2h'),
   auto_resume_on_restart: z.boolean().default(true),
-  cleanup: z.enum(['on_pr', 'on_approve', 'never']).default('on_pr'),
+  cleanup: z.enum(['on_pr', 'on_approve', 'never']).default('never'),   // never: worktrees are removed explicitly (UI button / `sdlc cleanup`)
   pr_feedback_from: z.enum(['collaborators', 'anyone']).default('collaborators'),
   env_allow: z.array(z.string()).default([]),
   git_author: z.string().default('SDLC <sdlc@local>'),

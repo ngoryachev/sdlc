@@ -63,6 +63,7 @@ export function createHttpApp(app: App) {
     return c.json({ ok: true });
   });
   hono.get('/api/events', sseHandler(app.events));
+  hono.get('/api/events/last', (c) => c.json({ id: app.events.lastId() }));
   hono.get('/api/events/history', (c) => c.json({ events: app.events.replay(Number(c.req.query('since') ?? 0), c.req.query('taskId') || undefined, Number(c.req.query('limit') ?? 200)) }));
   hono.route('/api', tasksRoutes(app));
   hono.route('/api', hilRoutes(app));

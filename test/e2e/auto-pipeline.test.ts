@@ -17,7 +17,7 @@ describe('auto pipeline end-to-end (fake runner)', () => {
     let implementCalls = 0;
     const runner = new FakeRunner((spec) => ({
       act: () => {
-        if (spec.prompt.includes('Phase: implement') || spec.prompt.includes('Tests failed')) {
+        if (spec.prompt.includes('Phase: implement') || spec.prompt.includes('test phase found defects')) {
           implementCalls++;
           const f = path.join(spec.cwd, 'src/math.js');
           if (implementCalls === 1) {
@@ -27,9 +27,15 @@ describe('auto pipeline end-to-end (fake runner)', () => {
             return { text: 'implemented (wrong)', cost: 0.5, toolCalls: [{ name: 'Edit', input: { file_path: f } }] };
           }
           expect(spec.resume).toBe('fake-session-1'); // back_to resumes the implement session
-          expect(spec.prompt).toMatch(/Tests failed/);
+          expect(spec.prompt).toMatch(/test phase found defects/);
+          expect(spec.prompt).toMatch(/no throw on zero/);
           fs.writeFileSync(f, 'export function divide(a, b) { if (b === 0) throw new Error("div by zero"); return a / b; }\n');
           return { text: 'fixed', cost: 0.3 };
+        }
+        if (spec.prompt.includes('Phase: test')) {
+          // agentic test phase: run the suite and report a verdict
+          try { execFileSync('node', ['test.js'], { cwd: spec.cwd, stdio: 'pipe' }); return { structured: { verdict: 'pass', summary: 'suite passes', commands: ['node test.js'], tests_added: [], failures: [], notes: '' }, cost: 0.1 }; }
+          catch { return { structured: { verdict: 'fail', summary: 'divide(1,0) does not throw', commands: ['node test.js'], tests_added: [], failures: [{ title: 'no throw on zero', description: 'expected throw, got NaN', file: 'src/math.js', line: 1 }], notes: '' }, cost: 0.1 }; }
         }
         if (spec.prompt.includes('Phase: review')) {
           return { text: 'reviewed', structured: { verdict: 'approve', summary: 'Looks right.', findings: [] }, cost: 0.2 };
@@ -47,9 +53,9 @@ describe('auto pipeline end-to-end (fake runner)', () => {
 
     const t = app.store.getTask(task.id)!;
     expect(t.status).toBe('succeeded');
-    expect(seen).toEqual(['implement:succeeded', 'commit_impl:succeeded', 'test:failed', 'implement:succeeded', 'commit_impl:succeeded', 'test:succeeded', 'review:succeeded']);
+    expect(seen).toEqual(['implement:succeeded', 'commit_impl:succeeded', 'test:failed', 'implement:succeeded', 'commit_impl:succeeded', 'test:succeeded', 'commit_tests:succeeded', 'review:succeeded']);
     expect(implementCalls).toBe(2);
-    expect(t.totalCostUsd).toBeCloseTo(1.0, 5);
+    expect(t.totalCostUsd).toBeCloseTo(1.2, 5);
 
     // two commits on the task branch, worktree kept (cleanup: never)
     const log = execFileSync('git', ['log', '--oneline', 'main..' + t.branch], { cwd: repo }).toString().trim().split('\n');
@@ -67,8 +73,9 @@ describe('auto pipeline end-to-end (fake runner)', () => {
     const repo = makeRepo(dir, { 'a.txt': 'x\n' });
     const runner = new FakeRunner((spec) => ({
       act: () => {
-        if (spec.prompt.includes('implement') || spec.prompt.includes('Additional')) { fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'y\n'); return { text: 'ok' }; }
-        if (spec.prompt.includes('review')) return { subtype: 'error_max_turns' as const, text: '' };
+        if (spec.prompt.includes('Phase: implement') || spec.prompt.includes('Additional')) { fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'y\n'); return { text: 'ok' }; }
+        if (spec.prompt.includes('Phase: test')) return { structured: { verdict: 'skipped', summary: 'nothing to test', commands: [], tests_added: [], failures: [], notes: '' } };
+        if (spec.prompt.includes('Phase: review')) return { subtype: 'error_max_turns' as const, text: '' };
         return { text: 'ok' };
       },
     }));

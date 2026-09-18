@@ -1,5 +1,5 @@
 name: quick
-description: "clarify -> refine(HIL) -> implement (plan inline) -> commit -> test -> review -> approve_result(HIL) -> PR"
+description: "clarify -> refine(HIL) -> implement (plan inline) -> commit -> test(agent) -> review -> approve_result(HIL) -> PR -> qa(best effort)"
 defaults:
   setting_sources: [project]
   effort: medium
@@ -14,7 +14,7 @@ phases:
     output_schema: schemas/clarify.json
     max_turns: 15
     max_budget_usd: 0.5
-    on_fail: { then: fail }
+    on_fail: { then: continue }      # clarify is optional
   - name: refine
     type: hil
     hil: refine_prompt
@@ -31,14 +31,28 @@ phases:
     git: commit
     message: "sdlc({{task.id}}): {{task.title}}"
   - name: test
-    type: shell
-    when: repo.test_command
-    command: "{{repo.test_command}}"
+    type: claude
+    prompt: prompts/test.md
+    session: fresh
+    permission_mode: bypassPermissions
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch, WebFetch]
+    output_schema: schemas/test.json
+    fail_if: "structured.verdict == 'fail'"
+    max_turns: 40
+    max_budget_usd: 2
     on_fail:
       back_to: implement
-      feedback: "Tests failed. Fix the code (or the tests if they are genuinely wrong, and say so). Output tail:\n\n{{phases.test.output}}"
+      feedback: |
+        The test phase found defects in your change. Fix the code (or the tests if they are genuinely wrong, and say so), then stop.
+
+        {{phases.test.structured}}
       max_loops: 1
       then: hil
+
+  - name: commit_tests
+    type: git
+    git: commit
+    message: "sdlc({{task.id}}): tests"
   - name: review
     type: claude
     prompt: prompts/review.md
@@ -66,3 +80,27 @@ phases:
       title: "{{task.title}}"
       body: prompts/pr_body.md
       post_review: "{{task.post_review}}"
+
+  - name: qa
+    type: claude
+    prompt: prompts/qa.md
+    session: fresh
+    permission_mode: bypassPermissions
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch, WebFetch]
+    write_scope: [".sdlc/**"]
+    output_schema: schemas/qa.json
+    max_turns: 40
+    max_budget_usd: 3
+    on_fail: { then: continue }      # best effort: a failed QA phase never blocks the task
+
+  - name: qa_report
+    type: git
+    git: comment
+    when: phases.qa.structured
+    body: prompts/qa_comment.md
+
+  - name: qa_gate
+    type: hil
+    hil: approve_result
+    when: "phases.qa.structured.verdict == 'issues'"
+    back_to: implement

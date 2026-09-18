@@ -1,6 +1,6 @@
 # sdlc — thin SDLC orchestration on top of Claude Code
 
-Runs a coding task through explicit phases (`clarify → refine → plan → approve → implement → commit → test → review → approve → PR`),
+Runs a coding task through explicit phases (`clarify → refine → plan → approve → implement → commit → test → review → approve → PR → qa`),
 Each task gets its own git worktree and branch; every phase is one Claude Code session (via the Agent SDK) running inside that worktree.
 Humans step in only at declared checkpoints (HIL), from a web UI or Telegram. Everything is observable live.
 
@@ -28,7 +28,7 @@ server: { host: 0.0.0.0, port: 7337, public_url: http://192.168.1.10:7337 }   # 
 default_pipeline: standard
 max_parallel_tasks: 2
 task_budget_usd: 20
-cleanup: on_pr            # on_pr | on_approve | never — remove the worktree when the task is done
+cleanup: never            # never (default: remove explicitly, UI button or `sdlc cleanup`) | on_pr | on_approve
 repos:
   - { name: shop, path: /home/me/Develop/shop }
 telegram: { enabled: true, bot_token: "123:abc", chat_id: "42" }   # or env SDLC_TELEGRAM_TOKEN
@@ -37,7 +37,7 @@ telegram: { enabled: true, bot_token: "123:abc", chat_id: "42" }   # or env SDLC
 Per-repository settings in `<repo>/.sdlc.yaml`:
 
 ```yaml
-test_command: npm test          # enables the `test` phase; failures loop back into implementation
+test_command: npm test          # hint for the agentic `test` phase (it finds the test setup itself when unset)
 setup_command: npm ci           # run once in every new worktree (dependencies); task creation fails if it fails
 base_branch: main               # default base; the task form can override (remote/branch)
 allow: ["Bash(make *)"]         # extra allow rules for phases that are not in bypassPermissions
@@ -50,9 +50,10 @@ post_review: false              # post line-level findings to the GitHub PR
 
 - Web UI: create a task (prompt, repo — local or cloned from GitHub via `gh`, base remote/branch, pipeline, review mode). Watch phases live, pause / inject a message / abort.
 - HIL queue (`/hil`): refine the prompt (Claude's clarifying questions + rewritten prompt), approve or edit the plan, accept the result (review, diff, tests), answer Claude's questions, handle escalations. Keyboard: `a` approve, `r` comment, `Ctrl+Enter`, `j/k`.
+- The `test` phase is an agent, not a command: it reads the diff, runs the existing suite, writes tests for the changed behaviour (in the project's framework, or a minimal native one), and returns `pass|fail|skipped`; `fail` loops back into the implement session with the defects. After the PR, a best-effort `qa` phase exercises the change end to end (dev server, HTTP, CLI, consumer script), posts its report as a PR comment and opens an `approve_result` checkpoint only when it found issues. Neither phase needs any repo config.
 - After the PR exists the task is `pr_open`. Press **Poll PR comments** (or `sdlc pr <task>`, Telegram `/pr <task>`) to pull new review comments into a `pr_feedback` request; approving sends them into the implement session, then commit → test → review → push → PR comment.
 - Telegram: the bot posts each HIL request with Approve/Abort buttons and an Open link. `/status` lists active tasks.
-- CLI mirrors the UI and talks to the running server (falls back to in-process when no server): `sdlc new "<prompt>" --repo <path> [--pipeline quick] [--base origin/main]`, `sdlc list`, `sdlc show <task>`, `sdlc hil`, `sdlc approve <hil> [--prompt …|--plan file]`, `sdlc changes <hil> -m "…"`, `sdlc answer <hil> --answer "q=a"`, `sdlc decide <hil> retry|resume|skip|abort`, `sdlc pause|resume|abort|inject <task>`, `sdlc pr <task>`, `sdlc tail <task>`.
+- CLI mirrors the UI and talks to the running server (falls back to in-process when no server): `sdlc new "<prompt>" --repo <path> [--pipeline quick] [--base origin/main]`, `sdlc list`, `sdlc show <task>`, `sdlc hil`, `sdlc hil-show <hil> [--diff]`, `sdlc approve <hil> [--prompt …|--plan file]`, `sdlc changes <hil> -m "…"`, `sdlc answer <hil> --answer "q=a"`, `sdlc decide <hil> retry|resume|skip|abort`, `sdlc pause|resume|abort|inject <task>`, `sdlc pr <task>`, `sdlc tail <task>`, `sdlc cleanup <task>` (remove the worktree; the branch stays).
 - Dev: `sdlc run-phase --repo <dir> --prompt-file prompts/plan.md --mode dontAsk --write-scope '.sdlc/**'` runs one phase and prints the stream.
 
 ## Pipelines
@@ -64,15 +65,17 @@ post_review: false              # post line-level findings to the GitHub PR
 | `claude` | `prompt` (md, templated), `permission_mode`, `allowed_tools`, `disallowed_tools`, `write_scope`, `output_schema`, `artifacts`, `session: fresh \| {resume: <phase>}`, `mode`, `fail_if`, `max_turns`, `max_budget_usd`, `model`, `effort` |
 | `shell` | `command` (templated, runs in the worktree), `timeout_sec`, `tail_lines` |
 | `hil` | `hil: refine_prompt \| approve_plan \| approve_result`, `back_to`, `timeout` |
-| `git` | `git: commit \| push \| pr`, `message`, `pr: {draft, title, body, post_review}` |
+| `git` | `git: commit \| push \| pr \| comment`, `message`, `pr: {draft, title, body, post_review}`, `body` (comment template) |
 
-Flow control on any phase: `when: <expr>` (skip when false), `on_fail: { retry, back_to, feedback, max_loops, then: hil|fail }`, `on_success: { goto }`.
+Flow control on any phase: `when: <expr>` (skip when false), `on_fail: { retry, back_to, feedback, max_loops, then: hil|fail|continue }` (`continue` skips a best-effort phase), `on_success: { goto }`.
 `back_to` resumes the target phase's Claude session with `feedback` as the next message — that's how test output and review findings reach the implementer with full context.
 
 Templates: `{{task.prompt}}`, `{{task.base_ref}}`, `{{phases.<name>.output|structured|status|attempt}}`, `{{artifacts.<name>}}`, `{{hil.<phase>.comment}}`, `{{loop.feedback}}`, `{{repo.test_command}}`; `{{x?}}` for optional.
 Expressions: `repo.test_command`, `structured.verdict == 'request_changes'`, `!a && (b || c)`.
 
-Shipped: `standard` (all checkpoints), `quick` (no separate plan), `auto` (no checkpoints; for tests/trivial tasks).
+Shipped: `standard` (all checkpoints), `quick` (no separate plan), `auto` (no checkpoints, no PR/QA; for trivial tasks).
+
+Base ref: `--base origin/main` or a local branch such as `--base feature/x` (a name whose first segment is not a remote is a local branch). A local-only base is pushed before the PR is created, since GitHub needs it on the remote.
 
 ## Safety
 

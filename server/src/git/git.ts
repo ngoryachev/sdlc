@@ -20,6 +20,8 @@ export async function repoToplevel(p: string): Promise<string> { return git(p, [
 
 export async function remotes(repo: string): Promise<string[]> { const s = await git(repo, ['remote']); return s ? s.split('\n') : []; }
 
+export async function refExists(repo: string, ref: string): Promise<boolean> { return (await git(repo, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { allowFail: true })) !== ''; }
+
 export async function defaultBase(repo: string): Promise<{ remote: string | null; branch: string }> {
   const rs = await remotes(repo);
   const remote = rs.includes('origin') ? 'origin' : rs[0] ?? null;
@@ -113,3 +115,6 @@ export async function diffAgainst(wt: string, baseRef: string, maxBytes = 400_00
 }
 
 export async function push(wt: string, remote: string, branch: string): Promise<void> { await git(wt, ['push', '-u', remote, branch]); }
+export async function remoteHasBranch(cwd: string, remote: string, branch: string): Promise<boolean> { return (await git(cwd, ['ls-remote', '--heads', remote, branch], { allowFail: true })) !== ''; }
+/** Publish a local branch without changing its upstream (used for a local base branch before a PR). */
+export async function pushBranch(cwd: string, remote: string, branch: string): Promise<void> { await git(cwd, ['push', remote, `${branch}:${branch}`]); }
