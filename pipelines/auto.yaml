@@ -1,5 +1,5 @@
 name: auto
-description: "No human checkpoints (for tests and truly trivial tasks): implement -> commit -> test(agent) -> review"
+description: "No human checkpoints (for tests and truly trivial tasks): implement -> commit -> test(agent) -> review -> qa(best effort)"
 defaults:
   setting_sources: [project]
   effort: medium
@@ -46,5 +46,23 @@ phases:
     permission_mode: bypassPermissions
     disallowed_tools: [Write, Edit, NotebookEdit, Agent, WebSearch, WebFetch]
     output_schema: schemas/review.json
+    fail_if: "structured.verdict == 'request_changes'"
     max_turns: 20
     max_budget_usd: 1.5
+    on_fail:
+      back_to: implement
+      feedback: "A reviewer requested changes. Address every blocking and should_fix finding, then stop.\n\n{{phases.review.structured}}"
+      max_loops: 1
+      then: continue                 # no checkpoints in auto: after one round the findings stay on the task page
+
+  - name: qa
+    type: claude
+    prompt: prompts/qa.md
+    session: fresh
+    permission_mode: bypassPermissions
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch, WebFetch]
+    write_scope: [".sdlc/**"]
+    output_schema: schemas/qa.json
+    max_turns: 40
+    max_budget_usd: 2
+    on_fail: { then: continue }      # best effort

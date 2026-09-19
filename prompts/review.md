@@ -22,4 +22,4 @@ Evaluate the result against the intent, not against style preferences:
 - Design concerns worth a sentence (only if they matter).
 - What would you check by hand before merging?
 
-Return `summary` as markdown for a human (a few short paragraphs or bullets). Return `verdict = "request_changes"` only when there is a real defect or a clear mismatch with the request; otherwise `approve`. Put concrete defects into `findings` with severity `blocking` (must fix), `should_fix`, or `nit`; include `file` and `line` when you can point at them.
+Return `summary` as markdown for a human (a few short paragraphs or bullets). Put concrete defects into `findings` with severity `blocking` (a real defect or a clear mismatch with the request), `should_fix` (wrong or fragile enough that it should not ship as is), or `nit` (style, naming, optional polish); include `file` and `line` when you can point at them. The verdict follows the findings: `request_changes` when there is at least one `blocking` or `should_fix` finding, `approve` when findings are empty or `nit` only. Do not invent findings to have something to say.

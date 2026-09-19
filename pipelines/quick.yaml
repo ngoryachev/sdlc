@@ -65,7 +65,7 @@ phases:
     max_budget_usd: 1.5
     on_fail:
       back_to: implement
-      feedback: "A reviewer requested changes. Address every blocking finding, then stop.\n\n{{phases.review.structured}}"
+      feedback: "A reviewer requested changes. Address every blocking and should_fix finding, then stop.\n\n{{phases.review.structured}}"
       max_loops: 1
       then: fail
   - name: approve_result

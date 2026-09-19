@@ -40,6 +40,7 @@ describe('auto pipeline end-to-end (fake runner)', () => {
         if (spec.prompt.includes('Phase: review')) {
           return { text: 'reviewed', structured: { verdict: 'approve', summary: 'Looks right.', findings: [] }, cost: 0.2 };
         }
+        if (spec.prompt.includes('Phase: QA')) return { structured: { verdict: 'pass', summary: 'ok', checks: [], issues: [] }, cost: 0.1 };
         throw new Error('unexpected prompt: ' + spec.prompt.slice(0, 80));
       },
     }));
@@ -53,9 +54,9 @@ describe('auto pipeline end-to-end (fake runner)', () => {
 
     const t = app.store.getTask(task.id)!;
     expect(t.status).toBe('succeeded');
-    expect(seen).toEqual(['implement:succeeded', 'commit_impl:succeeded', 'test:failed', 'implement:succeeded', 'commit_impl:succeeded', 'test:succeeded', 'commit_tests:succeeded', 'review:succeeded']);
+    expect(seen).toEqual(['implement:succeeded', 'commit_impl:succeeded', 'test:failed', 'implement:succeeded', 'commit_impl:succeeded', 'test:succeeded', 'commit_tests:succeeded', 'review:succeeded', 'qa:succeeded']);
     expect(implementCalls).toBe(2);
-    expect(t.totalCostUsd).toBeCloseTo(1.2, 5);
+    expect(t.totalCostUsd).toBeCloseTo(1.3, 5);
 
     // two commits on the task branch, worktree kept (cleanup: never)
     const log = execFileSync('git', ['log', '--oneline', 'main..' + t.branch], { cwd: repo }).toString().trim().split('\n');
@@ -68,29 +69,27 @@ describe('auto pipeline end-to-end (fake runner)', () => {
     expect((review.structuredOutput as { verdict: string }).verdict).toBe('approve');
   });
 
-  it('escalates to HIL when review keeps requesting changes and on_fail.then is hil; retry answers work', async () => {
+  it('auto: a failing review gets one implement round, then the task continues without a checkpoint', async () => {
     const dir = tmpDir('sdlc-e2e2-');
     const repo = makeRepo(dir, { 'a.txt': 'x\n' });
     const runner = new FakeRunner((spec) => ({
       act: () => {
-        if (spec.prompt.includes('Phase: implement') || spec.prompt.includes('Additional')) { fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'y\n'); return { text: 'ok' }; }
+        if (spec.prompt.includes('Phase: implement') || spec.prompt.includes('reviewer requested changes')) { fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'y\n'); return { text: 'ok' }; }
         if (spec.prompt.includes('Phase: test')) return { structured: { verdict: 'skipped', summary: 'nothing to test', commands: [], tests_added: [], failures: [], notes: '' } };
-        if (spec.prompt.includes('Phase: review')) return { subtype: 'error_max_turns' as const, text: '' };
+        if (spec.prompt.includes('Phase: QA')) return { structured: { verdict: 'skipped', summary: 'n/a', checks: [], issues: [] } };
+        if (spec.prompt.includes('Phase: review')) return { structured: { verdict: 'request_changes', summary: 'no', findings: [{ severity: 'should_fix', title: 'x', description: 'y' }] } };
         return { text: 'ok' };
       },
     }));
     const app = testApp(dir, runner);
     const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'auto', baseRemote: null });
     await app.engine.advance(task.id);
-    let t = app.store.getTask(task.id)!;
-    // review failed with error_max_turns → no on_fail on review in auto → escalation HIL
-    expect(t.status).toBe('waiting_hil');
-    const hil = app.store.openHilForTask(t.id)[0]!;
-    expect(hil.kind).toBe('escalation');
-    expect(hil.allowedDecisions).toContain('skip');
-    await app.engine.respondHil(hil.id, { decision: 'skip' }, 'cli');
-    await app.engine.advance(t.id);
-    t = app.store.getTask(task.id)!;
+    const t = app.store.getTask(task.id)!;
     expect(t.status).toBe('succeeded');
+    const runs = app.store.phaseRunsForTask(t.id);
+    expect(runs.filter((p) => p.phaseName === 'review').map((p) => p.status)).toEqual(['failed', 'failed']);
+    expect(runs.filter((p) => p.phaseName === 'implement').length).toBe(2);
+    expect(runs.find((p) => p.phaseName === 'qa')!.status).toBe('succeeded');
+    expect(app.store.openHilForTask(t.id)).toEqual([]);
   });
 });

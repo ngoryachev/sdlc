@@ -89,7 +89,7 @@ phases:
     on_fail:
       back_to: implement
       feedback: |
-        A reviewer requested changes. Address every blocking finding, keep changes minimal, then stop.
+        A reviewer requested changes. Address every blocking and should_fix finding, keep changes minimal, then stop.
 
         {{phases.review.structured}}
       max_loops: 2

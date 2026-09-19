@@ -9,6 +9,7 @@ const okRunner = () => new FakeRunner((spec) => ({
   act: () => {
     if (spec.prompt.includes('Phase: test')) return { structured: { verdict: 'skipped', summary: 'nothing', commands: [], tests_added: [], failures: [], notes: '' } };
     if (spec.prompt.includes('Phase: review')) return { structured: { verdict: 'approve', summary: 'ok', findings: [] } };
+    if (spec.prompt.includes('Phase: QA')) return { structured: { verdict: 'pass', summary: 'ok', checks: [], issues: [] } };
     fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'y\n'); return { text: 'ok' };
   },
 }));
