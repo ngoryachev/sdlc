@@ -43,6 +43,8 @@ export interface ClaudeRunner {
   start(spec: ClaudeRunSpec): ClaudeRunHandle;
   /** Models available to the current account (dynamic, from the CLI); optional for fakes. */
   models?(): Promise<ModelChoice[]>;
+  /** One cheap, tool-less completion (haiku): used for the branch slug at task creation. */
+  brief?(prompt: string): Promise<string>;
 }
 
 /** Async queue used as the streaming-input prompt so the session stays open for inject()/interrupt(). */
@@ -117,6 +119,18 @@ export class SdkClaudeRunner implements ClaudeRunner {
       this.modelCache = { at: Date.now(), list };
       return list;
     } finally { input.close(); abortController.abort(); }
+  }
+
+  async brief(prompt: string): Promise<string> {
+    const input = new InputQueue();
+    input.push(userMessage(prompt));
+    const abortController = new AbortController();
+    const q: Query = query({ prompt: input, options: { cwd: process.cwd(), model: 'haiku', maxTurns: 1, permissionMode: 'dontAsk', disallowedTools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'WebSearch', 'WebFetch', 'AskUserQuestion'], systemPrompt: 'Answer with the requested text only, nothing else.', settingSources: [], abortController, env: filteredEnv({}) } });
+    const timer = setTimeout(() => abortController.abort(), 20_000);
+    try {
+      for await (const m of q) { if (m.type === 'result') { input.close(); return m.subtype === 'success' ? m.result : ''; } }
+      return '';
+    } finally { clearTimeout(timer); input.close(); abortController.abort(); }
   }
 
   start(spec: ClaudeRunSpec): ClaudeRunHandle {

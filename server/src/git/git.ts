@@ -48,13 +48,12 @@ export async function listBranches(repo: string): Promise<{ remote: string | nul
 
 export interface WorktreeInfo { worktreePath: string; branch: string; baseRef: string }
 
-const TRANSLIT: Record<string, string> = { а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya' };
-/** `sdlc/<slug>-<id>`: a readable branch name from the task title (Cyrillic transliterated), ≤ 48 chars of slug, cut at a word boundary. */
-export function branchNameFor(title: string, taskId: string): string {
-  const slug = title.toLowerCase().split('').map((ch) => TRANSLIT[ch] ?? ch).join('')
-    .normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  const cut = slug.length > 48 ? slug.slice(0, 48).replace(/-[^-]*$/, '') : slug;
-  return cut ? `sdlc/${cut}-${taskId}` : `sdlc/${taskId}`;
+/** `sdlc/<slug>-<id>` from a short English summary: lowercase, at most 5 words / 40 chars; falls back to `sdlc/<id>`. */
+export function branchNameFor(summary: string, taskId: string): string {
+  const words = summary.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean).slice(0, 5);
+  let slug = words.join('-');
+  if (slug.length > 40) slug = slug.slice(0, 40).replace(/-[^-]*$/, '');
+  return slug ? `sdlc/${slug}-${taskId}` : `sdlc/${taskId}`;
 }
 /** Branches sdlc created for this task: `sdlc/<id>` or `sdlc/<slug>-<id>`. Adopted branches never match. */
 export function isSdlcBranch(branch: string, taskId: string): boolean { return branch === `sdlc/${taskId}` || (branch.startsWith('sdlc/') && branch.endsWith(`-${taskId}`)); }

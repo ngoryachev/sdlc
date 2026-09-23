@@ -91,8 +91,12 @@ export class Engine {
     const slug = (await repoSlug(repoPath))?.slug ?? null;
     const now = nowIso();
     const title = input.title ?? titleFrom(input.prompt);
-    // readable branch from the start: sdlc/<slug>-<id>; renamed again when refine produces a better title (until pushed)
-    if (!input.branch) { const named = branchNameFor(title, id); if (named !== wt.branch) { await renameBranch(wt.worktreePath, named); wt.branch = named; } }
+    // readable branch from the start: sdlc/<english-slug>-<id> (short haiku call); renamed again after refine from clarify's `branch` (until pushed)
+    if (!input.branch) {
+      const summary = await this.briefSlug(input.title ?? input.prompt);
+      const named = branchNameFor(summary, id);
+      if (named !== wt.branch) { await renameBranch(wt.worktreePath, named); wt.branch = named; }
+    }
     const task: Task = {
       id, title, initialPrompt: input.prompt, refinedPrompt: null, repoPath, repoSlug: slug,
       baseRemote, baseBranch, branch: wt.branch, worktreePath: wt.worktreePath, pipelineName: loaded.spec.name,
@@ -150,10 +154,19 @@ export class Engine {
     return { method: m, via };
   }
 
-  /** Keep the branch name in sync with the title while the branch is still local (no PR, sdlc-created, worktree present). */
-  private async renameToTitle(task: Task): Promise<void> {
+  /** 2–5 English words for the branch name; empty when no runner support or on failure (then the branch is sdlc/<id>). */
+  private async briefSlug(text: string): Promise<string> {
+    if (!this.d.runner.brief) return '';
+    try {
+      const out = await this.d.runner.brief(`Summarize this development task as a git branch slug: 2 to 5 English words, lowercase, separated by hyphens, no ids, no punctuation. Reply with the slug only.\n\nTask:\n${text.slice(0, 2000)}`);
+      return out.trim().split('\n').pop()?.trim() ?? '';
+    } catch { return ''; }
+  }
+
+  /** Rename the task branch while it is still local (no PR, sdlc-created, worktree present). */
+  private async renameBranchTo(task: Task, summary: string): Promise<void> {
     if (task.prNumber || !isSdlcBranch(task.branch, task.id) || !fs.existsSync(path.join(task.worktreePath, '.git'))) return;
-    const to = branchNameFor(task.title, task.id);
+    const to = branchNameFor(summary, task.id);
     if (to === task.branch) return;
     const from = task.branch;
     try { await renameBranch(task.worktreePath, to); }
@@ -354,7 +367,7 @@ export class Engine {
         const p = hil.payload as Extract<typeof hil.payload, { kind: 'refine_prompt' }>;
         task.refinedPrompt = response.edited?.prompt?.trim() || p.suggestedPrompt || task.initialPrompt;
         task.title = response.edited?.title?.trim() || p.suggestedTitle || task.title;
-        await this.renameToTitle(task);
+        if (p.suggestedBranch) await this.renameBranchTo(task, p.suggestedBranch);
         closePhase('succeeded', 'approved');
         run.cursor++;
         break;

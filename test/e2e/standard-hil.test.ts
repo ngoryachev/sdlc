@@ -13,7 +13,7 @@ describe('standard pipeline with HIL (fake runner)', () => {
     const runner = new FakeRunner((spec) => ({
       act: () => {
         const p = spec.prompt;
-        if (p.includes('Phase: clarify')) { calls.push('clarify'); return { structured: { questions: [{ question: 'Which file?', header: 'File', options: ['a.txt'] }], suggestedPrompt: 'Change a.txt from x to y', assumptions: ['only a.txt'] } }; }
+        if (p.includes('Phase: clarify')) { calls.push('clarify'); return { structured: { branch: 'Flip A Txt', questions: [{ question: 'Which file?', header: 'File', options: ['a.txt'] }], suggestedPrompt: 'Change a.txt from x to y', assumptions: ['only a.txt'] } }; }
         if (p.includes('Phase: plan')) { calls.push('plan'); fs.mkdirSync(path.join(spec.cwd, '.sdlc'), { recursive: true }); fs.writeFileSync(path.join(spec.cwd, '.sdlc/plan.md'), '# Plan v1\n'); return { text: 'plan summary v1' }; }
         if (p.includes('requested changes') && p.includes('plan.md')) { calls.push('plan-resume:' + spec.resume); fs.writeFileSync(path.join(spec.cwd, '.sdlc/plan.md'), '# Plan v2\n'); return { text: 'plan summary v2' }; }
         if (p.includes('Phase: implement')) { calls.push('implement'); expect(p).toContain('# Plan v2 (edited)'); fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'y\n'); return { text: 'implemented' }; }
@@ -33,12 +33,12 @@ describe('standard pipeline with HIL (fake runner)', () => {
     let hil = app.store.openHilForTask(task.id)[0]!;
     expect(hil.kind).toBe('refine_prompt');
     expect(hil.payload.kind === 'refine_prompt' && hil.payload.questions.length).toBe(1);
-    expect(task.branch).toBe(`sdlc/change-a-${task.id}`);
+    expect(task.branch).toBe(`sdlc/${task.id}`); // fake runner has no brief(): no slug at creation
     await app.engine.respondHil(hil.id, { decision: 'approve', edited: { prompt: 'Change a.txt from x to y (file: a.txt)', title: 'Flip a.txt to y' } }, 'web');
     await app.engine.advance(task.id);
     expect(app.store.getTask(task.id)!.refinedPrompt).toBe('Change a.txt from x to y (file: a.txt)');
-    expect(app.store.getTask(task.id)!.branch).toBe(`sdlc/flip-a-txt-to-y-${task.id}`);
-    expect(execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: task.worktreePath }).toString().trim()).toBe(`sdlc/flip-a-txt-to-y-${task.id}`);
+    expect(app.store.getTask(task.id)!.branch).toBe(`sdlc/flip-a-txt-${task.id}`);
+    expect(execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: task.worktreePath }).toString().trim()).toBe(`sdlc/flip-a-txt-${task.id}`);
 
     // 2. approve_plan → request changes → plan resumed in same session
     hil = app.store.openHilForTask(task.id)[0]!;

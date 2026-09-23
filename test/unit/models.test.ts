@@ -21,10 +21,10 @@ describe('normalizeStrings', () => {
 });
 
 describe('branchNameFor', () => {
-  it('slugs latin and cyrillic titles, cuts at a word boundary, keeps the id', () => {
-    expect(branchNameFor('Add playToEnd flag so traps play to the key move', 't_1')).toBe('sdlc/add-playtoend-flag-so-traps-play-to-the-key-move-t_1');
-    expect(branchNameFor('Сделать «до конца линии» поведением по умолчанию для всех дебютов', 't_2')).toBe('sdlc/sdelat-do-konca-linii-povedeniem-po-umolchaniyu-t_2');
-    expect(branchNameFor('!!!', 't_3')).toBe('sdlc/t_3');
+  it('keeps at most five lowercase english words and the id; non-latin summaries fall back to the id', () => {
+    expect(branchNameFor('Add playToEnd flag so traps play to the key move', 't_1')).toBe('sdlc/add-playtoend-flag-so-traps-t_1');
+    expect(branchNameFor('play-lines-to-end', 't_2')).toBe('sdlc/play-lines-to-end-t_2');
+    expect(branchNameFor('Сделать до конца', 't_3')).toBe('sdlc/t_3');
     expect(isSdlcBranch('sdlc/t_3', 't_3')).toBe(true); expect(isSdlcBranch('sdlc/x-t_3', 't_3')).toBe(true); expect(isSdlcBranch('feature/x', 't_3')).toBe(false);
   });
 });

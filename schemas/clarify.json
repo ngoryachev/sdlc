@@ -13,6 +13,11 @@
       "type": "string",
       "maxLength": 70
     },
+    "branch": {
+      "type": "string",
+      "maxLength": 40,
+      "description": "2-5 English words, lowercase, hyphen-separated; used as the git branch name"
+    },
     "questions": {
       "type": "array",
       "maxItems": 4,

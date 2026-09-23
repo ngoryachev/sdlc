@@ -44,7 +44,7 @@ async function buildPayload(kind: HilPhaseSpec['hil'], ctx: PhaseContext): Promi
   switch (kind) {
     case 'refine_prompt': {
       const c = phases.clarify?.structured as ClarifyOutput | null | undefined;
-      return { kind, prompt: task.refinedPrompt ?? task.initialPrompt, questions: c?.questions ?? [], suggestedPrompt: c?.suggestedPrompt ?? null, assumptions: c?.assumptions ?? [], suggestedTitle: c?.title ?? null };
+      return { kind, prompt: task.refinedPrompt ?? task.initialPrompt, questions: c?.questions ?? [], suggestedPrompt: c?.suggestedPrompt ?? null, assumptions: c?.assumptions ?? [], suggestedTitle: c?.title ?? null, suggestedBranch: c?.branch ?? null };
     }
     case 'approve_plan': {
       const artifacts = tpl.artifacts as Record<string, string>;
