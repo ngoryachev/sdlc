@@ -20,6 +20,7 @@ function printEvent(e: SdlcEvent) {
     case 'git.committed': console.log(`[git] committed ${(p.sha as string).slice(0, 8)} ${p.message}`); break;
     case 'git.pr_created': console.log(`[git] PR ${p.url}`); break;
     case 'task.worktree': console.log(`[worktree] ${p.action as string}${p.branchDeleted ? ' (branch deleted)' : ''}`); break;
+    case 'task.branch': console.log(`[branch] ${p.from as string} → ${p.to as string}`); break;
     case 'git.merged': console.log(`[git] merged into ${p.into as string} (${p.method as string}, via ${p.via as string})`); break;
     case 'engine.error': console.error(`[error] ${p.message}`); break;
     case 'engine.warning': console.error(`[warn] ${p.message}`); break;

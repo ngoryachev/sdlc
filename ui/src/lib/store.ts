@@ -39,6 +39,7 @@ export const useStore = create<State>((set, get) => ({
     switch (e.type) {
       case 'task.created': upsertTask((e.payload as { task: Task }).task); break;
       case 'task.status': upsertTask((e.payload as { task: Task }).task); break;
+      case 'task.branch': { const p = e.payload as { taskId: string; to: string }; tasks = tasks.map((t) => (t.id === p.taskId ? { ...t, branch: p.to } : t)); break; }
       case 'task.cost': { const p = e.payload as { taskId: string; totalCostUsd: number }; tasks = tasks.map((t) => (t.id === p.taskId ? { ...t, totalCostUsd: p.totalCostUsd } : t)); break; }
       case 'phase.started': { const p = e.payload as { phaseRun: { taskId: string; phaseName: string } }; tasks = tasks.map((t) => (t.id === p.phaseRun.taskId ? { ...t, currentPhase: p.phaseRun.phaseName } : t)); break; }
       case 'hil.requested': { const h = (e.payload as { hil: HilRequest }).hil; const task = tasks.find((t) => t.id === h.taskId); hil = [{ ...h, task: { id: h.taskId, title: task?.title ?? h.title, status: task?.status ?? '' } }, ...hil.filter((x) => x.id !== h.id)]; tasks = tasks.map((t) => (t.id === h.taskId ? { ...t, openHil: t.openHil + 1 } : t)); break; }

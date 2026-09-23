@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { FakeRunner } from '../fakes/fake-runner.js';
 import { makeRepo, testApp, tmpDir } from '../helpers.js';
 
@@ -32,9 +33,12 @@ describe('standard pipeline with HIL (fake runner)', () => {
     let hil = app.store.openHilForTask(task.id)[0]!;
     expect(hil.kind).toBe('refine_prompt');
     expect(hil.payload.kind === 'refine_prompt' && hil.payload.questions.length).toBe(1);
-    await app.engine.respondHil(hil.id, { decision: 'approve', edited: { prompt: 'Change a.txt from x to y (file: a.txt)' } }, 'web');
+    expect(task.branch).toBe(`sdlc/change-a-${task.id}`);
+    await app.engine.respondHil(hil.id, { decision: 'approve', edited: { prompt: 'Change a.txt from x to y (file: a.txt)', title: 'Flip a.txt to y' } }, 'web');
     await app.engine.advance(task.id);
     expect(app.store.getTask(task.id)!.refinedPrompt).toBe('Change a.txt from x to y (file: a.txt)');
+    expect(app.store.getTask(task.id)!.branch).toBe(`sdlc/flip-a-txt-to-y-${task.id}`);
+    expect(execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: task.worktreePath }).toString().trim()).toBe(`sdlc/flip-a-txt-to-y-${task.id}`);
 
     // 2. approve_plan → request changes → plan resumed in same session
     hil = app.store.openHilForTask(task.id)[0]!;

@@ -13,7 +13,7 @@ import type { PhaseSpec, PipelineSpec, RepoConfig } from '../pipeline/schema.js'
 import { PipelineSchema } from '../pipeline/schema.js';
 import { evalExpr } from '../pipeline/expr.js';
 import { renderTemplate } from '../pipeline/template.js';
-import { adoptWorktree, createWorktree, defaultBase, deleteBranch, mergeLocally, recreateWorktree, refExists, remotes, removeWorktree, repoToplevel, syncLocalBase } from '../git/git.js';
+import { adoptWorktree, branchNameFor, createWorktree, defaultBase, deleteBranch, isSdlcBranch, mergeLocally, recreateWorktree, refExists, remotes, removeWorktree, renameBranch, repoToplevel, syncLocalBase } from '../git/git.js';
 import { ghLogin, prFeedback, prMerge, prView, repoSlug, TRUSTED_ASSOCIATIONS } from '../git/gh.js';
 import type { Store } from '../store/repo.js';
 import type { EventBus } from '../store/events.js';
@@ -90,8 +90,11 @@ export class Engine {
     catch (e) { await removeWorktree(repoPath, wt.worktreePath, wt.branch, { deleteBranchIfEmpty: wt.baseRef }).catch(() => {}); throw e; }
     const slug = (await repoSlug(repoPath))?.slug ?? null;
     const now = nowIso();
+    const title = input.title ?? titleFrom(input.prompt);
+    // readable branch from the start: sdlc/<slug>-<id>; renamed again when refine produces a better title (until pushed)
+    if (!input.branch) { const named = branchNameFor(title, id); if (named !== wt.branch) { await renameBranch(wt.worktreePath, named); wt.branch = named; } }
     const task: Task = {
-      id, title: input.title ?? titleFrom(input.prompt), initialPrompt: input.prompt, refinedPrompt: null, repoPath, repoSlug: slug,
+      id, title, initialPrompt: input.prompt, refinedPrompt: null, repoPath, repoSlug: slug,
       baseRemote, baseBranch, branch: wt.branch, worktreePath: wt.worktreePath, pipelineName: loaded.spec.name,
       reviewMode: input.reviewMode ?? repoConfig.review_mode ?? 'conceptual', postReview: input.postReview ?? repoConfig.post_review ?? false,
       status: 'created', totalCostUsd: 0, prUrl: input.pr?.url ?? null, prNumber: input.pr?.number ?? null, prFeedbackCursor: null, modelOverrides: input.modelOverrides ?? null, createdAt: now, updatedAt: now,
@@ -145,6 +148,18 @@ export class Engine {
     if (run && run.status !== 'succeeded') { run.status = 'succeeded'; this.saveRun(run); }
     this.setTaskStatus(task, 'merged');
     return { method: m, via };
+  }
+
+  /** Keep the branch name in sync with the title while the branch is still local (no PR, sdlc-created, worktree present). */
+  private async renameToTitle(task: Task): Promise<void> {
+    if (task.prNumber || !isSdlcBranch(task.branch, task.id) || !fs.existsSync(path.join(task.worktreePath, '.git'))) return;
+    const to = branchNameFor(task.title, task.id);
+    if (to === task.branch) return;
+    const from = task.branch;
+    try { await renameBranch(task.worktreePath, to); }
+    catch (e) { this.d.events.emit('engine.warning', { taskId: task.id, message: `branch rename failed: ${e instanceof Error ? e.message : String(e)}` }, { taskId: task.id }); return; }
+    task.branch = to; task.updatedAt = nowIso(); this.d.store.updateTask(task);
+    this.d.events.emit('task.branch', { taskId: task.id, from, to }, { taskId: task.id });
   }
 
   setModelOverrides(taskId: string, overrides: ModelOverrides | null): Task {
@@ -339,6 +354,7 @@ export class Engine {
         const p = hil.payload as Extract<typeof hil.payload, { kind: 'refine_prompt' }>;
         task.refinedPrompt = response.edited?.prompt?.trim() || p.suggestedPrompt || task.initialPrompt;
         task.title = response.edited?.title?.trim() || p.suggestedTitle || task.title;
+        await this.renameToTitle(task);
         closePhase('succeeded', 'approved');
         run.cursor++;
         break;

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeStrings, resolveModel } from '../../server/src/phases/claude.js';
+import { branchNameFor, isSdlcBranch } from '../../server/src/git/git.js';
 
 describe('resolveModel', () => {
   const cfg = { default: 'sonnet', effort: 'medium' as const, phases: { review: { model: 'opus', effort: 'high' as const } } };
@@ -16,5 +17,14 @@ describe('normalizeStrings', () => {
   it('turns literal \\n into newlines only when the string has no real newlines', () => {
     expect(normalizeStrings({ summary: 'a\\nb\\n\\nc', list: ['x\\ty'], keep: 'real\nnewline\\n', n: 1 })).toEqual({ summary: 'a\nb\n\nc', list: ['x\ty'], keep: 'real\nnewline\\n', n: 1 });
     expect(normalizeStrings(null)).toBeNull();
+  });
+});
+
+describe('branchNameFor', () => {
+  it('slugs latin and cyrillic titles, cuts at a word boundary, keeps the id', () => {
+    expect(branchNameFor('Add playToEnd flag so traps play to the key move', 't_1')).toBe('sdlc/add-playtoend-flag-so-traps-play-to-the-key-move-t_1');
+    expect(branchNameFor('Сделать «до конца линии» поведением по умолчанию для всех дебютов', 't_2')).toBe('sdlc/sdelat-do-konca-linii-povedeniem-po-umolchaniyu-t_2');
+    expect(branchNameFor('!!!', 't_3')).toBe('sdlc/t_3');
+    expect(isSdlcBranch('sdlc/t_3', 't_3')).toBe(true); expect(isSdlcBranch('sdlc/x-t_3', 't_3')).toBe(true); expect(isSdlcBranch('feature/x', 't_3')).toBe(false);
   });
 });

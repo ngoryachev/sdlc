@@ -80,6 +80,8 @@ Expressions: `repo.test_command`, `structured.verdict == 'request_changes'`, `!a
 
 Shipped: `standard` (all checkpoints), `quick` (no separate plan), `auto` (no checkpoints, no PR; for trivial tasks).
 
+Branches are named `sdlc/<slug>-<id>` from the task title (Cyrillic transliterated) and renamed once more when refine produces a better title, as long as the branch has not been pushed.
+
 Base ref: `--base origin/main` or a local branch such as `--base feature/x` (a name whose first segment is not a remote is a local branch). A local-only base is pushed before the PR is created, since GitHub needs it on the remote.
 
 ## Safety

@@ -48,6 +48,19 @@ export async function listBranches(repo: string): Promise<{ remote: string | nul
 
 export interface WorktreeInfo { worktreePath: string; branch: string; baseRef: string }
 
+const TRANSLIT: Record<string, string> = { а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya' };
+/** `sdlc/<slug>-<id>`: a readable branch name from the task title (Cyrillic transliterated), ≤ 48 chars of slug, cut at a word boundary. */
+export function branchNameFor(title: string, taskId: string): string {
+  const slug = title.toLowerCase().split('').map((ch) => TRANSLIT[ch] ?? ch).join('')
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const cut = slug.length > 48 ? slug.slice(0, 48).replace(/-[^-]*$/, '') : slug;
+  return cut ? `sdlc/${cut}-${taskId}` : `sdlc/${taskId}`;
+}
+/** Branches sdlc created for this task: `sdlc/<id>` or `sdlc/<slug>-<id>`. Adopted branches never match. */
+export function isSdlcBranch(branch: string, taskId: string): boolean { return branch === `sdlc/${taskId}` || (branch.startsWith('sdlc/') && branch.endsWith(`-${taskId}`)); }
+/** Rename the branch checked out in a worktree (before it is pushed). */
+export async function renameBranch(worktree: string, to: string): Promise<void> { await git(worktree, ['branch', '-m', to]); }
+
 export async function createWorktree(opts: { repo: string; worktreesDir: string; taskId: string; baseRemote: string | null; baseBranch: string; copyUntracked?: string[] }): Promise<WorktreeInfo> {
   const { repo, taskId } = opts;
   if (opts.baseRemote) await git(repo, ['fetch', opts.baseRemote, opts.baseBranch], { allowFail: true });
