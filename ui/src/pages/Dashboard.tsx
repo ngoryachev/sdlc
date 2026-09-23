@@ -1,26 +1,44 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'wouter';
 import type { ModelOverrides } from '@sdlc/shared';
-import { api, type Config, type ModelChoice, type PipelineInfo } from '../lib/api.js';
+import { api, type Config, type ModelChoice, type PipelineInfo, type TaskRow } from '../lib/api.js';
 import { useStore } from '../lib/store.js';
-import { Chip, Money, ago } from '../components/Common.js';
+import { Money, ago } from '../components/Common.js';
 import { ModelPicker } from '../components/ModelPicker.js';
+import { RepoPicker, resolveRepoPath, type RepoChoice } from '../components/RepoPicker.js';
+
+const FINISHED = ['merged', 'closed', 'aborted'];
+/** succeeded = the pipeline is done, not that the code is delivered: without a PR the branch still waits to be landed. */
+export function statusView(t: { status: string; prNumber: number | null }): { cls: string; label: string; title?: string } {
+  if (t.status === 'succeeded' && !t.prNumber) return { cls: 'ready', label: 'ready to land', title: 'pipeline finished; the branch is not merged yet (Create PR or Land)' };
+  return { cls: t.status, label: t.status };
+}
+export const StatusChip = ({ t }: { t: { status: string; prNumber: number | null } }) => { const v = statusView(t); return <span className={`chip ${v.cls}`} title={v.title}>{v.label}</span>; };
+const parentOf = (t: TaskRow, all: TaskRow[]) => all.find((p) => p.id !== t.id && p.repoPath === t.repoPath && p.branch === t.baseBranch);
 
 export function Dashboard() {
   const tasks = useStore((s) => s.tasks);
+  const toast = useStore((s) => s.toast);
   const [showDone, setShowDone] = useState(false);
-  const visible = tasks.filter((t) => showDone || !['succeeded', 'merged', 'failed', 'aborted'].includes(t.status));
+  const [syncing, setSyncing] = useState(false);
+  const visible = tasks.filter((t) => showDone || !FINISHED.includes(t.status));
+  const hidden = tasks.length - visible.length;
+  const syncNow = async () => {
+    setSyncing(true);
+    try { const r = await api.sync(); toast(r.changes.length ? r.changes.map((c) => `${c.title}: ${c.change}`).join('; ') : `checked ${r.checked} task(s), nothing changed`); if (r.errors.length) toast(r.errors.join('; '), 'error'); }
+    catch (e) { toast((e as Error).message, 'error'); } finally { setSyncing(false); }
+  };
   return (
     <>
       <NewTaskForm />
       <ImportPrForm />
       <div className="card">
-        <div className="row"><h3 className="grow" style={{ margin: 0 }}>Tasks</h3><label className="small muted"><input type="checkbox" style={{ width: 'auto' }} checked={showDone} onChange={(e) => setShowDone(e.target.checked)} /> show finished</label></div>
+        <div className="row"><h3 className="grow" style={{ margin: 0 }}>Tasks</h3><button disabled={syncing} onClick={syncNow} title="check PR states and merged branches on GitHub now (also runs in the background)">{syncing ? 'syncing…' : 'Sync with GitHub'}</button><label className="small muted"><input type="checkbox" style={{ width: 'auto' }} checked={showDone} onChange={(e) => setShowDone(e.target.checked)} /> show merged / closed{hidden ? ` (${hidden})` : ''}</label></div>
         <table><thead><tr><th>Task</th><th>Status</th><th className="hide-sm">Phase</th><th>Cost</th><th className="hide-sm">Age</th></tr></thead>
           <tbody>{visible.map((t) => (
             <tr key={t.id}>
-              <td><Link href={`/tasks/${t.id}`}>{t.title}</Link><div className="small muted">{t.pipelineName} · {t.branch}{t.prUrl ? <> · <a href={t.prUrl} target="_blank" rel="noreferrer">PR</a></> : null}</div></td>
-              <td><Chip s={t.status} />{t.openHil ? <Link href={`/hil?task=${t.id}`} className="badge">{t.openHil}</Link> : null}</td>
+              <td><Link href={`/tasks/${t.id}`}>{t.title}</Link><div className="small muted">{t.pipelineName} · <span className="mono">{t.branch}</span>{(() => { const p = parentOf(t, tasks); return p ? <> · on <Link href={`/tasks/${p.id}`}>{p.title}</Link></> : null; })()}{t.prUrl ? <> · <a href={t.prUrl} target="_blank" rel="noreferrer">PR #{t.prNumber}</a></> : null}</div></td>
+              <td><StatusChip t={t} />{t.openHil ? <Link href={`/hil?task=${t.id}`} className="badge">{t.openHil}</Link> : null}</td>
               <td className="hide-sm mono small">{t.currentPhase ?? ''}</td>
               <td><Money v={t.totalCostUsd} /></td>
               <td className="hide-sm muted small">{ago(t.createdAt)}</td>
@@ -36,9 +54,7 @@ function NewTaskForm() {
   const toast = useStore((s) => s.toast);
   const [cfg, setCfg] = useState<Config | null>(null);
   const [pipelines, setPipelines] = useState<PipelineInfo[]>([]);
-  const [repos, setRepos] = useState<{ name: string; path: string }[]>([]);
-  const [repo, setRepo] = useState('');
-  const [customPath, setCustomPath] = useState('');
+  const [repo, setRepo] = useState<RepoChoice | null>(null);
   const [branches, setBranches] = useState<{ remote: string | null; branch: string }[]>([]);
   const [base, setBase] = useState('');
   const [pipeline, setPipeline] = useState('');
@@ -51,33 +67,33 @@ function NewTaskForm() {
   const [models, setModels] = useState<ModelChoice[]>([]);
   const [overrides, setOverrides] = useState<ModelOverrides>({});
   const [busy, setBusy] = useState(false);
-  const [gh, setGh] = useState<{ q: string; list: { slug: string; description: string; isFork: boolean }[]; open: boolean }>({ q: '', list: [], open: false });
 
-  useEffect(() => { void api.config().then((c) => { setCfg(c); setRepos(c.repos); setPipeline(c.defaultPipeline); }); void api.pipelines().then((p) => setPipelines(p.pipelines)); void api.models().then((r) => setModels(r.models)).catch(() => {}); }, []);
+  useEffect(() => { void api.config().then((c) => { setCfg(c); setPipeline(c.defaultPipeline); }); void api.pipelines().then((p) => setPipelines(p.pipelines)); void api.models().then((r) => setModels(r.models)).catch(() => {}); }, []);
   useEffect(() => {
-    if (!repo || repo === '__custom') { setBranches([]); return; }
-    void api.branches(repo).then((b) => { setBranches(b.branches); setBase(b.default.remote ? `${b.default.remote}/${b.default.branch}` : b.default.branch); }).catch((e) => toast(String(e.message), 'error'));
-  }, [repo]);
+    setBranches([]);
+    if (!repo || repo.kind === 'path') return;
+    if (repo.kind === 'github') {
+      setBase(`origin/${repo.defaultBranch ?? 'main'}`);
+      void api.githubBranches(repo.slug!, repo.account ?? null).then((b) => setBranches(b.branches)).catch(() => {});
+      return;
+    }
+    void api.branches(repo.name).then((b) => { setBranches(b.branches); setBase(b.default.remote ? `${b.default.remote}/${b.default.branch}` : b.default.branch); }).catch((e) => toast(String(e.message), 'error'));
+  }, [repo?.kind, repo?.name]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!prompt.trim()) return;
     setBusy(true);
     try {
-      const repoPath = repo === '__custom' ? customPath : repos.find((r) => r.name === repo)?.path;
-      if (!repoPath) throw new Error('choose a repository');
+      if (!repo) throw new Error('choose a repository');
+      const repoPath = await resolveRepoPath(repo);
+      if (repo.kind === 'github') { toast(`cloned ${repo.slug}`); setRepo({ kind: 'registered', name: repo.slug!, path: repoPath, account: repo.account }); }
       let baseRemote: string | null | undefined; let baseBranch: string | undefined;
       if (base) { const found = branches.find((b) => (b.remote ? `${b.remote}/${b.branch}` : b.branch) === base); if (found) { baseRemote = found.remote; baseBranch = found.branch; } else { const [r, ...rest] = base.split('/'); if (rest.length) { baseRemote = r; baseBranch = rest.join('/'); } else { baseRemote = null; baseBranch = r; } } }
       const t = await api.createTask({ prompt, repoPath, pipeline, baseRemote, baseBranch, reviewMode, postReview, branch: existingBranch || undefined, startAt: startAt || undefined, modelOverrides: Object.keys(overrides).length ? overrides : undefined });
       toast(`task ${t.id} created`); setPrompt(''); setOverrides({}); setStartAt(''); setExistingBranch('');
     } catch (err) { toast((err as Error).message, 'error'); } finally { setBusy(false); }
   };
-  const addGithub = async (slug: string) => {
-    setBusy(true);
-    try { const r = await api.addRepo({ slug }); setRepos((rs) => [...rs.filter((x) => x.path !== r.path), r]); setRepo(r.name); setGh({ q: '', list: [], open: false }); toast(`cloned ${slug}`); }
-    catch (err) { toast((err as Error).message, 'error'); } finally { setBusy(false); }
-  };
-  const searchGithub = async () => { try { const r = await api.githubRepos(gh.q || undefined); setGh((g) => ({ ...g, list: r.repos })); } catch (err) { toast((err as Error).message, 'error'); } };
 
   return (
     <form className="card" onSubmit={submit}>
@@ -86,19 +102,8 @@ function NewTaskForm() {
       <div className="grid2" style={{ marginTop: 8 }}>
         <div>
           <label className="small muted">Repository</label>
-          <select value={repo} onChange={(e) => setRepo(e.target.value)}>
-            <option value="">— choose —</option>
-            {repos.map((r) => <option key={r.path} value={r.name}>{r.name} <span className="muted">({r.path})</span></option>)}
-            <option value="__custom">local path…</option>
-          </select>
-          {repo === '__custom' && <input style={{ marginTop: 6 }} placeholder="/abs/path/to/repo" value={customPath} onChange={(e) => setCustomPath(e.target.value)} />}
-          <div className="small" style={{ marginTop: 4 }}><a href="#" onClick={(e) => { e.preventDefault(); setGh((g) => ({ ...g, open: !g.open })); if (!gh.list.length) void searchGithub(); }}>{gh.open ? 'hide GitHub' : 'add from GitHub…'}</a>{cfg ? <span className="muted"> · clones into {cfg.reposDir}</span> : null}</div>
-          {gh.open && (
-            <div style={{ marginTop: 6 }}>
-              <div className="row"><input placeholder="search repos (empty = mine)" value={gh.q} onChange={(e) => setGh((g) => ({ ...g, q: e.target.value }))} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void searchGithub(); } }} /><button type="button" onClick={searchGithub}>Search</button></div>
-              <div style={{ maxHeight: 180, overflow: 'auto', marginTop: 6 }}>{gh.list.map((r) => <div key={r.slug} className="row small" style={{ padding: '3px 0' }}><a href="#" onClick={(e) => { e.preventDefault(); void addGithub(r.slug); }}>{r.slug}</a>{r.isFork ? <span className="chip">fork</span> : null}<span className="muted grow">{r.description}</span></div>)}</div>
-            </div>
-          )}
+          <RepoPicker value={repo} onChange={setRepo} />
+          {cfg && <div className="small muted" style={{ marginTop: 4 }}>new clones go to {cfg.reposDir}</div>}
         </div>
         <div>
           <label className="small muted">Base (remote/branch)</label>
@@ -136,32 +141,30 @@ function NewTaskForm() {
 
 function ImportPrForm() {
   const toast = useStore((s) => s.toast);
-  const [repos, setRepos] = useState<{ name: string; path: string }[]>([]);
   const [pipelines, setPipelines] = useState<PipelineInfo[]>([]);
-  const [repo, setRepo] = useState('');
+  const [repo, setRepo] = useState<RepoChoice | null>(null);
   const [pipeline, setPipeline] = useState('');
   const [number, setNumber] = useState('');
   const [busy, setBusy] = useState(false);
-  useEffect(() => { void api.config().then((c) => { setRepos(c.repos); setPipeline(c.defaultPipeline); }); void api.pipelines().then((p) => setPipelines(p.pipelines)); }, []);
+  useEffect(() => { void api.config().then((c) => setPipeline(c.defaultPipeline)); void api.pipelines().then((p) => setPipelines(p.pipelines)); }, []);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const repoPath = repos.find((r) => r.name === repo)?.path;
     const n = Number(/(\d+)\s*$/.exec(number.trim())?.[1]);
-    if (!repoPath || !n) { toast('choose a repository and a PR number', 'error'); return; }
+    if (!repo || !n) { toast('choose a repository and a PR number', 'error'); return; }
     setBusy(true);
-    try { const t = await api.importPr({ repoPath, number: n, pipeline }); toast(`task ${t.id} attached to PR #${n}; use "Poll PR comments"`); setNumber(''); }
+    try { const repoPath = await resolveRepoPath(repo); const t = await api.importPr({ repoPath, number: n, pipeline }); toast(`task ${t.id} attached to PR #${n}; use "Poll PR comments"`); setNumber(''); }
     catch (err) { toast((err as Error).message, 'error'); } finally { setBusy(false); }
   };
   return (
     <form className="card" onSubmit={submit}>
       <div className="row">
         <b>Import PR</b>
-        <select value={repo} onChange={(e) => setRepo(e.target.value)}><option value="">— repository —</option>{repos.map((r) => <option key={r.path} value={r.name}>{r.name}</option>)}</select>
-        <input style={{ maxWidth: 220 }} placeholder="PR number or URL" value={number} onChange={(e) => setNumber(e.target.value)} />
-        <select value={pipeline} onChange={(e) => setPipeline(e.target.value)}>{pipelines.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
+        <div style={{ minWidth: 320, flex: 1 }}><RepoPicker value={repo} onChange={setRepo} /></div>
+        <input style={{ maxWidth: 200 }} placeholder="PR number or URL" value={number} onChange={(e) => setNumber(e.target.value)} />
+        <select style={{ width: 'auto' }} value={pipeline} onChange={(e) => setPipeline(e.target.value)}>{pipelines.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
         <button disabled={busy}>Import</button>
-        <span className="small muted">The PR branch becomes the task branch; the task waits for review comments.</span>
       </div>
+      <div className="small muted" style={{ marginTop: 4 }}>The PR branch becomes the task branch; the task waits for review comments.</div>
     </form>
   );
 }

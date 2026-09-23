@@ -7,6 +7,8 @@ import type { EventBus } from '../store/events.js';
 import type { ClaudeRunner } from '../claude/runner.js';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import type { TemplateContext } from '../pipeline/template.js';
+import type { GitHub } from '../git/gh.js';
+import type { RepoAccounts } from '../git/accounts.js';
 
 export type PhaseOutcome =
   | { kind: 'ok' }
@@ -26,6 +28,8 @@ export interface PhaseContext {
   store: Store;
   events: EventBus;
   runner: ClaudeRunner;
+  github: GitHub;
+  accounts: RepoAccounts;
   /** Template context (task.*, phases.*, artifacts.*, repo.*, loop.*, hil.*). */
   tpl: TemplateContext;
   /** Feedback to deliver by resuming this phase's previous session (set when re-entering via back_to / request_changes). */

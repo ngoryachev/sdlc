@@ -41,9 +41,21 @@ export function tasksRoutes(app: App) {
     try { return c.json({ models: app.runner.models ? await app.runner.models() : [] }); }
     catch (e) { return c.json({ models: [], error: e instanceof Error ? e.message : String(e) }); }
   });
+  r.post('/tasks/sync', async (c) => c.json(await engine.syncTasks()));
   r.get('/tasks/:id', (c) => {
     const t = mustTask(c.req.param('id'));
-    return c.json({ task: t, run: store.latestRunForTask(t.id), phaseRuns: store.phaseRunsForTask(t.id), openHil: store.openHilForTask(t.id), worktreeExists: fs.existsSync(path.join(t.worktreePath, '.git')), baseChain: baseChain(app, t) });
+    const children = engine.childTasks(t, true).map((x) => ({ id: x.id, title: x.title, status: x.status, branch: x.branch, prUrl: x.prUrl, prNumber: x.prNumber }));
+    return c.json({ task: t, run: store.latestRunForTask(t.id), phaseRuns: store.phaseRunsForTask(t.id), openHil: store.openHilForTask(t.id), worktreeExists: fs.existsSync(path.join(t.worktreePath, '.git')), baseChain: baseChain(app, t), children });
+  });
+  r.post('/tasks/:id/pr', async (c) => {
+    const b = z.object({ title: z.string().optional(), draft: z.boolean().optional() }).parse(await c.req.json().catch(() => ({})));
+    mustTask(c.req.param('id'));
+    return c.json(await engine.createPrForTask(c.req.param('id'), b));
+  });
+  r.post('/tasks/:id/close', async (c) => {
+    const b = z.object({ deleteBranch: z.boolean().optional(), closePr: z.boolean().optional() }).parse(await c.req.json().catch(() => ({})));
+    mustTask(c.req.param('id'));
+    return c.json(await engine.closeTask(c.req.param('id'), b));
   });
   r.post('/tasks/:id/land', async (c) => {
     const b = z.object({ method: z.enum(['merge', 'squash', 'rebase']).optional() }).parse(await c.req.json().catch(() => ({})));

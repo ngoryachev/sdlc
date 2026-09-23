@@ -21,6 +21,7 @@ function printEvent(e: SdlcEvent) {
     case 'git.pr_created': console.log(`[git] PR ${p.url}`); break;
     case 'task.worktree': console.log(`[worktree] ${p.action as string}${p.branchDeleted ? ' (branch deleted)' : ''}`); break;
     case 'task.branch': console.log(`[branch] ${p.from as string} → ${p.to as string}`); break;
+    case 'task.updated': console.log(`[task] ${p.change as string}`); break;
     case 'git.merged': console.log(`[git] merged into ${p.into as string} (${p.method as string}, via ${p.via as string})`); break;
     case 'engine.error': console.error(`[error] ${p.message}`); break;
     case 'engine.warning': console.error(`[warn] ${p.message}`); break;
@@ -86,10 +87,29 @@ export function registerTaskCommands(program: Command) {
     const t = remote ? await remote.call<Task>('POST', '/tasks/import-pr', body) : await createApp().engine.importPr(body);
     console.log(`task ${t.id} (${t.status}) branch ${t.branch} ← ${t.baseRemote ? `${t.baseRemote}/` : ''}${t.baseBranch}\n${t.prUrl}`);
   });
-  program.command('land <taskId>').description('Merge the task branch into its base (via the PR when present), remove worktree and branch').option('--method <m>', 'merge|squash|rebase (default from config)').action(async (id, o) => {
+  program.command('land <taskId>').description('Merge the task branch into its base (via the PR when present), restack tasks built on it, remove worktree and branch').option('--method <m>', 'merge|squash|rebase (default from config)').action(async (id, o) => {
     const remote = await ServerClient.detect();
-    const r = remote ? await remote.call<{ method: string; via: string }>('POST', `/tasks/${id}/land`, { method: o.method }) : await createApp().engine.landTask(id, o.method);
+    const r = remote ? await remote.call<{ method: string; via: string; notes: string[] }>('POST', `/tasks/${id}/land`, { method: o.method }) : await createApp().engine.landTask(id, o.method);
     console.log(`merged (${r.method}, via ${r.via}); worktree and branch removed`);
+    for (const n of r.notes ?? []) console.log(`  ${n}`);
+  });
+  program.command('create-pr <taskId>').description('Open a pull request for a finished task that has none').option('--title <t>').option('--draft').action(async (id, o) => {
+    const remote = await ServerClient.detect();
+    const t = remote ? await remote.call<Task>('POST', `/tasks/${id}/pr`, { title: o.title, draft: !!o.draft }) : await createApp().engine.createPrForTask(id, { title: o.title, draft: !!o.draft });
+    console.log(`PR #${t.prNumber} ${t.prUrl}`);
+  });
+  program.command('close <taskId>').description('Close a task without merging (worktree removed; PR closed unless --keep-pr)').option('--delete-branch', 'also delete the branch (local, and remote for sdlc branches)').option('--keep-pr', 'leave the PR open').action(async (id, o) => {
+    const remote = await ServerClient.detect();
+    const body = { deleteBranch: !!o.deleteBranch, closePr: !o.keepPr };
+    const t = remote ? await remote.call<Task>('POST', `/tasks/${id}/close`, body) : await createApp().engine.closeTask(id, body);
+    console.log(`task ${t.id} ${t.status}`);
+  });
+  program.command('sync').description('Reconcile tasks with GitHub now: merged/closed PRs, base changes, branches merged outside sdlc').action(async () => {
+    const remote = await ServerClient.detect();
+    const r = remote ? await remote.call<{ checked: number; changes: { taskId: string; title: string; change: string }[]; errors: string[] }>('POST', '/tasks/sync') : await createApp().engine.syncTasks();
+    console.log(`checked ${r.checked} task(s)`);
+    for (const ch of r.changes) console.log(`  ${ch.taskId} ${ch.title}: ${ch.change}`);
+    for (const e of r.errors) console.error(`  error ${e}`);
   });
   program.command('hil-show <hilId>').alias('show-hil').description('Show a HIL request with its payload (prompt, plan, review, tests, QA, diff stat)').option('--diff', 'also print the patch').action(async (id, o) => {
     const remote = await ServerClient.detect();

@@ -70,7 +70,7 @@ describe('base ref resolution and explicit worktree cleanup', () => {
     const events: string[] = [];
     app.events.on((e) => { if (e.type === 'git.merged') events.push((e.payload as { via: string }).via); });
     const r = await app.engine.landTask(task.id, 'merge');
-    expect(r).toEqual({ method: 'merge', via: 'local' });
+    expect(r).toMatchObject({ method: 'merge', via: 'local', restacked: [] });
     expect(app.store.getTask(task.id)!.status).toBe('merged');
     expect(events).toEqual(['local']);
     expect(fs.existsSync(task.worktreePath)).toBe(false);

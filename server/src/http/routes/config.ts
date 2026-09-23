@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { App } from '../../app.js';
-import { ConfigSchema, saveConfig } from '../../config/config.js';
+import { ConfigSchema } from '../../config/config.js';
 
 const Effort = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 const ConfigPatch = z.object({
@@ -18,7 +18,7 @@ function view(app: App) {
   const cfg = app.config;
   return {
     publicUrl: cfg.server.public_url ?? `http://${cfg.server.host}:${cfg.server.port}`,
-    repos: cfg.repos, reposDir: cfg.repos_dir, defaultPipeline: cfg.default_pipeline, maxParallelTasks: cfg.max_parallel_tasks,
+    repos: cfg.repos.map((r) => ({ name: r.name, path: r.path, ghUser: r.gh_user ?? null })), reposDir: cfg.repos_dir, prSyncInterval: cfg.pr_sync_interval, defaultPipeline: cfg.default_pipeline, maxParallelTasks: cfg.max_parallel_tasks,
     taskBudgetUsd: cfg.task_budget_usd, limits: cfg.limits, mergeMethod: cfg.merge_method, cleanup: cfg.cleanup, models: cfg.models,
     telegram: { enabled: cfg.telegram.enabled, configured: !!cfg.telegram.bot_token, chatId: cfg.telegram.chat_id ?? null },
   };
@@ -32,7 +32,7 @@ export function configRoutes(app: App) {
     const body = ConfigPatch.parse(await c.req.json());
     const merged = ConfigSchema.parse({ ...app.config, ...body, models: body.models ? { ...body.models, phases: dropEmpty(body.models.phases) } : app.config.models });
     Object.assign(app.config, merged);
-    saveConfig(app.config);
+    app.persistConfig();
     return c.json(view(app));
   });
   r.post('/config/telegram/test', async (c) => {

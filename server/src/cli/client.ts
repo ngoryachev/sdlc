@@ -48,5 +48,5 @@ export class ServerClient {
   }
 }
 
-export const TERMINAL = new Set(['waiting_hil', 'paused', 'succeeded', 'merged', 'failed', 'aborted', 'pr_open']);
+export const TERMINAL = new Set(['waiting_hil', 'paused', 'succeeded', 'merged', 'closed', 'failed', 'aborted', 'pr_open']);
 export const untilTaskSettles = (e: SdlcEvent) => e.type === 'task.status' && TERMINAL.has((e.payload as { to: string }).to);

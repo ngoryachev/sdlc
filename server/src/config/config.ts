@@ -32,7 +32,8 @@ export const ConfigSchema = z.object({
   pr_feedback_from: z.enum(['collaborators', 'anyone']).default('collaborators'),
   env_allow: z.array(z.string()).default([]),
   git_author: z.string().default('SDLC <sdlc@local>'),
-  repos: z.array(z.object({ name: z.string(), path: z.string() })).default([]),
+  repos: z.array(z.object({ name: z.string(), path: z.string(), gh_user: z.string().optional() })).default([]),   // gh_user: GitHub account used for this repo
+  pr_sync_interval: z.union([z.string().regex(/^\d+(m|h)$/), z.literal('off')]).default('3m'),   // background check of PR state and merged branches
   server: z.object({
     host: z.string().default('127.0.0.1'),
     port: z.number().int().default(7337),

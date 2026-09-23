@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'wouter';
 import type { ModelOverrides, PhaseRun } from '@sdlc/shared';
+import type { Task } from '@sdlc/shared';
 import { api, type ModelChoice, type TaskDetail } from '../lib/api.js';
+import { StatusChip } from './Dashboard.js';
 import { ModelPicker } from '../components/ModelPicker.js';
 import { useStore } from '../lib/store.js';
 import { onMessageFrame } from '../lib/eventStream.js';
 import { LogBuilder, type LogItem } from '../lib/logItems.js';
 import { LogView } from '../components/LogView.js';
-import { Chip, ConfirmButton, Money, Tabs, ago } from '../components/Common.js';
+import { ConfirmButton, Money, Tabs, ago } from '../components/Common.js';
 import { DiffView } from '../components/DiffView.js';
 import { Markdown } from '../components/Markdown.js';
 
@@ -21,30 +23,40 @@ export function TaskPage() {
   useEffect(() => { void reload(); }, [id, tasksVersion]);
   useEffect(() => { const t = setInterval(reload, 15000); return () => clearInterval(t); }, [id]);
   if (!d) return <div className="muted">loading…</div>;
-  const { task, phaseRuns, openHil, worktreeExists, baseChain } = d;
-  const idle = ['succeeded', 'merged', 'failed', 'aborted', 'pr_open'].includes(task.status);
+  const { task, phaseRuns, openHil, worktreeExists, baseChain, children } = d;
+  const done = ['succeeded', 'merged', 'closed', 'failed', 'aborted'].includes(task.status);
+  const idle = done || task.status === 'pr_open';
   const landable = ['succeeded', 'pr_open'].includes(task.status);
+  const openChildren = (children ?? []).filter((c) => !['merged', 'closed', 'aborted'].includes(c.status));
   const running = phaseRuns.find((p) => p.status === 'running' || p.status === 'waiting_hil');
   const selected = phaseRuns.find((p) => p.id === phaseRunId) ?? running ?? phaseRuns.at(-1) ?? null;
   const act = async (a: 'pause' | 'resume' | 'abort', body?: unknown) => { try { await api.control(task.id, a, body); toast(`${a} ok`); void reload(); } catch (e) { toast((e as Error).message, 'error'); } };
   return (
     <>
       <div className="card">
-        <div className="row"><h2 className="grow" style={{ margin: 0 }}>{task.title}</h2><Chip s={task.status} /><Money v={task.totalCostUsd} /></div>
+        <div className="row"><h2 className="grow" style={{ margin: 0 }}>{task.title}</h2><StatusChip t={task} /><Money v={task.totalCostUsd} /></div>
         <div className="small muted" style={{ marginTop: 4 }}>{task.id} · {task.pipelineName} · <span className="mono">{task.branch}</span>{(baseChain ?? []).map((b) => <span key={b.branch}> ← <span className="mono">{b.branch}</span>{b.taskId ? <> (<Link href={`/tasks/${b.taskId}`}>{b.title}</Link>{b.status ? <> · {b.status}</> : null})</> : null}</span>)} · review {task.reviewMode}{task.prUrl ? <> · <a href={task.prUrl} target="_blank" rel="noreferrer">PR #{task.prNumber}</a></> : null} · {ago(task.createdAt)} ago</div>
+        {(children ?? []).length > 0 && (
+          <div className="stack small">
+            <div className="muted">stacked on <span className="mono">{task.branch}</span>:</div>
+            {children.map((c) => <div key={c.id}><Link href={`/tasks/${c.id}`}>{c.title}</Link> <StatusChip t={c} /> <span className="mono muted">{c.branch}</span>{c.prUrl ? <> · <a href={c.prUrl} target="_blank" rel="noreferrer">PR #{c.prNumber}</a></> : null}</div>)}
+          </div>
+        )}
         <details style={{ marginTop: 8 }}><summary className="small muted">prompt</summary><pre className="small">{task.refinedPrompt ?? task.initialPrompt}</pre></details>
         {openHil.length > 0 && <div style={{ marginTop: 8 }}>{openHil.map((h) => <Link key={h.id} href={`/hil/${h.id}`} className="badge" style={{ padding: '3px 10px', display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>⚑ {h.kind}: {h.summary}</Link>)}</div>}
         <div className="row" style={{ marginTop: 10 }}>
           {(task.status === 'running' || task.status === 'waiting_hil') && <button onClick={() => act('pause')}>Pause</button>}
           {task.status === 'paused' && <ResumeButton onResume={(g) => act('resume', g ? { guidance: g } : undefined)} />}
-          {!['succeeded', 'merged', 'failed', 'aborted'].includes(task.status) && <ConfirmButton label="Abort" onClick={() => act('abort')} />}
-          {landable && <LandButton taskId={task.id} hasPr={!!task.prNumber} onDone={reload} />}
+          {!done && task.status !== 'pr_open' && <ConfirmButton label="Abort" onClick={() => act('abort')} />}
+          {task.status === 'succeeded' && !task.prNumber && <CreatePrButton task={task} onDone={reload} />}
+          {landable && <LandButton taskId={task.id} hasPr={!!task.prNumber} stacked={openChildren.length} base={task.baseBranch} onDone={reload} />}
+          {['succeeded', 'failed', 'pr_open'].includes(task.status) && <CloseButton task={task} stacked={openChildren.length} onDone={reload} />}
           {task.status === 'pr_open' && <button onClick={async () => { try { const r = await api.prPoll(task.id); toast(r.new ? `${r.new} new comment(s) → HIL` : `no new comments (PR ${r.state})`); void reload(); } catch (e) { toast((e as Error).message, 'error'); } }}>Poll PR comments</button>}
-          <Inject taskId={task.id} disabled={['succeeded', 'merged', 'failed', 'aborted'].includes(task.status)} />
+          <Inject taskId={task.id} disabled={done} />
           {idle && worktreeExists && <ConfirmButton label="Remove worktree" className="" onClick={async () => { try { await api.worktreeRemove(task.id); toast('worktree removed'); void reload(); } catch (e) { toast((e as Error).message, 'error'); } }} />}
           {idle && !worktreeExists && <span className="small muted">worktree removed</span>}
         </div>
-        {!['succeeded', 'merged', 'failed', 'aborted'].includes(task.status) && <ModelsPanel taskId={task.id} value={task.modelOverrides ?? {}} phases={((d.run?.pipelineSnapshot as { spec?: { phases: { name: string; type: string }[] } } | null)?.spec?.phases ?? []).filter((p) => p.type === 'claude').map((p) => p.name)} onSaved={reload} />}
+        {!done && <ModelsPanel taskId={task.id} value={task.modelOverrides ?? {}} phases={((d.run?.pipelineSnapshot as { spec?: { phases: { name: string; type: string }[] } } | null)?.spec?.phases ?? []).filter((p) => p.type === 'claude').map((p) => p.name)} onSaved={reload} />}
       </div>
       <div className="card">
         <Stepper phaseRuns={phaseRuns} pipeline={d.run?.pipelineSnapshot as { spec?: { phases: { name: string; type: string }[] } } | null} selected={selected?.id ?? null} taskId={task.id} />
@@ -138,14 +150,14 @@ function ResumeButton({ onResume }: { onResume: (guidance?: string) => void }) {
 
 export function useMemoDeps<T>(f: () => T, deps: unknown[]): T { return useMemo(f, deps); }
 
-function LandButton({ taskId, hasPr, onDone }: { taskId: string; hasPr: boolean; onDone: () => void }) {
+function LandButton({ taskId, hasPr, stacked, base, onDone }: { taskId: string; hasPr: boolean; stacked: number; base: string; onDone: () => void }) {
   const toast = useStore((s) => s.toast);
   const [method, setMethod] = useState('');
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const go = async () => {
     setBusy(true);
-    try { const r = await api.land(taskId, method || undefined); toast(`merged (${r.method}, via ${r.via}); worktree and branch removed`); onDone(); }
+    try { const r = await api.land(taskId, method || undefined); toast([`merged (${r.method}, via ${r.via}); worktree and branch removed`, ...(r.notes ?? [])].join(' · ')); onDone(); }
     catch (e) { toast((e as Error).message, 'error'); } finally { setBusy(false); setArmed(false); }
   };
   return (
@@ -153,6 +165,51 @@ function LandButton({ taskId, hasPr, onDone }: { taskId: string; hasPr: boolean;
       {armed && <select value={method} onChange={(e) => setMethod(e.target.value)} style={{ width: 'auto' }}><option value="">config method</option><option value="merge">merge</option><option value="squash">squash</option><option value="rebase">rebase</option></select>}
       <button className={armed ? 'primary' : ''} disabled={busy} onClick={() => (armed ? void go() : setArmed(true))} title={hasPr ? 'merge the PR, delete branch and worktree' : 'merge the branch into its base locally, push, delete branch and worktree'}>{armed ? `Confirm land${hasPr ? ' (PR)' : ''}` : 'Land'}</button>
       {armed && <button disabled={busy} onClick={() => setArmed(false)}>cancel</button>}
+      {armed && stacked > 0 && <span className="small muted">{stacked} stacked task(s) will move onto {base}; only "merge" keeps their commits valid</span>}
+    </span>
+  );
+}
+
+function CreatePrButton({ task, onDone }: { task: Task; onDone: () => void }) {
+  const toast = useStore((s) => s.toast);
+  const [armed, setArmed] = useState(false);
+  const [title, setTitle] = useState(task.title);
+  const [draft, setDraft] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const go = async () => {
+    setBusy(true);
+    try { const t = await api.createPr(task.id, { title, draft }); toast(`PR #${t.prNumber} opened`); setArmed(false); onDone(); }
+    catch (e) { toast((e as Error).message, 'error'); } finally { setBusy(false); }
+  };
+  if (!armed) return <button onClick={() => { setTitle(task.title); setArmed(true); }} title="push the branch and open a pull request into its base">Create PR</button>;
+  return (
+    <span className="row" style={{ gap: 4 }}>
+      <input style={{ width: 360 }} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="PR title" />
+      <label className="small muted"><input type="checkbox" style={{ width: 'auto' }} checked={draft} onChange={(e) => setDraft(e.target.checked)} /> draft</label>
+      <button className="primary" disabled={busy || !title.trim()} onClick={() => void go()}>{busy ? 'opening…' : `Open PR → ${task.baseBranch}`}</button>
+      <button disabled={busy} onClick={() => setArmed(false)}>cancel</button>
+    </span>
+  );
+}
+
+function CloseButton({ task, stacked, onDone }: { task: Task; stacked: number; onDone: () => void }) {
+  const toast = useStore((s) => s.toast);
+  const [armed, setArmed] = useState(false);
+  const [deleteBranch, setDeleteBranch] = useState(false);
+  const [closePr, setClosePr] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const go = async () => {
+    setBusy(true);
+    try { await api.closeTask(task.id, { deleteBranch, closePr }); toast('task closed'); setArmed(false); onDone(); }
+    catch (e) { toast((e as Error).message, 'error'); } finally { setBusy(false); }
+  };
+  if (!armed) return <button onClick={() => setArmed(true)} title="drop the task without merging">Close</button>;
+  return (
+    <span className="row" style={{ gap: 6 }}>
+      {task.prNumber && task.status === 'pr_open' && <label className="small"><input type="checkbox" style={{ width: 'auto' }} checked={closePr} onChange={(e) => setClosePr(e.target.checked)} /> close PR #{task.prNumber}</label>}
+      <label className="small" title={stacked ? 'other tasks are stacked on this branch' : ''}><input type="checkbox" style={{ width: 'auto' }} disabled={stacked > 0} checked={deleteBranch} onChange={(e) => setDeleteBranch(e.target.checked)} /> delete branch</label>
+      <button className="danger confirm" disabled={busy} onClick={() => void go()}>Close task</button>
+      <button disabled={busy} onClick={() => setArmed(false)}>cancel</button>
     </span>
   );
 }

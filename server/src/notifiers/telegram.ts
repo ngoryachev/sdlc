@@ -46,7 +46,7 @@ export class TelegramNotifier implements Notifier {
 
   async onTaskStatus(task: Task, _from: string, to: string, link: string) {
     if (!this.o.chatId) return;
-    const icon = to === 'succeeded' || to === 'pr_open' || to === 'merged' ? '🎉' : to === 'failed' ? '💥' : to === 'aborted' ? '🛑' : '⏸';
+    const icon = to === 'succeeded' || to === 'pr_open' || to === 'merged' ? '🎉' : to === 'failed' ? '💥' : to === 'aborted' || to === 'closed' ? '🛑' : '⏸';
     await this.api('sendMessage', { chat_id: this.o.chatId, parse_mode: 'HTML', text: `${icon} <b>${esc(task.title)}</b> → ${to}${task.prUrl ? `\n${task.prUrl}` : ''}`, reply_markup: { inline_keyboard: [[{ text: '🔗 Open', url: this.o.token ? `${link}?t=${this.o.token}` : link }]] } });
   }
 

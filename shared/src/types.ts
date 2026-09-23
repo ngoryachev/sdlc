@@ -1,7 +1,12 @@
 export type PhaseType = 'claude' | 'shell' | 'hil' | 'git';
 
 export type TaskStatus =
-  | 'created' | 'running' | 'waiting_hil' | 'paused' | 'pr_open' | 'succeeded' | 'merged' | 'failed' | 'aborted';
+  | 'created' | 'running' | 'waiting_hil' | 'paused' | 'pr_open' | 'succeeded' | 'merged' | 'closed' | 'failed' | 'aborted';
+
+/** Statuses of tasks whose work is over: delivered (merged), dropped (closed) or cancelled (aborted). */
+export const FINISHED_STATUSES: readonly TaskStatus[] = ['merged', 'closed', 'aborted'];
+/** Statuses in which a pipeline is still active. */
+export const ACTIVE_STATUSES: readonly TaskStatus[] = ['created', 'running', 'waiting_hil', 'paused'];
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export interface PhaseModel { model?: string; effort?: EffortLevel }

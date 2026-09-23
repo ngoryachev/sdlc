@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ModelOverrides } from '@sdlc/shared';
-import { api, type Config, type ModelChoice, type PipelineInfo } from '../lib/api.js';
+import { api, type Config, type GhAccount, type ModelChoice, type PipelineInfo } from '../lib/api.js';
 import { useStore } from '../lib/store.js';
 import { EFFORTS, ModelPicker } from '../components/ModelPicker.js';
 
@@ -63,10 +63,34 @@ export function SettingsPage() {
         <div style={{ marginTop: 8 }}><ModelPicker phases={PHASE_TYPES} models={models} value={form.phases} onChange={(phases) => setForm({ ...form, phases })} inheritLabel="default" /></div>
         <div className="row" style={{ marginTop: 10 }}><button className="primary" disabled={busy} onClick={save}>Save</button><button disabled={busy} onClick={() => void load()}>Reset</button></div>
       </div>
-      <div className="card">
-        <h4 style={{ marginTop: 0 }}>Repositories</h4>
-        {cfg.repos.map((r) => <div key={r.path}><b>{r.name}</b> <span className="mono small muted">{r.path}</span></div>)}{cfg.repos.length === 0 && <span className="muted">none registered</span>}
-      </div>
+      <RepoAccountsCard repos={cfg.repos} onChanged={() => void load()} />
     </>
+  );
+}
+
+function RepoAccountsCard({ repos, onChanged }: { repos: Config['repos']; onChanged: () => void }) {
+  const toast = useStore((s) => s.toast);
+  const [accounts, setAccounts] = useState<GhAccount[]>([]);
+  useEffect(() => { void api.ghAccounts().then((r) => setAccounts(r.accounts)).catch(() => {}); }, []);
+  const set = async (name: string, login: string) => {
+    try { const r = await api.setRepoAccount(name, login || null); toast(`${name}: ${r.ghUser ?? 'no account'}`); onChanged(); }
+    catch (e) { toast((e as Error).message, 'error'); }
+  };
+  return (
+    <div className="card">
+      <h4 style={{ marginTop: 0 }}>Repositories</h4>
+      <div className="small muted" style={{ marginBottom: 6 }}>Each repository is worked on with its own GitHub account (push, PRs, merges), independent of the account active in gh. "auto" picks the first logged-in account that can push there.</div>
+      <table><thead><tr><th>repository</th><th>path</th><th>GitHub account</th></tr></thead><tbody>
+        {repos.map((r) => (
+          <tr key={r.path}><td><b>{r.name}</b></td><td className="mono small muted">{r.path}</td>
+            <td><select style={{ width: 'auto' }} value={r.ghUser ?? ''} onChange={(e) => void set(r.name, e.target.value)}>
+              <option value="">auto</option>
+              {accounts.map((a) => <option key={a.login} value={a.login}>{a.login}{a.active ? ' (gh default)' : ''}</option>)}
+              {r.ghUser && !accounts.some((a) => a.login === r.ghUser) && <option value={r.ghUser}>{r.ghUser} (not logged in)</option>}
+            </select></td></tr>
+        ))}
+        {repos.length === 0 && <tr><td colSpan={3} className="muted">none registered</td></tr>}
+      </tbody></table>
+    </div>
   );
 }

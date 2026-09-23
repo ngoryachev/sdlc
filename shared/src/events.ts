@@ -1,7 +1,7 @@
 import type { HilRequest, PhaseRun, Task } from './types.js';
 
 export type EventType =
-  | 'task.created' | 'task.status' | 'task.cost' | 'task.worktree' | 'task.branch'
+  | 'task.created' | 'task.status' | 'task.updated' | 'task.cost' | 'task.worktree' | 'task.branch'
   | 'phase.started' | 'phase.progress' | 'phase.finished' | 'phase.paused' | 'phase.resumed'
   | 'hil.requested' | 'hil.answered' | 'hil.expired' | 'hil.reminder'
   | 'git.committed' | 'git.pushed' | 'git.pr_created' | 'git.merged'
@@ -11,6 +11,7 @@ export type EventType =
 export interface EventPayloads {
   'task.created': { task: Task };
   'task.status': { task: Task; from: string; to: string };
+  'task.updated': { task: Task; change: string };
   'task.cost': { taskId: string; totalCostUsd: number };
   'task.worktree': { taskId: string; action: 'removed' | 'recreated'; branchDeleted?: boolean };
   'task.branch': { taskId: string; from: string; to: string };

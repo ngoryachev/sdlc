@@ -24,7 +24,7 @@ export function startEventStream() {
       setTimeout(connect, 2000);
     };
     es.addEventListener('message', (ev) => { const m = JSON.parse((ev as MessageEvent).data) as MessageFrame; for (const l of msgListeners) l(m); });
-    const types = ['task.created', 'task.status', 'task.cost', 'task.worktree', 'task.branch', 'phase.started', 'phase.progress', 'phase.finished', 'phase.paused', 'phase.resumed', 'hil.requested', 'hil.answered', 'hil.expired', 'hil.reminder', 'git.committed', 'git.pushed', 'git.pr_created', 'git.merged', 'notifier.sent', 'notifier.error', 'engine.warning', 'engine.error'];
+    const types = ['task.created', 'task.status', 'task.updated', 'task.cost', 'task.worktree', 'task.branch', 'phase.started', 'phase.progress', 'phase.finished', 'phase.paused', 'phase.resumed', 'hil.requested', 'hil.answered', 'hil.expired', 'hil.reminder', 'git.committed', 'git.pushed', 'git.pr_created', 'git.merged', 'notifier.sent', 'notifier.error', 'engine.warning', 'engine.error'];
     for (const t of types) es.addEventListener(t, (ev) => {
       const e = JSON.parse((ev as MessageEvent).data) as SdlcEvent;
       useStore.getState().applyEvent(e);
