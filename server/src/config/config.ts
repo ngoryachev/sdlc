@@ -16,7 +16,16 @@ export const ConfigSchema = z.object({
   pipelines_dirs: z.array(z.string()).default([]),
   default_pipeline: z.string().default('standard'),
   max_parallel_tasks: z.number().int().positive().default(2),
-  task_budget_usd: z.number().positive().default(20),
+  task_budget_usd: z.union([z.number().positive(), z.literal('off')]).default(20),   // 'off' = no task-level budget
+  limits: z.object({
+    phases: z.enum(['pipeline', 'off']).default('pipeline'),   // off: ignore max_turns / max_budget_usd from pipelines
+  }).default({ phases: 'pipeline' }),
+  merge_method: z.enum(['merge', 'squash', 'rebase']).default('merge'),
+  models: z.object({
+    default: z.string().optional(),
+    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+    phases: z.record(z.string(), z.object({ model: z.string().optional(), effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional() }).strict()).default({}),
+  }).default({ phases: {} }),
   question_timeout: z.string().regex(/^\d+(m|h|d)$/).default('2h'),
   auto_resume_on_restart: z.boolean().default(true),
   cleanup: z.enum(['on_pr', 'on_approve', 'never']).default('never'),   // never: worktrees are removed explicitly (UI button / `sdlc cleanup`)

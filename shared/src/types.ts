@@ -1,7 +1,12 @@
 export type PhaseType = 'claude' | 'shell' | 'hil' | 'git';
 
 export type TaskStatus =
-  | 'created' | 'running' | 'waiting_hil' | 'paused' | 'pr_open' | 'succeeded' | 'failed' | 'aborted';
+  | 'created' | 'running' | 'waiting_hil' | 'paused' | 'pr_open' | 'succeeded' | 'merged' | 'failed' | 'aborted';
+
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export interface PhaseModel { model?: string; effort?: EffortLevel }
+/** Per-task overrides keyed by phase name ('*' = every Claude phase). Not persisted beyond the task. */
+export type ModelOverrides = Record<string, PhaseModel>;
 
 export type ReviewMode = 'conceptual' | 'line';
 
@@ -24,6 +29,7 @@ export interface Task {
   prUrl: string | null;
   prNumber: number | null;
   prFeedbackCursor: string | null;
+  modelOverrides: ModelOverrides | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -14,7 +14,7 @@ export function startNotifierHub(app: App, notifiers: Notifier[], publicUrl: str
     switch (e.type) {
       case 'hil.requested': { const hil = (e.payload as { hil: HilRequest }).hil; const task = store.getTask(hil.taskId); if (!task) return; for (const n of notifiers) void safe(n, () => n.onHilCreated(hil, task, link(`/hil/${hil.id}`)), hil.id); break; }
       case 'hil.answered': { const hil = (e.payload as { hil: HilRequest }).hil; const task = store.getTask(hil.taskId); if (!task) return; for (const n of notifiers) if (n.onHilAnswered) void safe(n, () => n.onHilAnswered!(hil, task), hil.id); break; }
-      case 'task.status': { const p = e.payload as { task: Task; from: string; to: string }; if (!['succeeded', 'failed', 'aborted', 'pr_open', 'paused'].includes(p.to)) return; for (const n of notifiers) if (n.onTaskStatus) void safe(n, () => n.onTaskStatus!(p.task, p.from, p.to, link(`/tasks/${p.task.id}`))); break; }
+      case 'task.status': { const p = e.payload as { task: Task; from: string; to: string }; if (!['succeeded', 'merged', 'failed', 'aborted', 'pr_open', 'paused'].includes(p.to)) return; for (const n of notifiers) if (n.onTaskStatus) void safe(n, () => n.onTaskStatus!(p.task, p.from, p.to, link(`/tasks/${p.task.id}`))); break; }
       case 'engine.error': { const p = e.payload as { taskId?: string; message: string }; for (const n of notifiers) if (n.onError) void safe(n, () => n.onError!(p.taskId, p.message)); break; }
       default: break;
     }

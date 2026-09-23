@@ -1,5 +1,5 @@
 name: auto
-description: "No human checkpoints (for tests and truly trivial tasks): implement -> commit -> test(agent) -> review -> qa(best effort)"
+description: "No human checkpoints (for tests and truly trivial tasks): implement -> self_check -> commit -> test(agent) -> review -> qa(best effort)"
 defaults:
   setting_sources: [project]
   effort: medium
@@ -12,6 +12,16 @@ phases:
     max_turns: 50
     max_budget_usd: 4
     on_fail: { retry: 1, then: fail }
+  - name: self_check
+    type: claude
+    prompt: prompts/self_check.md
+    session: { resume: implement }
+    permission_mode: bypassPermissions
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch]
+    max_turns: 30
+    max_budget_usd: 3
+    on_fail: { then: continue }      # best effort: implement's own work stands if the check fails
+
   - name: commit_impl
     type: git
     git: commit

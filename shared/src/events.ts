@@ -4,7 +4,7 @@ export type EventType =
   | 'task.created' | 'task.status' | 'task.cost' | 'task.worktree'
   | 'phase.started' | 'phase.progress' | 'phase.finished' | 'phase.paused' | 'phase.resumed'
   | 'hil.requested' | 'hil.answered' | 'hil.expired' | 'hil.reminder'
-  | 'git.committed' | 'git.pushed' | 'git.pr_created'
+  | 'git.committed' | 'git.pushed' | 'git.pr_created' | 'git.merged'
   | 'notifier.sent' | 'notifier.error'
   | 'engine.warning' | 'engine.error';
 
@@ -25,6 +25,7 @@ export interface EventPayloads {
   'git.committed': { taskId: string; sha: string; message: string };
   'git.pushed': { taskId: string; branch: string };
   'git.pr_created': { taskId: string; url: string; number: number };
+  'git.merged': { taskId: string; method: string; into: string; via: 'pr' | 'local' | 'external' };
   'notifier.sent': { channel: string; hilId?: string };
   'notifier.error': { channel: string; message: string };
   'engine.warning': { taskId?: string; message: string };

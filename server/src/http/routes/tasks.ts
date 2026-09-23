@@ -8,11 +8,15 @@ import { readTranscript } from '../../claude/transcript.js';
 import { diffAgainst } from '../../git/git.js';
 import { loadPipeline } from '../../pipeline/loader.js';
 
+const Effort = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
+const ModelOverrides = z.record(z.string(), z.object({ model: z.string().optional(), effort: Effort.optional() }).strict()).nullable().optional();
 const CreateTask = z.object({
   prompt: z.string().min(1), repoPath: z.string().min(1), pipeline: z.string().optional(), title: z.string().optional(),
   baseRemote: z.string().nullable().optional(), baseBranch: z.string().optional(),
   reviewMode: z.enum(['conceptual', 'line']).optional(), postReview: z.boolean().optional(),
+  branch: z.string().optional(), startAt: z.string().optional(), modelOverrides: ModelOverrides,
 });
+const ImportPr = z.object({ repoPath: z.string().min(1), number: z.number().int().positive(), pipeline: z.string().optional(), reviewMode: z.enum(['conceptual', 'line']).optional(), modelOverrides: ModelOverrides });
 
 export function tasksRoutes(app: App) {
   const r = new Hono();
@@ -29,9 +33,26 @@ export function tasksRoutes(app: App) {
     const task = await engine.createTask(body);
     return c.json(task, 201);
   });
+  r.post('/tasks/import-pr', async (c) => {
+    const body = ImportPr.parse(await c.req.json());
+    return c.json(await engine.importPr(body), 201);
+  });
+  r.get('/models', async (c) => {
+    try { return c.json({ models: app.runner.models ? await app.runner.models() : [] }); }
+    catch (e) { return c.json({ models: [], error: e instanceof Error ? e.message : String(e) }); }
+  });
   r.get('/tasks/:id', (c) => {
     const t = mustTask(c.req.param('id'));
-    return c.json({ task: t, run: store.latestRunForTask(t.id), phaseRuns: store.phaseRunsForTask(t.id), openHil: store.openHilForTask(t.id), worktreeExists: fs.existsSync(path.join(t.worktreePath, '.git')) });
+    return c.json({ task: t, run: store.latestRunForTask(t.id), phaseRuns: store.phaseRunsForTask(t.id), openHil: store.openHilForTask(t.id), worktreeExists: fs.existsSync(path.join(t.worktreePath, '.git')), baseChain: baseChain(app, t) });
+  });
+  r.post('/tasks/:id/land', async (c) => {
+    const b = z.object({ method: z.enum(['merge', 'squash', 'rebase']).optional() }).parse(await c.req.json().catch(() => ({})));
+    mustTask(c.req.param('id'));
+    return c.json(await engine.landTask(c.req.param('id'), b.method));
+  });
+  r.put('/tasks/:id/models', async (c) => {
+    const b = z.object({ modelOverrides: ModelOverrides }).parse(await c.req.json());
+    return c.json(engine.setModelOverrides(c.req.param('id'), b.modelOverrides ?? null));
   });
   r.post('/tasks/:id/pause', async (c) => { await engine.pause(c.req.param('id')); return c.json(mustTask(c.req.param('id'))); });
   r.post('/tasks/:id/resume', async (c) => { const b = await c.req.json().catch(() => ({})) as { guidance?: string }; await engine.resume(c.req.param('id'), b.guidance); return c.json(mustTask(c.req.param('id'))); });
@@ -84,6 +105,20 @@ export function tasksRoutes(app: App) {
     return c.json({ days: rows });
   });
   return r;
+}
+
+/** The base branch and, when that branch belongs to another sdlc task, that task, recursively (newest task per branch wins). */
+function baseChain(app: App, t: { baseBranch: string; baseRemote: string | null; repoPath: string }): { branch: string; taskId?: string; title?: string; status?: string }[] {
+  const out: { branch: string; taskId?: string; title?: string; status?: string }[] = [];
+  const all = app.store.listTasks().filter((x) => x.repoPath === t.repoPath);
+  let cur = t.baseBranch;
+  for (let i = 0; i < 10; i++) {
+    const owner = all.find((x) => x.branch === cur);
+    out.push(owner ? { branch: cur, taskId: owner.id, title: owner.title, status: owner.status } : { branch: cur });
+    if (!owner) break;
+    cur = owner.baseBranch;
+  }
+  return out;
 }
 
 function currentPhase(app: App, taskId: string): string | null {

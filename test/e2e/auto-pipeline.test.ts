@@ -32,6 +32,7 @@ describe('auto pipeline end-to-end (fake runner)', () => {
           fs.writeFileSync(f, 'export function divide(a, b) { if (b === 0) throw new Error("div by zero"); return a / b; }\n');
           return { text: 'fixed', cost: 0.3 };
         }
+        if (spec.prompt.includes('Phase: self_check')) { expect(spec.resume).toMatch(/^fake-session-/); return { text: 'checked', cost: 0 }; }
         if (spec.prompt.includes('Phase: test')) {
           // agentic test phase: run the suite and report a verdict
           try { execFileSync('node', ['test.js'], { cwd: spec.cwd, stdio: 'pipe' }); return { structured: { verdict: 'pass', summary: 'suite passes', commands: ['node test.js'], tests_added: [], failures: [], notes: '' }, cost: 0.1 }; }
@@ -54,7 +55,7 @@ describe('auto pipeline end-to-end (fake runner)', () => {
 
     const t = app.store.getTask(task.id)!;
     expect(t.status).toBe('succeeded');
-    expect(seen).toEqual(['implement:succeeded', 'commit_impl:succeeded', 'test:failed', 'implement:succeeded', 'commit_impl:succeeded', 'test:succeeded', 'commit_tests:succeeded', 'review:succeeded', 'qa:succeeded']);
+    expect(seen).toEqual(['implement:succeeded', 'self_check:succeeded', 'commit_impl:succeeded', 'test:failed', 'implement:succeeded', 'self_check:succeeded', 'commit_impl:succeeded', 'test:succeeded', 'commit_tests:succeeded', 'review:succeeded', 'qa:succeeded']);
     expect(implementCalls).toBe(2);
     expect(t.totalCostUsd).toBeCloseTo(1.3, 5);
 
@@ -75,6 +76,7 @@ describe('auto pipeline end-to-end (fake runner)', () => {
     const runner = new FakeRunner((spec) => ({
       act: () => {
         if (spec.prompt.includes('Phase: implement') || spec.prompt.includes('reviewer requested changes')) { fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'y\n'); return { text: 'ok' }; }
+        if (spec.prompt.includes('Phase: self_check')) return { text: 'checked' };
         if (spec.prompt.includes('Phase: test')) return { structured: { verdict: 'skipped', summary: 'nothing to test', commands: [], tests_added: [], failures: [], notes: '' } };
         if (spec.prompt.includes('Phase: QA')) return { structured: { verdict: 'skipped', summary: 'n/a', checks: [], issues: [] } };
         if (spec.prompt.includes('Phase: review')) return { structured: { verdict: 'request_changes', summary: 'no', findings: [{ severity: 'should_fix', title: 'x', description: 'y' }] } };

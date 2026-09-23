@@ -1,4 +1,4 @@
-import type { HilRequest, HilResponse, PhaseRun, PipelineRun, Task } from '@sdlc/shared';
+import type { EffortLevel, HilRequest, HilResponse, ModelOverrides, PhaseRun, PipelineRun, Task } from '@sdlc/shared';
 
 export class ApiError extends Error { constructor(public status: number, message: string, public body: unknown) { super(message); } }
 
@@ -12,16 +12,25 @@ const text = async (path: string) => { const r = await fetch(`/api${path}`); if 
 
 export type TaskRow = Task & { openHil: number; currentPhase: string | null };
 export type HilRow = HilRequest & { task: { id: string; title: string; status: string } };
-export interface TaskDetail { task: Task; run: PipelineRun | null; phaseRuns: PhaseRun[]; openHil: HilRequest[]; worktreeExists: boolean }
-export interface Config { publicUrl: string; repos: { name: string; path: string }[]; reposDir: string; defaultPipeline: string; maxParallelTasks: number; taskBudgetUsd: number; cleanup: string; telegram: { enabled: boolean; configured: boolean; chatId: string | null } }
+export interface BaseChainItem { branch: string; taskId?: string; title?: string; status?: string }
+export interface TaskDetail { task: Task; run: PipelineRun | null; phaseRuns: PhaseRun[]; openHil: HilRequest[]; worktreeExists: boolean; baseChain: BaseChainItem[] }
+export interface ModelsConfig { default?: string; effort?: EffortLevel; phases: Record<string, { model?: string; effort?: EffortLevel }> }
+export interface Config { publicUrl: string; repos: { name: string; path: string }[]; reposDir: string; defaultPipeline: string; maxParallelTasks: number; taskBudgetUsd: number | 'off'; limits: { phases: 'pipeline' | 'off' }; mergeMethod: 'merge' | 'squash' | 'rebase'; cleanup: string; models: ModelsConfig; telegram: { enabled: boolean; configured: boolean; chatId: string | null } }
+export type ConfigPatch = Partial<Pick<Config, 'limits' | 'mergeMethod' | 'cleanup' | 'models'>> & { default_pipeline?: string; max_parallel_tasks?: number; task_budget_usd?: number | 'off'; merge_method?: string };
+export interface ModelChoice { value: string; displayName: string; description?: string }
 export interface PipelineInfo { name: string; description?: string; phases: { name: string; type: string; hil?: string }[] }
 
 export const api = {
   config: () => req<Config>('GET', '/config'),
+  updateConfig: (b: Record<string, unknown>) => req<Config>('PUT', '/config', b),
+  models: () => req<{ models: ModelChoice[]; error?: string }>('GET', '/models'),
+  importPr: (b: { repoPath: string; number: number; pipeline?: string; modelOverrides?: ModelOverrides | null }) => req<Task>('POST', '/tasks/import-pr', b),
+  land: (id: string, method?: string) => req<{ method: string; via: string }>('POST', `/tasks/${id}/land`, method ? { method } : {}),
+  taskModels: (id: string, modelOverrides: ModelOverrides | null) => req<Task>('PUT', `/tasks/${id}/models`, { modelOverrides }),
   pipelines: () => req<{ pipelines: PipelineInfo[] }>('GET', '/pipelines'),
   tasks: (status?: string) => req<{ tasks: TaskRow[] }>('GET', `/tasks${status ? `?status=${status}` : ''}`),
   task: (id: string) => req<TaskDetail>('GET', `/tasks/${id}`),
-  createTask: (b: { prompt: string; repoPath: string; pipeline?: string; baseRemote?: string | null; baseBranch?: string; reviewMode?: string; postReview?: boolean }) => req<Task>('POST', '/tasks', b),
+  createTask: (b: { prompt: string; repoPath: string; pipeline?: string; baseRemote?: string | null; baseBranch?: string; reviewMode?: string; postReview?: boolean; branch?: string; startAt?: string; modelOverrides?: ModelOverrides | null }) => req<Task>('POST', '/tasks', b),
   control: (id: string, action: 'pause' | 'resume' | 'abort', body?: unknown) => req<Task>('POST', `/tasks/${id}/${action}`, body),
   inject: (id: string, t: string) => req<{ deliveredTo: string }>('POST', `/tasks/${id}/inject`, { text: t }),
   worktreeRemove: (id: string) => req<{ removed: boolean }>('POST', `/tasks/${id}/worktree/remove`),

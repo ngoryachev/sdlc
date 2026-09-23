@@ -21,10 +21,10 @@ export class Store {
 
   // ---- tasks
   insertTask(t: Task) {
-    this.exec(`INSERT INTO tasks VALUES (@id,@title,@initial_prompt,@refined_prompt,@repo_path,@repo_slug,@base_remote,@base_branch,@branch,@worktree_path,@pipeline_name,@review_mode,@post_review,@status,@total_cost_usd,@pr_url,@pr_number,@pr_feedback_cursor,@created_at,@updated_at)`, taskToRow(t));
+    this.exec(`INSERT INTO tasks VALUES (@id,@title,@initial_prompt,@refined_prompt,@repo_path,@repo_slug,@base_remote,@base_branch,@branch,@worktree_path,@pipeline_name,@review_mode,@post_review,@status,@total_cost_usd,@pr_url,@pr_number,@pr_feedback_cursor,@created_at,@updated_at,@model_overrides)`, taskToRow(t));
   }
   updateTask(t: Task) {
-    this.exec(`UPDATE tasks SET title=@title, refined_prompt=@refined_prompt, review_mode=@review_mode, post_review=@post_review, status=@status, total_cost_usd=@total_cost_usd, pr_url=@pr_url, pr_number=@pr_number, pr_feedback_cursor=@pr_feedback_cursor, updated_at=@updated_at, worktree_path=@worktree_path, branch=@branch, base_remote=@base_remote, base_branch=@base_branch WHERE id=@id`, taskToRow(t));
+    this.exec(`UPDATE tasks SET title=@title, refined_prompt=@refined_prompt, review_mode=@review_mode, post_review=@post_review, status=@status, total_cost_usd=@total_cost_usd, pr_url=@pr_url, pr_number=@pr_number, pr_feedback_cursor=@pr_feedback_cursor, model_overrides=@model_overrides, updated_at=@updated_at, worktree_path=@worktree_path, branch=@branch, base_remote=@base_remote, base_branch=@base_branch WHERE id=@id`, taskToRow(t));
   }
   getTask(id: string): Task | null { const r = this.db.prepare('SELECT * FROM tasks WHERE id=?').get(id) as Row | undefined; return r ? rowToTask(r) : null; }
   listTasks(status?: string[]): Task[] {
@@ -101,14 +101,14 @@ function taskToRow(t: Task): Params {
   return { id: t.id, title: t.title, initial_prompt: t.initialPrompt, refined_prompt: t.refinedPrompt, repo_path: t.repoPath, repo_slug: t.repoSlug,
     base_remote: t.baseRemote, base_branch: t.baseBranch, branch: t.branch, worktree_path: t.worktreePath, pipeline_name: t.pipelineName,
     review_mode: t.reviewMode, post_review: t.postReview ? 1 : 0, status: t.status, total_cost_usd: t.totalCostUsd, pr_url: t.prUrl,
-    pr_number: t.prNumber, pr_feedback_cursor: t.prFeedbackCursor, created_at: t.createdAt, updated_at: t.updatedAt };
+    pr_number: t.prNumber, pr_feedback_cursor: t.prFeedbackCursor, created_at: t.createdAt, updated_at: t.updatedAt, model_overrides: t.modelOverrides ? j(t.modelOverrides) : null };
 }
 function rowToTask(r: Row): Task {
   return { id: r.id as string, title: r.title as string, initialPrompt: r.initial_prompt as string, refinedPrompt: (r.refined_prompt as string) ?? null,
     repoPath: r.repo_path as string, repoSlug: (r.repo_slug as string) ?? null, baseRemote: (r.base_remote as string) ?? null, baseBranch: r.base_branch as string,
     branch: r.branch as string, worktreePath: r.worktree_path as string, pipelineName: r.pipeline_name as string, reviewMode: r.review_mode as Task['reviewMode'],
     postReview: !!r.post_review, status: r.status as Task['status'], totalCostUsd: r.total_cost_usd as number, prUrl: (r.pr_url as string) ?? null,
-    prNumber: (r.pr_number as number) ?? null, prFeedbackCursor: (r.pr_feedback_cursor as string) ?? null, createdAt: r.created_at as string, updatedAt: r.updated_at as string };
+    prNumber: (r.pr_number as number) ?? null, prFeedbackCursor: (r.pr_feedback_cursor as string) ?? null, modelOverrides: pj(r.model_overrides, null), createdAt: r.created_at as string, updatedAt: r.updated_at as string };
 }
 function runToRow(x: PipelineRun): Params {
   return { id: x.id, task_id: x.taskId, pipeline_name: x.pipelineName, pipeline_snapshot: j(x.pipelineSnapshot), cursor: x.cursor,

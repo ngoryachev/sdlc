@@ -19,7 +19,8 @@ function printEvent(e: SdlcEvent) {
     case 'hil.requested': { const h = p.hil as HilRequest; console.log(`\n>>> HIL ${h.kind} [${h.id}] ${h.summary}`); break; }
     case 'git.committed': console.log(`[git] committed ${(p.sha as string).slice(0, 8)} ${p.message}`); break;
     case 'git.pr_created': console.log(`[git] PR ${p.url}`); break;
-    case 'task.worktree': console.log(`[worktree] ${p.action as string}${p.branchDeleted ? ' (empty branch deleted)' : ''}`); break;
+    case 'task.worktree': console.log(`[worktree] ${p.action as string}${p.branchDeleted ? ' (branch deleted)' : ''}`); break;
+    case 'git.merged': console.log(`[git] merged into ${p.into as string} (${p.method as string}, via ${p.via as string})`); break;
     case 'engine.error': console.error(`[error] ${p.message}`); break;
     case 'engine.warning': console.error(`[warn] ${p.message}`); break;
     default: break;
@@ -35,13 +36,15 @@ export function registerTaskCommands(program: Command) {
     .option('--base <remote/branch>', 'base ref, e.g. origin/main')
     .option('--review-mode <mode>', 'conceptual|line')
     .option('--post-review', 'post line review to GitHub')
+    .option('--branch <name>', 'work on an existing branch instead of creating one')
+    .option('--start-at <phase>', 'start the pipeline at this phase (earlier phases are skipped)')
     .option('--quiet', 'do not print the Claude stream')
     .action(async (prompt: string, o) => {
       let baseRemote: string | null | undefined; let baseBranch: string | undefined;
       if (o.base) { const [r, ...rest] = String(o.base).split('/'); if (rest.length) { baseRemote = r; baseBranch = rest.join('/'); } else { baseRemote = null; baseBranch = r; } }
       const remote = await ServerClient.detect();
       if (remote) {
-        const task = await remote.call<Task>('POST', '/tasks', { prompt, repoPath: require_resolve(o.repo), pipeline: o.pipeline, baseRemote, baseBranch, reviewMode: o.reviewMode, postReview: o.postReview });
+        const task = await remote.call<Task>('POST', '/tasks', { prompt, repoPath: require_resolve(o.repo), pipeline: o.pipeline, baseRemote, baseBranch, reviewMode: o.reviewMode, postReview: o.postReview, branch: o.branch, startAt: o.startAt });
         console.log(`[server ${remote.base}] task ${task.id} branch ${task.branch}`);
         await remote.tail(task.id, printEvent, (m) => { if (!o.quiet) { const s = summarize(m.sdk as SDKMessage); if (s) console.log(s); } }, untilTaskSettles);
         const t = await remote.call<{ task: Task; openHil: Hil[] }>('GET', `/tasks/${task.id}`);
@@ -52,7 +55,7 @@ export function registerTaskCommands(program: Command) {
       const app = createApp();
       app.events.on(printEvent);
       if (!o.quiet) app.events.onMessage((m) => { const s = summarize(m.sdk as SDKMessage); if (s) console.log(s); });
-      const task = await app.engine.createTask({ prompt, repoPath: o.repo, pipeline: o.pipeline, baseRemote, baseBranch, reviewMode: o.reviewMode, postReview: o.postReview });
+      const task = await app.engine.createTask({ prompt, repoPath: o.repo, pipeline: o.pipeline, baseRemote, baseBranch, reviewMode: o.reviewMode, postReview: o.postReview, branch: o.branch, startAt: o.startAt });
       console.log(`task ${task.id} branch ${task.branch}\nworktree ${task.worktreePath}`);
       await app.engine.advance(task.id);
       const t = app.store.getTask(task.id)!;
@@ -76,6 +79,17 @@ export function registerTaskCommands(program: Command) {
     for (const h of app.store.listHil({ status: 'open' })) console.log(`${h.id}  ${h.kind.padEnd(14)} ${h.taskId}  ${h.summary}`);
   });
 
+  program.command('adopt').description('Create a task from an existing pull request; it waits for PR feedback (`sdlc pr <task>`)').requiredOption('--repo <path>').requiredOption('--pr <number>').option('--pipeline <name>').action(async (o) => {
+    const remote = await ServerClient.detect();
+    const body = { repoPath: require_resolve(o.repo), number: Number(o.pr), pipeline: o.pipeline };
+    const t = remote ? await remote.call<Task>('POST', '/tasks/import-pr', body) : await createApp().engine.importPr(body);
+    console.log(`task ${t.id} (${t.status}) branch ${t.branch} ← ${t.baseRemote ? `${t.baseRemote}/` : ''}${t.baseBranch}\n${t.prUrl}`);
+  });
+  program.command('land <taskId>').description('Merge the task branch into its base (via the PR when present), remove worktree and branch').option('--method <m>', 'merge|squash|rebase (default from config)').action(async (id, o) => {
+    const remote = await ServerClient.detect();
+    const r = remote ? await remote.call<{ method: string; via: string }>('POST', `/tasks/${id}/land`, { method: o.method }) : await createApp().engine.landTask(id, o.method);
+    console.log(`merged (${r.method}, via ${r.via}); worktree and branch removed`);
+  });
   program.command('hil-show <hilId>').alias('show-hil').description('Show a HIL request with its payload (prompt, plan, review, tests, QA, diff stat)').option('--diff', 'also print the patch').action(async (id, o) => {
     const remote = await ServerClient.detect();
     const h = remote ? await remote.call<Hil>('GET', `/hil/${id}`) : createApp().store.getHil(id);
@@ -89,13 +103,13 @@ export function registerTaskCommands(program: Command) {
     console.log(r.removed ? 'worktree removed' : 'no worktree to remove');
   });
 
-  const respond = async (hilId: string, decision: string, o: { message?: string; prompt?: string; plan?: string; answer?: string[] }, run = true) => {
+  const respond = async (hilId: string, decision: string, o: { message?: string; prompt?: string; title?: string; plan?: string; answer?: string[] }, run = true) => {
     const answers0: Record<string, string> = {};
     for (const a of o.answer ?? []) { const i = a.indexOf('='); if (i > 0) answers0[a.slice(0, i)] = a.slice(i + 1); }
     const remote = await ServerClient.detect();
     if (remote) {
       const since = (await remote.call<{ id: number }>('GET', '/events/last')).id;
-      const h = await remote.call<Hil>('POST', `/hil/${hilId}/respond`, { decision, comment: o.message, edited: { prompt: o.prompt, planMd: o.plan }, answers: answers0 });
+      const h = await remote.call<Hil>('POST', `/hil/${hilId}/respond`, { decision, comment: o.message, edited: { prompt: o.prompt, planMd: o.plan, title: o.title }, answers: answers0 });
       console.log(`[server] ${h.kind} → ${decision}`);
       if (run) await remote.tail(h.taskId, printEvent, (m) => { const s = summarize(m.sdk as SDKMessage); if (s) console.log(s); }, untilTaskSettles, since);
       return;
@@ -105,10 +119,10 @@ export function registerTaskCommands(program: Command) {
     app.events.onMessage((m) => { const s = summarize(m.sdk as SDKMessage); if (s) console.log(s); });
     const answers: Record<string, string> = {};
     for (const a of o.answer ?? []) { const i = a.indexOf('='); if (i > 0) answers[a.slice(0, i)] = a.slice(i + 1); }
-    const hil = await app.engine.respondHil(hilId, { decision: decision as never, comment: o.message, edited: { prompt: o.prompt, planMd: o.plan }, answers }, 'cli');
+    const hil = await app.engine.respondHil(hilId, { decision: decision as never, comment: o.message, edited: { prompt: o.prompt, planMd: o.plan, title: o.title }, answers }, 'cli');
     if (run) { await app.engine.advance(hil.taskId); const t = app.store.getTask(hil.taskId)!; console.log(`\nstatus: ${t.status}  cost: $${t.totalCostUsd.toFixed(3)}`); for (const h of app.store.openHilForTask(t.id)) console.log(`open HIL: ${h.kind} ${h.id}`); }
   };
-  program.command('approve <hilId>').description('Approve a HIL request').option('-m, --message <text>').option('--prompt <text>', 'edited prompt (refine)').option('--plan <file>', 'edited plan file (approve_plan)').action((id, o) => respond(id, 'approve', { ...o, plan: o.plan ? fs.readFileSync(o.plan, 'utf8') : undefined }));
+  program.command('approve <hilId>').description('Approve a HIL request').option('-m, --message <text>').option('--prompt <text>', 'edited prompt (refine)').option('--title <text>', 'task title (refine)').option('--plan <file>', 'edited plan file (approve_plan)').action((id, o) => respond(id, 'approve', { ...o, plan: o.plan ? fs.readFileSync(o.plan, 'utf8') : undefined }));
   program.command('changes <hilId>').description('Request changes with a comment').requiredOption('-m, --message <text>').action((id, o) => respond(id, 'request_changes', o));
   program.command('answer <hilId>').description('Answer a question HIL: --answer "question=label"').option('--answer <q=a>', 'answer', (v: string, acc: string[]) => { acc.push(v); return acc; }, [] as string[]).option('-m, --message <text>').action((id, o) => respond(id, 'answer', o));
   program.command('decide <hilId> <decision>').description('Respond with any decision (retry|resume|skip|abort|approve|request_changes)').option('-m, --message <text>').action((id, d, o) => respond(id, d, o));

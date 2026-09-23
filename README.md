@@ -1,6 +1,6 @@
 # sdlc — thin SDLC orchestration on top of Claude Code
 
-Runs a coding task through explicit phases (`clarify → refine → plan → approve → implement → commit → test → review → approve → PR → qa`),
+Runs a coding task through explicit phases (`clarify → refine → plan → approve → implement → self_check → commit → test → review → approve → PR → qa`),
 Each task gets its own git worktree and branch; every phase is one Claude Code session (via the Agent SDK) running inside that worktree.
 Humans step in only at declared checkpoints (HIL), from a web UI or Telegram. Everything is observable live.
 
@@ -27,7 +27,10 @@ Open it once per browser (cookie is set). Config lives in `~/.sdlc/config.yaml` 
 server: { host: 0.0.0.0, port: 7337, public_url: http://192.168.1.10:7337 }   # host 0.0.0.0 to open from a phone
 default_pipeline: standard
 max_parallel_tasks: 2
-task_budget_usd: 20
+task_budget_usd: 20        # or off
+limits: { phases: pipeline }   # off: ignore max_turns / max_budget_usd from pipelines
+merge_method: merge        # merge | squash | rebase, used by Land
+models: { default: opus, effort: high, phases: { review: { model: sonnet } } }   # also editable in the UI (Settings)
 cleanup: never            # never (default: remove explicitly, UI button or `sdlc cleanup`) | on_pr | on_approve
 repos:
   - { name: shop, path: /home/me/Develop/shop }
@@ -48,12 +51,14 @@ post_review: false              # post line-level findings to the GitHub PR
 
 ## Using it
 
-- Web UI: create a task (prompt, repo — local or cloned from GitHub via `gh`, base remote/branch, pipeline, review mode). Watch phases live, pause / inject a message / abort.
+- Web UI: create a task (prompt, repo — local or cloned from GitHub via `gh`, base remote/branch, pipeline, review mode; advanced: start at a phase, work on an existing branch, models for this task). Watch phases live, pause / inject a message / abort. **Import PR** attaches a task to an existing pull request (its head branch becomes the task branch; the task waits for review comments). **Land** merges the task branch into its base (through the PR when there is one, otherwise a local merge + push), removes the worktree and the branch, status `merged`.
+- Models and effort: Settings holds global defaults and per-phase-type values (list from the CLI via `supportedModels()`); a task can override them for its own phases (form or task page). They are resolved when each phase starts, so edits apply to the next phase of any task.
 - HIL queue (`/hil`): refine the prompt (Claude's clarifying questions + rewritten prompt), approve or edit the plan, accept the result (review, diff, tests), answer Claude's questions, handle escalations. Keyboard: `a` approve, `r` comment, `Ctrl+Enter`, `j/k`.
+- `self_check` continues the implement session: the implementer re-reads its own diff against the request and plan, fixes gaps, and reports a checklist (best effort, never blocks).
 - The `test` phase is an agent, not a command: it reads the diff, runs the existing suite, writes tests for the changed behaviour (in the project's framework, or a minimal native one), and returns `pass|fail|skipped`; `fail` loops back into the implement session with the defects. The `review` verdict follows its findings: any `blocking` or `should_fix` finding means `request_changes` and one more implement round; `nit` only means `approve`. After the PR, a best-effort `qa` phase exercises the change end to end (dev server, HTTP, CLI, consumer script), posts its report as a PR comment and opens an `approve_result` checkpoint only when it found issues. Neither phase needs any repo config.
 - After the PR exists the task is `pr_open`. Press **Poll PR comments** (or `sdlc pr <task>`, Telegram `/pr <task>`) to pull new review comments into a `pr_feedback` request; approving sends them into the implement session, then commit → test → review → push → PR comment.
 - Telegram: the bot posts each HIL request with Approve/Abort buttons and an Open link. `/status` lists active tasks.
-- CLI mirrors the UI and talks to the running server (falls back to in-process when no server): `sdlc new "<prompt>" --repo <path> [--pipeline quick] [--base origin/main]`, `sdlc list`, `sdlc show <task>`, `sdlc hil`, `sdlc hil-show <hil> [--diff]`, `sdlc approve <hil> [--prompt …|--plan file]`, `sdlc changes <hil> -m "…"`, `sdlc answer <hil> --answer "q=a"`, `sdlc decide <hil> retry|resume|skip|abort`, `sdlc pause|resume|abort|inject <task>`, `sdlc pr <task>`, `sdlc tail <task>`, `sdlc cleanup <task>` (remove the worktree; the branch stays).
+- CLI mirrors the UI and talks to the running server (falls back to in-process when no server): `sdlc new "<prompt>" --repo <path> [--pipeline quick] [--base origin/main]`, `sdlc new … --start-at <phase> --branch <existing>`, `sdlc adopt --repo <path> --pr <n>`, `sdlc land <task> [--method squash]`, `sdlc list`, `sdlc show <task>`, `sdlc hil`, `sdlc hil-show <hil> [--diff]`, `sdlc approve <hil> [--title …] [--prompt …|--plan file]`, `sdlc changes <hil> -m "…"`, `sdlc answer <hil> --answer "q=a"`, `sdlc decide <hil> retry|resume|skip|abort`, `sdlc pause|resume|abort|inject <task>`, `sdlc pr <task>`, `sdlc tail <task>`, `sdlc cleanup <task>` (remove the worktree; the branch stays).
 - Dev: `sdlc run-phase --repo <dir> --prompt-file prompts/plan.md --mode dontAsk --write-scope '.sdlc/**'` runs one phase and prints the stream.
 
 ## Pipelines

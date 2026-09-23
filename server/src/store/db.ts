@@ -35,6 +35,7 @@ const MIGRATIONS: string[] = [
   CREATE TABLE notifications (
     hil_id TEXT NOT NULL, channel TEXT NOT NULL, ref TEXT NOT NULL, PRIMARY KEY (hil_id, channel));
   `,
+  `ALTER TABLE tasks ADD COLUMN model_overrides TEXT;`,
 ];
 
 export function openDb(file: string): DatabaseSync {

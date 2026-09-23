@@ -17,6 +17,7 @@ describe('standard pipeline with HIL (fake runner)', () => {
         if (p.includes('requested changes') && p.includes('plan.md')) { calls.push('plan-resume:' + spec.resume); fs.writeFileSync(path.join(spec.cwd, '.sdlc/plan.md'), '# Plan v2\n'); return { text: 'plan summary v2' }; }
         if (p.includes('Phase: implement')) { calls.push('implement'); expect(p).toContain('# Plan v2 (edited)'); fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'y\n'); return { text: 'implemented' }; }
         if (p.includes('reviewed the result and requested changes')) { calls.push('implement-resume:' + spec.resume); fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'z\n'); return { text: 'fixed per human' }; }
+        if (p.includes('Phase: self_check')) return { text: 'checked' };
         if (p.includes('Phase: test')) { calls.push('test'); return { structured: { verdict: 'pass', summary: 'ok', commands: ['node test.js'], tests_added: [], failures: [], notes: '' } }; }
         if (p.includes('Phase: review')) { calls.push('review'); return { structured: { verdict: 'approve', summary: 'fine', findings: [] } }; }
         if (p.includes('Phase: QA')) { calls.push('qa'); return { structured: { verdict: 'pass', summary: 'works', checks: [{ name: 'smoke', method: 'node test.js', result: 'ok' }], issues: [] } }; }

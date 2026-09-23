@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 const execFileP = promisify(execFile);
 import path from 'node:path';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
-import type { AskUserQuestionItem, HilRequest, HilResponse, PhaseRun, PipelineRun, Task, TaskStatus } from '@sdlc/shared';
+import type { AskUserQuestionItem, HilRequest, HilResponse, ModelOverrides, PhaseRun, PipelineRun, Task, TaskStatus } from '@sdlc/shared';
 import type { SdlcConfig } from '../config/config.js';
 import { loadRepoConfig, parseDuration } from '../config/config.js';
 import type { ClaudeRunner } from '../claude/runner.js';
@@ -13,8 +13,8 @@ import type { PhaseSpec, PipelineSpec, RepoConfig } from '../pipeline/schema.js'
 import { PipelineSchema } from '../pipeline/schema.js';
 import { evalExpr } from '../pipeline/expr.js';
 import { renderTemplate } from '../pipeline/template.js';
-import { createWorktree, defaultBase, recreateWorktree, refExists, remotes, removeWorktree, repoToplevel } from '../git/git.js';
-import { ghLogin, prFeedback, repoSlug, TRUSTED_ASSOCIATIONS } from '../git/gh.js';
+import { adoptWorktree, createWorktree, defaultBase, deleteBranch, mergeLocally, recreateWorktree, refExists, remotes, removeWorktree, repoToplevel, syncLocalBase } from '../git/git.js';
+import { ghLogin, prFeedback, prMerge, prView, repoSlug, TRUSTED_ASSOCIATIONS } from '../git/gh.js';
 import type { Store } from '../store/repo.js';
 import type { EventBus } from '../store/events.js';
 import { newId, nowIso } from '../store/ids.js';
@@ -29,6 +29,12 @@ import { HilBroker } from './hil-broker.js';
 export interface CreateTaskInput {
   prompt: string; repoPath: string; pipeline?: string; baseRemote?: string | null; baseBranch?: string;
   reviewMode?: 'conceptual' | 'line'; postReview?: boolean; title?: string;
+  /** Work on an existing branch instead of creating one (imported PR, "start from this branch"). */
+  branch?: string;
+  /** Start the pipeline at this phase; earlier phases are recorded as skipped. 'end' = do not run anything (imported PR waits for feedback). */
+  startAt?: string;
+  pr?: { number: number; url: string };
+  modelOverrides?: ModelOverrides | null;
 }
 
 export interface EngineDeps { config: SdlcConfig; store: Store; events: EventBus; runner: ClaudeRunner }
@@ -77,7 +83,9 @@ export class Engine {
     if (!(await refExists(repoPath, baseRef))) throw new Error(`base ref ${baseRef} does not exist in ${repoPath}`);
     const id = newId('t');
     const worktreesDir = config.worktrees_dir ?? path.join(path.dirname(repoPath), '.sdlc-worktrees', path.basename(repoPath));
-    const wt = await createWorktree({ repo: repoPath, worktreesDir, taskId: id, baseRemote, baseBranch, copyUntracked: repoConfig.copy_untracked });
+    const wt = input.branch
+      ? await adoptWorktree({ repo: repoPath, worktreesDir, taskId: id, branch: input.branch, remote: baseRemote })
+      : await createWorktree({ repo: repoPath, worktreesDir, taskId: id, baseRemote, baseBranch, copyUntracked: repoConfig.copy_untracked });
     try { await runSetup(repoConfig, wt.worktreePath); }
     catch (e) { await removeWorktree(repoPath, wt.worktreePath, wt.branch, { deleteBranchIfEmpty: wt.baseRef }).catch(() => {}); throw e; }
     const slug = (await repoSlug(repoPath))?.slug ?? null;
@@ -86,14 +94,64 @@ export class Engine {
       id, title: input.title ?? titleFrom(input.prompt), initialPrompt: input.prompt, refinedPrompt: null, repoPath, repoSlug: slug,
       baseRemote, baseBranch, branch: wt.branch, worktreePath: wt.worktreePath, pipelineName: loaded.spec.name,
       reviewMode: input.reviewMode ?? repoConfig.review_mode ?? 'conceptual', postReview: input.postReview ?? repoConfig.post_review ?? false,
-      status: 'created', totalCostUsd: 0, prUrl: null, prNumber: null, prFeedbackCursor: null, createdAt: now, updatedAt: now,
+      status: 'created', totalCostUsd: 0, prUrl: input.pr?.url ?? null, prNumber: input.pr?.number ?? null, prFeedbackCursor: null, modelOverrides: input.modelOverrides ?? null, createdAt: now, updatedAt: now,
     };
+    const startIdx = input.startAt === 'end' ? loaded.spec.phases.length : input.startAt ? phaseIndex(loaded.spec, input.startAt) : 0;
+    const idle = startIdx >= loaded.spec.phases.length;
     const run: PipelineRun = { id: newId('r'), taskId: id, pipelineName: loaded.spec.name, pipelineSnapshot: { spec: loaded.spec, baseDir: loaded.baseDir, filePath: loaded.filePath },
-      cursor: 0, loopCounts: {}, pendingResume: null, status: 'running', createdAt: now, updatedAt: now };
-    store.tx(() => { store.insertTask(task); store.insertRun(run); });
+      cursor: startIdx, loopCounts: {}, pendingResume: null, status: idle ? 'succeeded' : 'running', createdAt: now, updatedAt: now };
+    store.tx(() => {
+      store.insertTask(task); store.insertRun(run);
+      for (const ph of loaded.spec.phases.slice(0, startIdx)) { const pr = this.newPhaseRun(run, task, ph); pr.status = 'skipped'; pr.resultText = `skipped: task started at ${input.startAt}`; pr.endedAt = now; store.insertPhaseRun(pr); }
+    });
     events.emit('task.created', { task }, { taskId: id });
+    if (idle) { this.setTaskStatus(task, task.prUrl ? 'pr_open' : 'succeeded'); return task; }
     this.setTaskStatus(task, 'running');
     void this.advance(id);
+    return task;
+  }
+
+  /** Create a task from an existing pull request: its head branch becomes the task branch, the task waits for PR feedback. */
+  async importPr(input: { repoPath: string; number: number; pipeline?: string; reviewMode?: 'conceptual' | 'line'; modelOverrides?: ModelOverrides | null }): Promise<Task> {
+    const repoPath = await repoToplevel(path.resolve(input.repoPath));
+    const pr = await prView(repoPath, input.number);
+    if (pr.state !== 'OPEN') throw new HttpError(409, `PR #${input.number} is ${pr.state}`);
+    if (this.d.store.listTasks().some((t) => t.prNumber === pr.number && t.repoPath === repoPath && !['failed', 'aborted', 'merged'].includes(t.status))) throw new HttpError(409, `PR #${pr.number} is already attached to a task`);
+    const rs = await remotes(repoPath);
+    const remote = rs.includes('origin') ? 'origin' : rs[0] ?? null;
+    return this.createTask({
+      prompt: [pr.title, pr.body].filter(Boolean).join('\n\n'), title: pr.title, repoPath, pipeline: input.pipeline, baseRemote: remote, baseBranch: pr.baseRefName,
+      branch: pr.headRefName, pr: { number: pr.number, url: pr.url }, startAt: 'end', reviewMode: input.reviewMode, modelOverrides: input.modelOverrides,
+    });
+  }
+
+  /** Merge the task branch into its base (via the PR when there is one), then remove the worktree and the branch. */
+  async landTask(taskId: string, method?: 'merge' | 'squash' | 'rebase'): Promise<{ method: string; via: 'pr' | 'local' }> {
+    const { store, events, config } = this.d;
+    const task = store.getTask(taskId);
+    if (!task) throw new HttpError(404, 'task not found');
+    if (!['pr_open', 'succeeded'].includes(task.status)) throw new HttpError(409, `task is ${task.status}; only pr_open or succeeded tasks can be landed`);
+    const m = method ?? config.merge_method;
+    const baseRef = task.baseRemote ? `${task.baseRemote}/${task.baseBranch}` : task.baseBranch;
+    await removeWorktree(task.repoPath, task.worktreePath, task.branch).catch(() => {});
+    let via: 'pr' | 'local';
+    if (task.prNumber) { await prMerge(task.repoPath, task.prNumber, m); via = 'pr'; }
+    else { await mergeLocally({ repo: task.repoPath, base: task.baseBranch, baseRemote: task.baseRemote, head: task.branch, method: m, message: `${task.title}\n\nsdlc task ${task.id}`, author: config.git_author }); via = 'local'; }
+    await syncLocalBase(task.repoPath, task.baseRemote, task.baseBranch);
+    await deleteBranch(task.repoPath, task.branch, via === 'pr' ? null : task.baseRemote);
+    events.emit('task.worktree', { taskId: task.id, action: 'removed', branchDeleted: true }, { taskId: task.id });
+    events.emit('git.merged', { taskId: task.id, method: m, into: baseRef, via }, { taskId: task.id });
+    const run = store.latestRunForTask(task.id);
+    if (run && run.status !== 'succeeded') { run.status = 'succeeded'; this.saveRun(run); }
+    this.setTaskStatus(task, 'merged');
+    return { method: m, via };
+  }
+
+  setModelOverrides(taskId: string, overrides: ModelOverrides | null): Task {
+    const task = this.d.store.getTask(taskId);
+    if (!task) throw new HttpError(404, 'task not found');
+    task.modelOverrides = overrides && Object.keys(overrides).length ? overrides : null;
+    task.updatedAt = nowIso(); this.d.store.updateTask(task);
     return task;
   }
 
@@ -136,7 +194,7 @@ export class Engine {
       }
 
       // task budget gate
-      if (phase.type === 'claude' && task.totalCostUsd >= this.d.config.task_budget_usd) {
+      if (phase.type === 'claude' && this.d.config.task_budget_usd !== 'off' && task.totalCostUsd >= this.d.config.task_budget_usd) {
         const pr = this.newPhaseRun(run, task, phase); pr.status = 'failed'; pr.error = `task budget exhausted ($${task.totalCostUsd.toFixed(2)} >= $${this.d.config.task_budget_usd})`; pr.endedAt = nowIso();
         store.insertPhaseRun(pr);
         this.escalate(task, run, pr, pr.error); return;
@@ -354,7 +412,13 @@ export class Engine {
     const fb = await prFeedback(task.repoPath, task.prNumber);
     if (fb.state === 'MERGED' || fb.state === 'CLOSED') {
       const run = store.latestRunForTask(taskId)!;
-      this.finishTask(task, run, fb.state === 'MERGED' ? 'succeeded' : 'aborted');
+      if (fb.state === 'MERGED') {
+        await this.dropWorktree(task, false).catch(() => {});
+        await syncLocalBase(task.repoPath, task.baseRemote, task.baseBranch);
+        events.emit('git.merged', { taskId, method: 'unknown', into: task.baseRemote ? `${task.baseRemote}/${task.baseBranch}` : task.baseBranch, via: 'external' }, { taskId });
+        run.status = 'succeeded'; this.saveRun(run);
+        this.setTaskStatus(task, 'merged');
+      } else this.finishTask(task, run, 'aborted');
       return { new: 0, state: fb.state };
     }
     const cursorIdx = task.prFeedbackCursor ? fb.comments.findIndex((c) => c.id === task.prFeedbackCursor) : -1;
@@ -449,7 +513,7 @@ export class Engine {
     const task = store.getTask(taskId);
     const run = task && store.latestRunForTask(taskId);
     if (!task || !run) throw new HttpError(404, 'task not found');
-    if (['succeeded', 'failed', 'aborted'].includes(task.status)) throw new HttpError(409, `task already ${task.status}`);
+    if (['succeeded', 'merged', 'failed', 'aborted'].includes(task.status)) throw new HttpError(409, `task already ${task.status}`);
     this.abortFlags.add(taskId);
     for (const h of store.openHilForTask(taskId)) { h.status = 'cancelled'; store.updateHil(h); this.broker.cancel(h.id, reason); events.emit('hil.answered', { hil: h }, { taskId }); }
     const h = this.handles.get(taskId);
@@ -529,7 +593,7 @@ export class Engine {
   async removeTaskWorktree(taskId: string): Promise<{ removed: boolean }> {
     const task = this.d.store.getTask(taskId);
     if (!task) throw new HttpError(404, 'task not found');
-    if (!['succeeded', 'failed', 'aborted', 'pr_open'].includes(task.status)) throw new HttpError(409, `task is ${task.status}; the worktree can be removed only when the task is idle`);
+    if (!['succeeded', 'merged', 'failed', 'aborted', 'pr_open'].includes(task.status)) throw new HttpError(409, `task is ${task.status}; the worktree can be removed only when the task is idle`);
     return this.dropWorktree(task, task.status === 'aborted');
   }
 

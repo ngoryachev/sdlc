@@ -38,8 +38,11 @@ export interface ClaudeRunHandle {
   abort(): void;
 }
 
+export interface ModelChoice { value: string; displayName: string; description?: string }
 export interface ClaudeRunner {
   start(spec: ClaudeRunSpec): ClaudeRunHandle;
+  /** Models available to the current account (dynamic, from the CLI); optional for fakes. */
+  models?(): Promise<ModelChoice[]>;
 }
 
 /** Async queue used as the streaming-input prompt so the session stays open for inject()/interrupt(). */
@@ -98,6 +101,24 @@ process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
 }) as typeof process.emitWarning;
 
 export class SdkClaudeRunner implements ClaudeRunner {
+  private modelCache: { at: number; list: ModelChoice[] } | null = null;
+
+  /** Ask the CLI which models this account may use. Cached for an hour; a short-lived query is opened only for the lookup. */
+  async models(): Promise<ModelChoice[]> {
+    if (this.modelCache && Date.now() - this.modelCache.at < 3_600_000) return this.modelCache.list;
+    const input = new InputQueue();
+    const abortController = new AbortController();
+    const q: Query = query({ prompt: input, options: { cwd: process.cwd(), maxTurns: 1, abortController, env: filteredEnv({}), settingSources: [] } });
+    try {
+      const list = await Promise.race([
+        q.supportedModels().then((ms) => ms.map((m) => ({ value: m.value, displayName: m.displayName, description: (m as { description?: string }).description }))),
+        new Promise<ModelChoice[]>((_, rej) => setTimeout(() => rej(new Error('supportedModels timed out')), 20_000)),
+      ]);
+      this.modelCache = { at: Date.now(), list };
+      return list;
+    } finally { input.close(); abortController.abort(); }
+  }
+
   start(spec: ClaudeRunSpec): ClaudeRunHandle {
     const input = new InputQueue();
     input.push(userMessage(spec.prompt));

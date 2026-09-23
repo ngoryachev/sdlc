@@ -86,6 +86,18 @@ export async function prFeedback(cwd: string, number: number): Promise<{ state: 
   return { state: view.state, comments };
 }
 
+export interface PrInfo { number: number; url: string; title: string; body: string; headRefName: string; baseRefName: string; state: string; isDraft: boolean }
+export async function prView(cwd: string, number: number): Promise<PrInfo> {
+  const out = await gh(['pr', 'view', String(number), '--json', 'number,url,title,body,headRefName,baseRefName,state,isDraft'], cwd);
+  return JSON.parse(out) as PrInfo;
+}
+
+/** Merge a PR on GitHub; the remote head branch is deleted. Returns the merge state reported afterwards. */
+export async function prMerge(cwd: string, number: number, method: 'merge' | 'squash' | 'rebase'): Promise<void> {
+  await gh(['pr', 'ready', String(number)], cwd).catch(() => {});
+  await gh(['pr', 'merge', String(number), `--${method}`, '--delete-branch'], cwd);
+}
+
 export async function prComment(cwd: string, number: number, body: string): Promise<void> {
   await gh(['pr', 'comment', String(number), '--body', body], cwd);
 }

@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -68,6 +69,59 @@ export async function createWorktree(opts: { repo: string; worktreesDir: string;
     if (fs.existsSync(src)) { fs.mkdirSync(path.dirname(path.join(worktreePath, rel)), { recursive: true }); fs.cpSync(src, path.join(worktreePath, rel), { recursive: true }); }
   }
   return { worktreePath, branch, baseRef };
+}
+
+/** Attach a worktree to an existing branch for a new task (import of a PR / `--branch`). The branch is left as is. */
+export async function adoptWorktree(o: { repo: string; worktreesDir: string; taskId: string; branch: string; remote: string | null }): Promise<WorktreeInfo> {
+  const worktreePath = path.join(o.worktreesDir, o.taskId);
+  await recreateWorktree({ repo: o.repo, worktreePath, branch: o.branch, remote: o.remote });
+  const gitDir = await git(o.repo, ['rev-parse', '--git-common-dir']);
+  const exclude = path.join(path.isAbsolute(gitDir) ? gitDir : path.join(o.repo, gitDir), 'info', 'exclude');
+  fs.mkdirSync(path.dirname(exclude), { recursive: true });
+  const cur = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : '';
+  if (!cur.split('\n').includes('.sdlc/')) fs.appendFileSync(exclude, (cur.endsWith('\n') || cur === '' ? '' : '\n') + '.sdlc/\n');
+  return { worktreePath, branch: o.branch, baseRef: o.remote ? `${o.remote}/${o.branch}` : o.branch };
+}
+
+/** Merge `head` into `base` without a PR, in a temporary worktree of the main checkout; pushes when the base has a remote. */
+export async function mergeLocally(o: { repo: string; base: string; baseRemote: string | null; head: string; method: 'merge' | 'squash' | 'rebase'; message: string; author: string }): Promise<string> {
+  const tmp = path.join(os.tmpdir(), `sdlc-land-${Date.now()}`);
+  const m = /^(.*) <(.*)>$/.exec(o.author);
+  const env = m ? { GIT_AUTHOR_NAME: m[1], GIT_AUTHOR_EMAIL: m[2], GIT_COMMITTER_NAME: m[1], GIT_COMMITTER_EMAIL: m[2] } : {};
+  if (o.baseRemote) await git(o.repo, ['fetch', o.baseRemote, o.base]);
+  const baseRef = o.baseRemote ? `${o.baseRemote}/${o.base}` : o.base;
+  // detached worktree at the base tip: no local branch is checked out twice
+  await git(o.repo, ['worktree', 'add', '--detach', tmp, baseRef]);
+  try {
+    if (o.method === 'rebase') { await git(tmp, ['merge', '--ff-only', o.head], { env }).catch(async () => { await git(tmp, ['checkout', '--detach', o.head]); await git(tmp, ['rebase', baseRef], { env }); }); }
+    else if (o.method === 'squash') { await git(tmp, ['merge', '--squash', o.head], { env }); await git(tmp, ['commit', '-q', '-m', o.message], { env }); }
+    else await git(tmp, ['merge', '--no-ff', '-m', o.message, o.head], { env });
+    const sha = await git(tmp, ['rev-parse', 'HEAD']);
+    if (o.baseRemote) await git(tmp, ['push', o.baseRemote, `HEAD:refs/heads/${o.base}`]);
+    else {
+      const cur = await git(o.repo, ['rev-parse', '--abbrev-ref', 'HEAD'], { allowFail: true });
+      if (cur === o.base) await git(o.repo, ['merge', '--ff-only', sha], { env });   // base is checked out in the main checkout
+      else await git(o.repo, ['branch', '-f', o.base, sha]);
+    }
+    return sha;
+  } finally {
+    await git(o.repo, ['worktree', 'remove', '--force', tmp], { allowFail: true });
+    await git(o.repo, ['worktree', 'prune'], { allowFail: true });
+  }
+}
+
+/** Fast-forward the local base branch after a merge on the remote, if it is checked out in the main checkout. */
+export async function syncLocalBase(repo: string, remote: string | null, base: string): Promise<void> {
+  if (!remote) return;
+  await git(repo, ['fetch', remote, base], { allowFail: true });
+  const cur = await git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'], { allowFail: true });
+  if (cur === base) await git(repo, ['merge', '--ff-only', `${remote}/${base}`], { allowFail: true });
+  else await git(repo, ['branch', '-f', base, `${remote}/${base}`], { allowFail: true });
+}
+
+export async function deleteBranch(repo: string, branch: string, remote: string | null): Promise<void> {
+  await git(repo, ['branch', '-D', branch], { allowFail: true });
+  if (remote) await git(repo, ['push', remote, '--delete', branch], { allowFail: true });
 }
 
 /** Re-attach a worktree for an existing task branch (after cleanup), e.g. for a PR feedback round. */

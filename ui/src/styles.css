@@ -21,7 +21,7 @@ textarea { min-height: 96px; resize: vertical; }
 .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; } @media (max-width: 820px) { .grid2 { grid-template-columns: 1fr; } }
 table { width:100%; border-collapse: collapse; } th, td { text-align:left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; } th { color: var(--muted); font-weight: 500; font-size: 12px; }
 .chip { display:inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border:1px solid var(--line); color: var(--muted); }
-.chip.running { color: var(--accent); border-color: var(--accent); } .chip.waiting_hil { color: var(--hil); border-color: var(--hil); } .chip.succeeded, .chip.pr_open { color: var(--ok); border-color: var(--ok); }
+.chip.running { color: var(--accent); border-color: var(--accent); } .chip.waiting_hil { color: var(--hil); border-color: var(--hil); } .chip.succeeded, .chip.pr_open, .chip.merged { color: var(--ok); border-color: var(--ok); }
 .chip.failed, .chip.aborted { color: var(--err); border-color: var(--err); } .chip.paused { color: var(--warn); border-color: var(--warn); }
 .stepper { display:flex; gap:6px; flex-wrap: wrap; } .step { padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); font-size: 12px; cursor: pointer; }
 .step.running { border-color: var(--accent); color: var(--accent); } .step.succeeded { border-color: var(--ok); color: var(--ok); } .step.failed { border-color: var(--err); color: var(--err); }

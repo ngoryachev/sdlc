@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { PhaseRun } from '@sdlc/shared';
+import type { EffortLevel, ModelOverrides, PhaseRun } from '@sdlc/shared';
 import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { ClaudePhaseSpec } from '../pipeline/schema.js';
 import { renderTemplate } from '../pipeline/template.js';
@@ -52,6 +52,9 @@ export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
     pr.resumedFromSessionId = resume ?? null;
     ctx.persistPhase(pr);
 
+    // model/effort: task override (phase, then '*') → config for this phase → config default → pipeline. Read at phase start, so config edits apply to the next phase.
+    const chosen = resolveModel(phase.name, { phaseModel: phase.model ?? spec.defaults.model, phaseEffort: phase.effort ?? spec.defaults.effort }, config.models, task.modelOverrides);
+    tw.write({ type: 'sdlc.model', phaseRunId: pr.id, model: chosen.model ?? '(default)', effort: chosen.effort ?? '(default)', ts: nowIso() });
     const runSpec: ClaudeRunSpec = {
       cwd: task.worktreePath,
       prompt,
@@ -61,10 +64,10 @@ export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
       disallowedTools: phase.disallowed_tools.length ? phase.disallowed_tools : undefined,
       systemAppend,
       outputSchema,
-      maxTurns: phase.max_turns ?? spec.defaults.max_turns ?? 40,
-      maxBudgetUsd: phase.max_budget_usd ?? spec.defaults.max_budget_usd ?? 5,
-      model: phase.model ?? spec.defaults.model,
-      effort: phase.effort ?? spec.defaults.effort,
+      maxTurns: config.limits.phases === 'off' ? undefined : phase.max_turns ?? spec.defaults.max_turns ?? 40,
+      maxBudgetUsd: config.limits.phases === 'off' ? undefined : phase.max_budget_usd ?? spec.defaults.max_budget_usd ?? 5,
+      model: chosen.model,
+      effort: chosen.effort,
       settingSources: spec.defaults.setting_sources,
       writeScope: phase.write_scope,
       readAllow: repoConfig.read_allow.map((d) => path.resolve(task.repoPath, d)),
@@ -98,7 +101,7 @@ export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
     pr.endedAt = nowIso();
     if (result.subtype === 'success') {
       pr.resultText = result.result;
-      pr.structuredOutput = result.structured_output ?? null;
+      pr.structuredOutput = normalizeStrings(result.structured_output ?? null);
       if (result.terminal_reason === 'aborted_streaming' || result.terminal_reason === 'aborted_tools') {
         return ctx.abortRequested ? { kind: 'aborted' } : { kind: 'paused', reason: 'interrupted' };
       }
@@ -119,4 +122,21 @@ export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
     }
     return { kind: 'ok' };
   }
+}
+
+export function resolveModel(phaseName: string, pipeline: { phaseModel?: string; phaseEffort?: EffortLevel }, cfg: { default?: string; effort?: EffortLevel; phases: Record<string, { model?: string; effort?: EffortLevel }> }, overrides: ModelOverrides | null | undefined): { model?: string; effort?: EffortLevel } {
+  const o = overrides?.[phaseName] ?? {}; const oAll = overrides?.['*'] ?? {};
+  const c = cfg.phases[phaseName] ?? {};
+  return {
+    model: o.model ?? oAll.model ?? c.model ?? cfg.default ?? pipeline.phaseModel,
+    effort: o.effort ?? oAll.effort ?? c.effort ?? cfg.effort ?? pipeline.phaseEffort,
+  };
+}
+
+/** Models sometimes emit literal "\\n" inside JSON strings; turn them into real newlines when the string has none. */
+export function normalizeStrings<T>(v: T): T {
+  if (typeof v === 'string') return (/\\[nt]/.test(v) && !v.includes('\n') ? v.replace(/\\r\\n|\\n/g, '\n').replace(/\\t/g, '\t') : v) as T;
+  if (Array.isArray(v)) return v.map(normalizeStrings) as T;
+  if (v && typeof v === 'object') { const out: Record<string, unknown> = {}; for (const [k, x] of Object.entries(v)) out[k] = normalizeStrings(x); return out as T; }
+  return v;
 }
