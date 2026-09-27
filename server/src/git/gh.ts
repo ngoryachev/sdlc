@@ -23,7 +23,8 @@ export interface GitHub {
   tokenFor(login: string): Promise<string | null>;
   canPush(slug: string, token: string | null): Promise<boolean>;
   repoInfo(cwd: string, auth: RepoAuth): Promise<{ slug: string; parent: string | null } | null>;
-  listRepos(auth: RepoAuth): Promise<GhRepo[]>;
+  /** `fresh` bypasses the 5-minute cache (the picker asks for it on open so a repository created a moment ago shows up). */
+  listRepos(auth: RepoAuth, o?: { fresh?: boolean }): Promise<GhRepo[]>;
   repoBranches(slug: string, auth: RepoAuth): Promise<string[]>;
   clone(slug: string, dest: string, auth: RepoAuth): Promise<void>;
   prView(cwd: string, number: number, auth: RepoAuth): Promise<PrInfo>;
@@ -112,8 +113,10 @@ export class GhCli implements GitHub {
     return info.parent ?? info.slug;
   }
 
-  listRepos(auth: RepoAuth): Promise<GhRepo[]> {
-    return this.repos.get(auth.user ?? '(active)', async () => {
+  listRepos(auth: RepoAuth, o: { fresh?: boolean } = {}): Promise<GhRepo[]> {
+    const key = auth.user ?? '(active)';
+    if (o.fresh) this.repos.drop(key);
+    return this.repos.get(key, async () => {
       const q = '.[] | {slug: .full_name, description: (.description // ""), isFork: .fork, isPrivate: .private, pushedAt: .pushed_at, defaultBranch: .default_branch, canPush: (.permissions.push // false)}';
       const out = await gh(['api', '--paginate', 'user/repos?affiliation=owner,collaborator,organization_member&sort=pushed&per_page=100', '-q', q], { token: auth.token });
       return out.split('\n').filter(Boolean).map((l) => JSON.parse(l) as GhRepo);

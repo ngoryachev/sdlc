@@ -55,7 +55,7 @@ export const api = {
   respond: (id: string, r: HilResponse) => req<HilRequest>('POST', `/hil/${id}/respond`, r),
   events: (since = 0, limit = 200) => req<{ events: unknown[] }>('GET', `/events/history?since=${since}&limit=${limit}`),
   repos: () => req<{ repos: RegisteredRepo[] }>('GET', '/repos'),
-  githubRepos: (account?: string) => req<{ account: string | null; repos: GhRepoRow[] }>('GET', `/repos/github${account ? `?account=${encodeURIComponent(account)}` : ''}`),
+  githubRepos: (account?: string, fresh = false) => req<{ account: string | null; repos: GhRepoRow[] }>('GET', `/repos/github?${new URLSearchParams({ ...(account ? { account } : {}), ...(fresh ? { fresh: '1' } : {}) })}`),
   addRepo: (b: { path?: string; slug?: string; gh_user?: string | null }) => req<{ name: string; path: string; ghUser: string | null }>('POST', '/repos', { ...b, gh_user: b.gh_user ?? undefined }),
   branches: (name: string) => req<{ branches: { remote: string | null; branch: string }[]; default: { remote: string | null; branch: string } }>('GET', `/repos/${encodeURIComponent(name)}/branches`),
   telegramTest: () => req<{ ok: boolean; error?: string }>('POST', '/config/telegram/test'),

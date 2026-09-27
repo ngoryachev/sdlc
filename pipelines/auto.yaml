@@ -2,7 +2,7 @@ name: auto
 description: "No human checkpoints (for tests and truly trivial tasks): implement -> self_check -> commit -> test(agent) -> review -> qa(best effort)"
 defaults:
   setting_sources: [project]
-  effort: medium
+  effort: high
 phases:
   - name: implement
     type: claude

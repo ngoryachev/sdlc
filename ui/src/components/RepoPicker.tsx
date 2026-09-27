@@ -29,11 +29,20 @@ export function RepoPicker({ value, onChange }: { value: RepoChoice | null; onCh
     void api.ghAccounts().then((r) => { setAccounts(r.accounts); setAccount((a) => a || r.accounts.find((x) => x.active)?.login || r.accounts[0]?.login || ''); if (r.error) setErr(r.error); }).catch((e) => setErr(String(e.message)));
     void api.repos().then((r) => setRegistered(r.repos)).catch(() => {});
   }, []);
-  useEffect(() => {
-    if (!account) return;
+  const loadSeq = useRef(0);
+  /** Reload the GitHub list; `fresh` bypasses the server cache. The old list stays visible while loading. */
+  const load = (acc: string, fresh: boolean) => {
+    if (!acc) return;
+    const seq = ++loadSeq.current;
     setLoading(true); setErr(null);
-    void api.githubRepos(account).then((r) => setRemote(r.repos)).catch((e) => { setRemote([]); setErr(String(e.message)); }).finally(() => setLoading(false));
-  }, [account]);
+    void api.githubRepos(acc, fresh)
+      .then((r) => { if (seq === loadSeq.current) setRemote(r.repos); })
+      .catch((e) => { if (seq === loadSeq.current) { setRemote([]); setErr(String(e.message)); } })
+      .finally(() => { if (seq === loadSeq.current) setLoading(false); });
+  };
+  useEffect(() => load(account, false), [account]);
+  // the page may stay open for hours: every time the dropdown opens, refetch bypassing the cache, so a repository created a moment ago is listed
+  const openFresh = () => { setOpen(true); load(account, true); void api.repos().then((r) => setRegistered(r.repos)).catch(() => {}); };
 
   const needle = q.trim().toLowerCase();
   const match = (...xs: (string | null | undefined)[]) => !needle || xs.some((x) => x?.toLowerCase().includes(needle));
@@ -49,9 +58,9 @@ export function RepoPicker({ value, onChange }: { value: RepoChoice | null; onCh
         <input
           value={open ? q : value ? label(value) : q}
           placeholder="search your repositories…"
-          onFocus={() => { if (closeTimer.current) window.clearTimeout(closeTimer.current); setOpen(true); setQ(''); }}
+          onFocus={() => { if (closeTimer.current) window.clearTimeout(closeTimer.current); if (!open) openFresh(); setQ(''); }}
           onBlur={() => { closeTimer.current = window.setTimeout(() => setOpen(false), 150); }}
-          onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+          onChange={(e) => { setQ(e.target.value); if (!open) openFresh(); }}
         />
         <select style={{ width: 'auto' }} value={account} onChange={(e) => setAccount(e.target.value)} title="GitHub account whose repositories are listed (and used to clone a new one)">
           {accounts.map((a) => <option key={a.login} value={a.login}>{a.login}{a.active ? ' · gh default' : ''}</option>)}

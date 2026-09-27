@@ -20,13 +20,14 @@ export function reposRoutes(app: App) {
   /** Registered (cloned) repositories with the account each one is worked on with. */
   r.get('/repos', (c) => c.json({ repos: app.config.repos.map((x) => ({ name: x.name, path: x.path, ghUser: x.gh_user ?? null, exists: fs.existsSync(x.path) })) }));
 
-  /** Every repository the account can see: own, collaborator, organisations; most recently pushed first. */
+  /** Every repository the account can see: own, collaborator, organisations; most recently pushed first. `?fresh=1` skips the server cache. */
   r.get('/repos/github', async (c) => {
     if (!(await ghAvailable())) throw new HttpError(400, 'gh CLI is not installed or not authenticated');
     const account = c.req.query('account') || (await app.github.accounts()).find((a) => a.active)?.login || null;
     const auth = await app.accounts.forUser(account);
     const cloned = new Set(await Promise.all(app.config.repos.map(async (x) => (await slugFromRemote(x.path).catch(() => null)) ?? x.name)));
-    const repos = (await app.github.listRepos(auth)).map((x) => ({ ...x, cloned: cloned.has(x.slug) }));
+    const fresh = ['1', 'true'].includes(c.req.query('fresh') ?? '');
+    const repos = (await app.github.listRepos(auth, { fresh })).map((x) => ({ ...x, cloned: cloned.has(x.slug) }));
     return c.json({ account, repos });
   });
 
