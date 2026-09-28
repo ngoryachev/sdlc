@@ -47,8 +47,10 @@ export function HilPage() {
   useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); }).catch((e) => toast(e.message, 'error')); }, [id]);
   useEffect(() => { if (h && h.status === 'open' && !openList.some((x) => x.id === h.id)) void api.hilOne(id).then(setH); }, [openList, h?.id]);
 
+  const unanswered = h?.payload.kind === 'refine_prompt' ? h.payload.questions.filter((q) => !answers[q.question]?.trim()).map((q) => q.header) : [];
   const respond = async (decision: HilDecision) => {
     if (!h) return;
+    if (decision === 'approve' && unanswered.length) { toast(`answer first: ${unanswered.join(', ')}`, 'error'); return; }
     if (decision === 'request_changes' && !comment.trim()) { toast('a comment is required for request changes', 'error'); return; }
     setBusy(true);
     const body: HilResponse = { decision, comment: comment.trim() || undefined, edited: Object.keys(edited).length ? edited : undefined, answers: Object.keys(answers).length ? answers : undefined };
@@ -92,7 +94,7 @@ export function HilPage() {
           )}
           <div className="actions">
             {h.allowedDecisions.filter((d) => d !== 'abort').map((d) => (
-              <div className="act" key={d}><button className={['approve', 'answer', 'allow', 'retry'].includes(d) ? 'primary' : ''} disabled={busy} onClick={() => respond(d)}>{label(d)}</button><small>{h.next[d]}</small></div>
+              <div className="act" key={d}><button className={['approve', 'answer', 'allow', 'retry'].includes(d) ? 'primary' : ''} disabled={busy || (d === 'approve' && unanswered.length > 0)} title={d === 'approve' && unanswered.length ? `answer first: ${unanswered.join(', ')}` : undefined} onClick={() => respond(d)}>{label(d)}</button><small>{h.next[d]}</small></div>
             ))}
             <div className="act" style={{ marginLeft: 'auto' }}><ArmedAbort onClick={() => respond('abort')} disabled={busy} /><small>{h.next.abort}</small></div>
           </div>
@@ -119,7 +121,18 @@ function Payload({ p, edited, setEdited, answers, setAnswers, readOnly }: { p: H
       const value = edited.prompt ?? p.suggestedPrompt ?? p.prompt;
       return (
         <div>
-          {p.questions.length > 0 && <div className="card" style={{ background: 'var(--bg)' }}><b>Claude asks:</b><ol>{p.questions.map((q, i) => <li key={i}><b>{q.header}:</b> {q.question}{q.options?.length ? <div className="small muted">options: {q.options.join(' · ')}</div> : null}</li>)}</ol><div className="small muted">Answer by editing the prompt below.</div></div>}
+          {p.questions.length > 0 && (
+            <div className="card" style={{ background: 'var(--bg)' }}>
+              <b>Claude asks</b> <span className="small muted">— every question needs an answer; they are appended to the prompt</span>
+              {p.questions.map((q, i) => (
+                <div key={i} style={{ marginTop: 8 }}>
+                  <div><b>{q.header}:</b> {q.question}</div>
+                  {q.options?.length ? <div className="row" style={{ gap: 4, flexWrap: 'wrap', marginTop: 4 }}>{q.options.map((o) => <button key={o} type="button" className={answers[q.question] === o ? 'primary' : ''} disabled={readOnly} onClick={() => setAnswers({ ...answers, [q.question]: o })}>{o}</button>)}</div> : null}
+                  <input style={{ marginTop: 4 }} placeholder="your answer" readOnly={readOnly} value={answers[q.question] ?? ''} onChange={(e) => setAnswers({ ...answers, [q.question]: e.target.value })} />
+                </div>
+              ))}
+            </div>
+          )}
           {p.assumptions.length > 0 && <div className="small muted" style={{ marginBottom: 6 }}><b>Assumptions:</b> {p.assumptions.join(' · ')}</div>}
           <label className="small muted">Task title</label>
           <input value={edited.title ?? p.suggestedTitle ?? ''} placeholder="short title" readOnly={readOnly} onChange={(e) => setEdited({ ...edited, title: e.target.value })} style={{ marginBottom: 8 }} />

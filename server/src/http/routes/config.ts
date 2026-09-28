@@ -7,6 +7,7 @@ const Effort = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 const ConfigPatch = z.object({
   default_pipeline: z.string().optional(),
   max_parallel_tasks: z.number().int().positive().optional(),
+  max_loops: z.number().int().min(0).optional(),
   task_budget_usd: z.union([z.number().positive(), z.literal('off')]).optional(),
   limits: z.object({ phases: z.enum(['pipeline', 'off']) }).optional(),
   merge_method: z.enum(['merge', 'squash', 'rebase']).optional(),
@@ -18,7 +19,7 @@ function view(app: App) {
   const cfg = app.config;
   return {
     publicUrl: cfg.server.public_url ?? `http://${cfg.server.host}:${cfg.server.port}`,
-    repos: cfg.repos.map((r) => ({ name: r.name, path: r.path, ghUser: r.gh_user ?? null })), reposDir: cfg.repos_dir, prSyncInterval: cfg.pr_sync_interval, defaultPipeline: cfg.default_pipeline, maxParallelTasks: cfg.max_parallel_tasks,
+    repos: cfg.repos.map((r) => ({ name: r.name, path: r.path, ghUser: r.gh_user ?? null })), reposDir: cfg.repos_dir, prSyncInterval: cfg.pr_sync_interval, defaultPipeline: cfg.default_pipeline, maxParallelTasks: cfg.max_parallel_tasks, maxLoops: cfg.max_loops,
     taskBudgetUsd: cfg.task_budget_usd, limits: cfg.limits, mergeMethod: cfg.merge_method, cleanup: cfg.cleanup, models: cfg.models,
     telegram: { enabled: cfg.telegram.enabled, configured: !!cfg.telegram.bot_token, chatId: cfg.telegram.chat_id ?? null },
   };

@@ -17,6 +17,7 @@ export const ConfigSchema = z.object({
   default_pipeline: z.string().default('standard'),
   max_parallel_tasks: z.number().int().positive().default(2),
   task_budget_usd: z.union([z.number().positive(), z.literal('off')]).default(20),   // 'off' = no task-level budget
+  max_loops: z.number().int().min(0).default(15),   // cap on every on_fail back_to loop (test→implement, review→implement); overrides the pipelines' max_loops
   limits: z.object({
     phases: z.enum(['pipeline', 'off']).default('pipeline'),   // off: ignore max_turns / max_budget_usd from pipelines
   }).default({ phases: 'pipeline' }),

@@ -46,7 +46,7 @@ describe('auto pipeline end-to-end (fake runner)', () => {
       },
     }));
 
-    const app = testApp(dir, runner);
+    const app = testApp(dir, runner, { max_loops: 1 });
     const seen: string[] = [];
     app.events.on((e) => { if (e.type === 'phase.finished') { const p = (e.payload as { phaseRun: { phaseName: string; status: string } }).phaseRun; seen.push(`${p.phaseName}:${p.status}`); } });
 
@@ -55,7 +55,7 @@ describe('auto pipeline end-to-end (fake runner)', () => {
 
     const t = app.store.getTask(task.id)!;
     expect(t.status).toBe('succeeded');
-    expect(seen).toEqual(['implement:succeeded', 'self_check:succeeded', 'commit_impl:succeeded', 'test:failed', 'implement:succeeded', 'self_check:succeeded', 'commit_impl:succeeded', 'test:succeeded', 'commit_tests:succeeded', 'review:succeeded', 'qa:succeeded']);
+    expect(seen).toEqual(['implement:succeeded', 'self_check:succeeded', 'commit_impl:succeeded', 'test:failed', 'implement:succeeded', 'self_check:skipped', 'commit_impl:succeeded', 'test:succeeded', 'commit_tests:succeeded', 'review:succeeded', 'qa:succeeded']);
     expect(implementCalls).toBe(2);
     expect(t.totalCostUsd).toBeCloseTo(1.3, 5);
 
@@ -83,7 +83,7 @@ describe('auto pipeline end-to-end (fake runner)', () => {
         return { text: 'ok' };
       },
     }));
-    const app = testApp(dir, runner);
+    const app = testApp(dir, runner, { max_loops: 1 });
     const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'auto', baseRemote: null });
     await app.engine.advance(task.id);
     const t = app.store.getTask(task.id)!;

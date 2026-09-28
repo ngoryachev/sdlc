@@ -27,6 +27,7 @@ Open it once per browser (cookie is set). Config lives in `~/.sdlc/config.yaml` 
 server: { host: 0.0.0.0, port: 7337, public_url: http://192.168.1.10:7337 }   # host 0.0.0.0 to open from a phone
 default_pipeline: standard
 max_parallel_tasks: 2
+max_loops: 15              # cap on test→implement / review→implement loops before escalating (overrides pipelines)
 task_budget_usd: 20        # or off
 limits: { phases: pipeline }   # off: ignore max_turns / max_budget_usd from pipelines
 merge_method: merge        # merge | squash | rebase, used by Land

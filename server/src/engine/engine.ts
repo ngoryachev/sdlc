@@ -422,7 +422,7 @@ export class Engine {
   }
 
   private async advanceInner(taskId: string): Promise<void> {
-    const { store, events } = this.d;
+    const { config, store, events } = this.d;
     for (;;) {
       const task = store.getTask(taskId);
       const run = task && store.latestRunForTask(taskId);
@@ -529,7 +529,8 @@ export class Engine {
           }
           if (policy?.back_to) {
             const key = `${phase.name}->${policy.back_to}`;
-            if ((run.loopCounts[key] ?? 0) < policy.max_loops) {
+            const maxLoops = config.max_loops;   // global cap; the pipeline's own max_loops is only the fallback documented in the yaml
+            if ((run.loopCounts[key] ?? 0) < maxLoops) {
               run.loopCounts[key] = (run.loopCounts[key] ?? 0) + 1;
               tpl = buildTemplateContext({ task: fresh, run, spec, repoConfig, store });
               const fb = policy.feedback ? renderTemplate(policy.feedback, tpl) : `Phase ${phase.name} failed: ${outcome.error}`;
@@ -539,7 +540,7 @@ export class Engine {
               continue;
             }
             // loops exhausted
-            if (policy.then === 'hil') { this.escalate(fresh, run, pr, `${outcome.error} (after ${policy.max_loops} loop(s) back to ${policy.back_to})`); return; }
+            if (policy.then === 'hil') { this.escalate(fresh, run, pr, `${outcome.error} (after ${maxLoops} loop(s) back to ${policy.back_to})`); return; }
             // then: fail
             if (isSoftFailure(phase)) { run.cursor++; this.saveRun(run); continue; }
           }
@@ -560,6 +561,11 @@ export class Engine {
     if (hil.status !== 'open') throw new HttpError(409, `already ${hil.status}`, { answeredVia: hil.answeredVia });
     if (!hil.allowedDecisions.includes(response.decision)) throw new HttpError(400, `decision ${response.decision} not allowed for ${hil.kind}`);
     if (response.decision === 'request_changes' && !response.comment?.trim()) throw new HttpError(400, 'comment is required for request_changes');
+    if (hil.payload.kind === 'refine_prompt' && response.decision === 'approve') {
+      // every clarifying question needs an explicit answer: an unanswered one silently becomes the implementer's own choice
+      const unanswered = hil.payload.questions.filter((q) => !response.answers?.[q.question]?.trim());
+      if (unanswered.length) throw new HttpError(400, `answer the clarifying question(s) first: ${unanswered.map((q) => q.header).join(', ')}`);
+    }
 
     const task = store.getTask(hil.taskId)!;
     const run = store.latestRunForTask(task.id)!;
@@ -591,7 +597,8 @@ export class Engine {
     switch (hil.kind) {
       case 'refine_prompt': {
         const p = hil.payload as Extract<typeof hil.payload, { kind: 'refine_prompt' }>;
-        task.refinedPrompt = response.edited?.prompt?.trim() || p.suggestedPrompt || task.initialPrompt;
+        const base = response.edited?.prompt?.trim() || p.suggestedPrompt || task.initialPrompt;
+        task.refinedPrompt = p.questions.length ? `${base}\n\n## Clarifying questions, answered by the developer\n${p.questions.map((q) => `- **${q.header}**: ${q.question}\n  → ${response.answers![q.question]!.trim()}`).join('\n')}` : base;
         task.title = response.edited?.title?.trim() || p.suggestedTitle || task.title;
         if (p.suggestedBranch) await this.renameBranchTo(task, p.suggestedBranch);
         closePhase('succeeded', 'approved');

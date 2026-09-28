@@ -48,6 +48,7 @@ phases:
 
   - name: self_check
     type: claude
+    when: "phases.implement.attempt == 1"   # polish the first implementation only; loop iterations are already verified by test/review
     prompt: prompts/self_check.md
     session: { resume: implement }
     permission_mode: bypassPermissions

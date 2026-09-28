@@ -25,7 +25,9 @@ export class TelegramNotifier implements Notifier {
   async onHilCreated(req: HilRequest, task: Task, link: string) {
     if (!this.o.chatId) return;
     const text = `<b>[${esc(req.kind)}]</b> ${esc(task.title)}\n<i>${esc(req.summary)}</i>`;
-    const positive = req.allowedDecisions.find((d) => ['approve', 'allow', 'retry'].includes(d));
+    // refine with open questions needs typed answers: only the web UI can do that
+    const needsWeb = req.payload.kind === 'refine_prompt' && req.payload.questions.length > 0;
+    const positive = needsWeb ? undefined : req.allowedDecisions.find((d) => ['approve', 'allow', 'retry'].includes(d));
     const negative = req.allowedDecisions.find((d) => ['abort', 'deny'].includes(d));
     const row: { text: string; callback_data?: string; url?: string }[] = [];
     if (positive) row.push({ text: `✅ ${positive}`, callback_data: `h:${req.id}:${positive}` });

@@ -34,9 +34,11 @@ describe('standard pipeline with HIL (fake runner)', () => {
     expect(hil.kind).toBe('refine_prompt');
     expect(hil.payload.kind === 'refine_prompt' && hil.payload.questions.length).toBe(1);
     expect(task.branch).toBe(`sdlc/${task.id}`); // fake runner has no brief(): no slug at creation
-    await app.engine.respondHil(hil.id, { decision: 'approve', edited: { prompt: 'Change a.txt from x to y (file: a.txt)', title: 'Flip a.txt to y' } }, 'web');
+    // an unanswered clarifying question blocks approve: it must not silently become the implementer's own choice
+    await expect(app.engine.respondHil(hil.id, { decision: 'approve', edited: { prompt: 'Change a.txt from x to y (file: a.txt)' } }, 'web')).rejects.toThrow(/answer the clarifying question/);
+    await app.engine.respondHil(hil.id, { decision: 'approve', edited: { prompt: 'Change a.txt from x to y (file: a.txt)', title: 'Flip a.txt to y' }, answers: { 'Which file?': 'a.txt' } }, 'web');
     await app.engine.advance(task.id);
-    expect(app.store.getTask(task.id)!.refinedPrompt).toBe('Change a.txt from x to y (file: a.txt)');
+    expect(app.store.getTask(task.id)!.refinedPrompt).toBe('Change a.txt from x to y (file: a.txt)\n\n## Clarifying questions, answered by the developer\n- **File**: Which file?\n  → a.txt');
     expect(app.store.getTask(task.id)!.branch).toBe(`sdlc/flip-a-txt-${task.id}`);
     expect(execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: task.worktreePath }).toString().trim()).toBe(`sdlc/flip-a-txt-${task.id}`);
 
