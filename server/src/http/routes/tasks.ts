@@ -6,18 +6,17 @@ import type { App } from '../../app.js';
 import { HttpError } from '../../engine/engine.js';
 import { readTranscript } from '../../claude/transcript.js';
 import { diffAgainst } from '../../git/git.js';
-import { loadPipeline } from '../../pipeline/loader.js';
+import { loadPipeline, roleOf } from '../../pipeline/loader.js';
+import { snapshot } from '../../engine/engine.js';
 
 const Effort = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 const ModelOverrides = z.record(z.string(), z.object({ model: z.string().optional(), effort: Effort.optional() }).strict()).nullable().optional();
 const CreateTask = z.object({
-  prompt: z.string().min(1), repoPath: z.string().min(1), pipeline: z.string().optional(), title: z.string().optional(),
+  prompt: z.string().optional(), repoPath: z.string().min(1), pipeline: z.string().optional(), title: z.string().optional(),
   baseRemote: z.string().nullable().optional(), baseBranch: z.string().optional(),
   reviewMode: z.enum(['conceptual', 'line']).optional(), postReview: z.boolean().optional(),
-  branch: z.string().optional(), startAt: z.string().optional(), modelOverrides: ModelOverrides,
+  branch: z.string().optional(), prNumber: z.number().int().positive().optional(), startAt: z.string().optional(), stopAfter: z.string().optional(), modelOverrides: ModelOverrides,
 });
-const ImportPr = z.object({ repoPath: z.string().min(1), number: z.number().int().positive(), pipeline: z.string().optional(), reviewMode: z.enum(['conceptual', 'line']).optional(), modelOverrides: ModelOverrides });
-
 export function tasksRoutes(app: App) {
   const r = new Hono();
   const { store, engine } = app;
@@ -33,10 +32,6 @@ export function tasksRoutes(app: App) {
     const task = await engine.createTask(body);
     return c.json(task, 201);
   });
-  r.post('/tasks/import-pr', async (c) => {
-    const body = ImportPr.parse(await c.req.json());
-    return c.json(await engine.importPr(body), 201);
-  });
   r.get('/models', async (c) => {
     try { return c.json({ models: app.runner.models ? await app.runner.models() : [] }); }
     catch (e) { return c.json({ models: [], error: e instanceof Error ? e.message : String(e) }); }
@@ -45,7 +40,11 @@ export function tasksRoutes(app: App) {
   r.get('/tasks/:id', (c) => {
     const t = mustTask(c.req.param('id'));
     const children = engine.childTasks(t, true).map((x) => ({ id: x.id, title: x.title, status: x.status, branch: x.branch, prUrl: x.prUrl, prNumber: x.prNumber }));
-    return c.json({ task: t, run: store.latestRunForTask(t.id), phaseRuns: store.phaseRunsForTask(t.id), openHil: store.openHilForTask(t.id), worktreeExists: fs.existsSync(path.join(t.worktreePath, '.git')), baseChain: baseChain(app, t), children });
+    const run = store.latestRunForTask(t.id);
+    // the slice of the pipeline this task runs, and what that makes it on its pull request
+    let segment: { from: string; to: string } | null = null; let role: string | null = null;
+    if (run) { try { const { spec, seg } = snapshot(run); segment = { from: spec.phases[seg.fromIdx]!.name, to: spec.phases[seg.toIdx]!.name }; role = roleOf(spec, seg); } catch { /* snapshot of an older schema */ } }
+    return c.json({ task: t, run, segment, role, phaseRuns: store.phaseRunsForTask(t.id), openHil: store.openHilForTask(t.id), worktreeExists: fs.existsSync(path.join(t.worktreePath, '.git')), baseChain: baseChain(app, t), children });
   });
   r.post('/tasks/:id/pr', async (c) => {
     const b = z.object({ title: z.string().optional(), draft: z.boolean().optional() }).parse(await c.req.json().catch(() => ({})));
@@ -100,13 +99,13 @@ export function tasksRoutes(app: App) {
     return c.json(await readTranscript(pr.transcriptPath, from, limit));
   });
   r.get('/pipelines', (c) => {
-    const out: { name: string; description?: string; phases: { name: string; type: string; hil?: string }[] }[] = [];
+    const out: { name: string; description?: string; segment?: { from?: string; to?: string }; needsPr?: boolean; phases: { name: string; type: string; hil?: string }[] }[] = [];
     for (const d of app.config.pipelines_dirs) {
       if (!fs.existsSync(d)) continue;
       for (const f of fs.readdirSync(d).filter((x) => /\.ya?ml$/.test(x))) {
         try {
           const lp = loadPipeline(path.join(d, f));
-          out.push({ name: lp.spec.name, description: lp.spec.description, phases: lp.spec.phases.map((p) => ({ name: p.name, type: p.type, hil: p.type === 'hil' ? p.hil : undefined })) });
+          out.push({ name: lp.spec.name, description: lp.spec.description, segment: lp.spec.segment, needsPr: lp.spec.wait_for_feedback, phases: lp.spec.phases.map((p) => ({ name: p.name, type: p.type, hil: p.type === 'hil' ? p.hil : undefined })) });
         } catch (e) { out.push({ name: f, description: `invalid: ${e instanceof Error ? e.message : String(e)}`, phases: [] }); }
       }
     }

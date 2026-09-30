@@ -43,6 +43,8 @@ export interface ClaudeRunner {
   start(spec: ClaudeRunSpec): ClaudeRunHandle;
   /** Models available to the current account (dynamic, from the CLI); optional for fakes. */
   models?(): Promise<ModelChoice[]>;
+  /** Raw plan usage from the CLI (experimental SDK call); null when it is not available (API key, Bedrock, old CLI). */
+  usage?(): Promise<unknown | null>;
   /** One cheap, tool-less completion (haiku): used for the branch slug at task creation. */
   brief?(prompt: string): Promise<string>;
 }
@@ -119,6 +121,19 @@ export class SdkClaudeRunner implements ClaudeRunner {
       this.modelCache = { at: Date.now(), list };
       return list;
     } finally { input.close(); abortController.abort(); }
+  }
+
+  async usage(): Promise<unknown | null> {
+    const input = new InputQueue();
+    const abortController = new AbortController();
+    const q: Query = query({ prompt: input, options: { cwd: process.cwd(), maxTurns: 1, abortController, env: filteredEnv({}), settingSources: [] } });
+    try {
+      // the SDK marks this call experimental: treat every failure as "not available"
+      const call = (q as unknown as Record<string, ((o: { skipBehaviors: boolean }) => Promise<unknown>) | undefined>)['usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET'];
+      if (typeof call !== 'function') return null;
+      return await Promise.race([call.call(q, { skipBehaviors: true }), new Promise<null>((res) => setTimeout(() => res(null), 15_000))]);
+    } catch { return null; }
+    finally { input.close(); abortController.abort(); }
   }
 
   async brief(prompt: string): Promise<string> {

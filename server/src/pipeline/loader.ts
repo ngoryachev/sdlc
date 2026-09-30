@@ -26,7 +26,12 @@ export function findPipelineFile(nameOrPath: string, searchDirs: string[]): stri
 }
 
 export function loadPipeline(filePath: string): LoadedPipeline {
-  const raw = YAML.parse(fs.readFileSync(filePath, 'utf8'));
+  let raw = YAML.parse(fs.readFileSync(filePath, 'utf8')) as Record<string, unknown> | null;
+  if (raw && typeof raw.extends === 'string' && !raw.phases) {
+    // a preset: the parent's phases and defaults, usually narrowed with `segment`
+    const parent = YAML.parse(fs.readFileSync(findPipelineFile(raw.extends, [path.dirname(filePath)]), 'utf8')) as Record<string, unknown>;
+    raw = { ...raw, phases: parent.phases, defaults: { ...(parent.defaults as object ?? {}), ...(raw.defaults as object ?? {}) } };
+  }
   const parsed = PipelineSchema.safeParse(raw);
   if (!parsed.success) {
     const msg = parsed.error.issues.map((i) => `  - ${i.path.join('.') || '<root>'}: ${i.message}`).join('\n');
@@ -41,6 +46,17 @@ export function resolvePipelineFile(lp: LoadedPipeline, rel: string): string {
   const candidates = [path.join(path.dirname(lp.baseDir), rel), path.join(lp.baseDir, rel)];
   for (const c of candidates) if (fs.existsSync(c)) return c;
   throw new Error(`pipeline ${lp.spec.name}: file not found: ${rel} (looked in ${candidates.join(', ')})`);
+}
+
+/** Inclusive phase index range a task runs. Names come from the run snapshot; absent = the whole pipeline. */
+export function segmentOf(spec: PipelineSpec, from?: string | null, to?: string | null): { fromIdx: number; toIdx: number } {
+  return { fromIdx: from ? phaseIndex(spec, from) : 0, toIdx: to ? phaseIndex(spec, to) : spec.phases.length - 1 };
+}
+
+/** author: the segment contains the implementing phase, so the task fixes what reviewers say; reviewer: it only reviews. */
+export function roleOf(spec: PipelineSpec, seg: { fromIdx: number; toIdx: number }): 'author' | 'reviewer' {
+  const i = spec.phases.findIndex((p) => p.name === 'implement');
+  return i >= seg.fromIdx && i <= seg.toIdx ? 'author' : 'reviewer';
 }
 
 export function phaseIndex(spec: PipelineSpec, name: string): number {

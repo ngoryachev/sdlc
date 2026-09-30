@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useParams } from 'wouter';
-import type { HilDecision, HilPayload, HilResponse } from '@sdlc/shared';
+import type { FindingAction, HilDecision, HilPayload, HilResponse, ReviewEvent } from '@sdlc/shared';
 import { api, ApiError, type HilRow } from '../lib/api.js';
 import { useStore } from '../lib/store.js';
 import { requestNotifyPermission } from '../lib/notify.js';
@@ -43,17 +43,26 @@ export function HilPage() {
   const [comment, setComment] = useState('');
   const [edited, setEdited] = useState<{ prompt?: string; planMd?: string; title?: string }>({});
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [actions, setActions] = useState<Record<string, FindingAction>>({});
+  const [commentActions, setCommentActions] = useState<Record<string, 'fix' | 'skip'>>({});
+  const [reviewEvent, setReviewEvent] = useState<ReviewEvent>('comment');
   const [busy, setBusy] = useState(false);
-  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); }).catch((e) => toast(e.message, 'error')); }, [id]);
+  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? 'comment'); }).catch((e) => toast(e.message, 'error')); }, [id]);
   useEffect(() => { if (h && h.status === 'open' && !openList.some((x) => x.id === h.id)) void api.hilOne(id).then(setH); }, [openList, h?.id]);
 
   const unanswered = h?.payload.kind === 'refine_prompt' ? h.payload.questions.filter((q) => !answers[q.question]?.trim()).map((q) => q.header) : [];
+  const counts = { fix: 0, post: 0, skip: 0 };
+  for (const a of Object.values(actions)) counts[a]++;
+  const granular = h?.payload.kind === 'approve_result';
   const respond = async (decision: HilDecision) => {
     if (!h) return;
     if (decision === 'approve' && unanswered.length) { toast(`answer first: ${unanswered.join(', ')}`, 'error'); return; }
-    if (decision === 'request_changes' && !comment.trim()) { toast('a comment is required for request changes', 'error'); return; }
+    // at a result checkpoint the items decide: anything marked fix sends the run back, otherwise it goes on
+    if (granular && decision !== 'abort') decision = counts.fix ? 'request_changes' : 'approve';
+    if (decision === 'request_changes' && !comment.trim() && !counts.fix) { toast('a comment is required for request changes', 'error'); return; }
     setBusy(true);
-    const body: HilResponse = { decision, comment: comment.trim() || undefined, edited: Object.keys(edited).length ? edited : undefined, answers: Object.keys(answers).length ? answers : undefined };
+    const body: HilResponse = { decision, comment: comment.trim() || undefined, edited: Object.keys(edited).length ? edited : undefined, answers: Object.keys(answers).length ? answers : undefined,
+      findings: granular ? actions : undefined, comments: h.payload.kind === 'pr_feedback' ? commentActions : undefined, reviewEvent: h.payload.kind === 'approve_result' && h.payload.role === 'reviewer' ? reviewEvent : undefined };
     try {
       const r = await api.respond(h.id, body);
       setH({ ...h, ...r });
@@ -86,14 +95,17 @@ export function HilPage() {
       <div className="row"><span className="kind">{h.kind}</span><h2 className="grow" style={{ margin: 0 }}><Link href={`/tasks/${h.taskId}`}>{h.task.title}</Link></h2><span className="small muted">{ago(h.createdAt)} ago</span></div>
       <div className="muted" style={{ marginBottom: 10 }}>{h.summary}</div>
       {h.status !== 'open' && <div className="chip" style={{ marginBottom: 10 }}>{h.status}{h.response ? ` · ${h.response.decision} via ${h.answeredVia}` : ''}</div>}
-      <Payload p={p} edited={edited} setEdited={setEdited} answers={answers} setAnswers={setAnswers} readOnly={h.status !== 'open'} />
+      <Payload p={p} edited={edited} setEdited={setEdited} answers={answers} setAnswers={setAnswers} actions={actions} setActions={setActions} commentActions={commentActions} setCommentActions={setCommentActions} reviewEvent={reviewEvent} setReviewEvent={setReviewEvent} readOnly={h.status !== 'open'} />
       {h.status === 'open' && (
         <>
           {h.allowedDecisions.some((d) => ['request_changes', 'resume', 'deny', 'approve'].includes(d)) && h.kind !== 'question' && (
-            <div style={{ marginTop: 10 }}><label className="small muted">Comment {h.allowedDecisions.includes('request_changes') ? '(required for request changes)' : '(optional)'}</label><textarea id="hil-comment" value={comment} onChange={(e) => setComment(e.target.value)} style={{ minHeight: 64 }} /></div>
+            <div style={{ marginTop: 10 }}><label className="small muted">{granular && p.kind === 'approve_result' ? (p.canPost && p.role === 'reviewer' ? 'Review text (posted to the PR together with the findings marked post; optional)' : counts.fix ? 'Comment for the implementer (optional; the items marked fix are sent anyway)' : p.canPost ? 'Comment (optional; with items marked post it is posted to the PR as the review text)' : 'Comment (optional)') : `Comment ${h.allowedDecisions.includes('request_changes') ? '(required for request changes)' : '(optional)'}`}</label><textarea id="hil-comment" value={comment} onChange={(e) => setComment(e.target.value)} style={{ minHeight: 64 }} /></div>
           )}
           <div className="actions">
-            {h.allowedDecisions.filter((d) => d !== 'abort').map((d) => (
+            {granular && p.kind === 'approve_result' && (
+              <div className="act"><button className="primary" disabled={busy} onClick={() => respond('approve')}>{counts.fix ? `Send ${counts.fix} to fix${counts.post ? `, post ${counts.post} later` : ''}${counts.skip ? `, skip ${counts.skip}` : ''}` : counts.post ? `Continue, post ${counts.post}${counts.skip ? `, skip ${counts.skip}` : ''}` : `Continue${counts.skip ? `, skip ${counts.skip}` : ''}`}</button><small>{counts.fix ? h.next.request_changes : h.next.approve}</small></div>
+            )}
+            {h.allowedDecisions.filter((d) => d !== 'abort' && !(granular && (d === 'approve' || d === 'request_changes'))).map((d) => (
               <div className="act" key={d}><button className={['approve', 'answer', 'allow', 'retry'].includes(d) ? 'primary' : ''} disabled={busy || (d === 'approve' && unanswered.length > 0)} title={d === 'approve' && unanswered.length ? `answer first: ${unanswered.join(', ')}` : undefined} onClick={() => respond(d)}>{label(d)}</button><small>{h.next[d]}</small></div>
             ))}
             <div className="act" style={{ marginLeft: 'auto' }}><ArmedAbort onClick={() => respond('abort')} disabled={busy} /><small>{h.next.abort}</small></div>
@@ -113,8 +125,20 @@ function ArmedAbort({ onClick, disabled }: { onClick: () => void; disabled: bool
   return <button className={`danger ${armed ? 'confirm' : ''}`} disabled={disabled} onClick={() => { if (armed) onClick(); else setArmed(true); }}>{armed ? 'Confirm abort?' : 'Abort task'}</button>;
 }
 
-function Payload({ p, edited, setEdited, answers, setAnswers, readOnly }: { p: HilPayload; edited: { prompt?: string; planMd?: string; title?: string }; setEdited: (e: { prompt?: string; planMd?: string; title?: string }) => void; answers: Record<string, string>; setAnswers: (a: Record<string, string>) => void; readOnly: boolean }) {
-  const [tab, setTab] = useState<'review' | 'diff' | 'tests' | 'findings' | 'qa'>('review');
+function Payload({ p, edited, setEdited, answers, setAnswers, actions, setActions, commentActions, setCommentActions, reviewEvent, setReviewEvent, readOnly }: {
+  p: HilPayload; edited: { prompt?: string; planMd?: string; title?: string }; setEdited: (e: { prompt?: string; planMd?: string; title?: string }) => void; answers: Record<string, string>; setAnswers: (a: Record<string, string>) => void;
+  actions: Record<string, FindingAction>; setActions: (a: Record<string, FindingAction>) => void; commentActions: Record<string, 'fix' | 'skip'>; setCommentActions: (a: Record<string, 'fix' | 'skip'>) => void;
+  reviewEvent: ReviewEvent; setReviewEvent: (e: ReviewEvent) => void; readOnly: boolean;
+}) {
+  const [tab, setTab] = useState<'review' | 'diff' | 'tests' | 'findings' | 'qa'>(p.kind === 'approve_result' ? (p.focus === 'qa' ? 'qa' : p.review?.findings.length ? 'findings' : 'review') : 'review');
+  /** fix / post / skip for one item; an action the task cannot perform is not offered. */
+  const Pick = ({ k, canFix, canPost }: { k: string; canFix: boolean; canPost: boolean }) => (
+    <span className="row" style={{ display: 'inline-flex', gap: 2, marginLeft: 6, verticalAlign: 'middle' }}>
+      {(['fix', 'post', 'skip'] as FindingAction[]).filter((a) => (a === 'fix' ? canFix : a === 'post' ? canPost : true)).map((a) => (
+        <button key={a} type="button" className={`small ${actions[k] === a ? 'primary' : ''}`} style={{ padding: '0 8px' }} disabled={readOnly} onClick={() => setActions({ ...actions, [k]: a })} title={a === 'fix' ? 'send back to the implementer' : a === 'post' ? 'publish on the pull request' : 'leave it'}>{a}</button>
+      ))}
+    </span>
+  );
   const [editPlan, setEditPlan] = useState(false);
   switch (p.kind) {
     case 'refine_prompt': {
@@ -157,12 +181,17 @@ function Payload({ p, edited, setEdited, answers, setAnswers, readOnly }: { p: H
           {tab === 'review' && (p.review ? <Markdown text={p.review.summary} /> : <div className="muted">no review</div>)}
           {tab === 'diff' && <><pre className="small muted">{p.diffStat}</pre><DiffView patch={p.diff} /></>}
           {tab === 'tests' && (p.test ? <div><div><span className={`chip ${p.test.verdict === 'fail' ? 'failed' : ''}`}>{p.test.verdict}</span></div><Markdown text={p.test.summary} />{p.test.commands.length > 0 && <pre className="small muted">{p.test.commands.map((c) => `$ ${c}`).join('\n')}</pre>}{p.test.failures.length > 0 && <ul>{p.test.failures.map((f, i) => <li key={i}><b>{f.title}</b>{f.file ? <span className="mono small"> {f.file}{f.line ? `:${f.line}` : ''}</span> : null}<div className="small">{f.description}</div></li>)}</ul>}{p.test.tests_added.length > 0 && <div className="small muted">tests: {p.test.tests_added.join(', ')}</div>}{p.test.notes && <div className="small muted">{p.test.notes}</div>}</div> : <pre className="log">{p.testOutput ?? '(tests were not run)'}</pre>)}
-          {tab === 'qa' && p.qa && <div><Markdown text={p.qa.summary} /><ul>{p.qa.checks.map((c, i) => <li key={i}><span className={`chip ${c.result === 'failed' ? 'failed' : ''}`}>{c.result}</span> {c.name} <span className="small muted">{c.method}</span></li>)}</ul>{p.qa.issues.length > 0 && <ul>{p.qa.issues.map((f, i) => <li key={i}><span className={`chip ${f.severity === 'blocking' ? 'failed' : ''}`}>{f.severity}</span> <b>{f.title}</b><div className="small">{f.description}</div></li>)}</ul>}</div>}
-          {tab === 'findings' && <ul>{(p.review?.findings ?? []).map((f, i) => <li key={i}><span className={`chip ${f.severity === 'blocking' ? 'failed' : ''}`}>{f.severity}</span> <b>{f.title}</b>{f.file ? <span className="mono small"> {f.file}{f.line ? `:${f.line}` : ''}</span> : null}<div className="small">{f.description}</div>{f.suggestion && <div className="small muted">→ {f.suggestion}</div>}</li>)}{!p.review?.findings.length && <li className="muted">none</li>}</ul>}
+          {tab === 'qa' && p.qa && <div><Markdown text={p.qa.summary} /><ul>{p.qa.checks.map((c, i) => <li key={i}><span className={`chip ${c.result === 'failed' ? 'failed' : ''}`}>{c.result}</span> {c.name} <span className="small muted">{c.method}</span></li>)}</ul>{p.qa.issues.length > 0 && <ul>{p.qa.issues.map((f, i) => <li key={i}><span className={`chip ${f.severity === 'blocking' ? 'failed' : ''}`}>{f.severity}</span> <b>{f.title}</b>{p.focus === 'qa' && <Pick k={`qa:${i}`} canFix={p.canFix} canPost={false} />}<div className="small">{f.description}</div></li>)}</ul>}</div>}
+          {tab === 'findings' && (
+            <div>
+              {p.focus === 'review' && (p.review?.findings.length ?? 0) > 0 && <div className="small muted" style={{ marginBottom: 6 }}>{p.canFix ? 'fix: goes back to the implementer · ' : ''}{p.canPost ? 'post: published on the pull request · ' : ''}skip: nothing happens{p.canPost && p.role === 'reviewer' && <> · published as <select style={{ width: 'auto', display: 'inline-block' }} value={reviewEvent} disabled={readOnly} onChange={(e) => setReviewEvent(e.target.value as ReviewEvent)}><option value="comment">comment</option><option value="approve">approve</option><option value="request_changes">request changes</option></select></>}</div>}
+              <ul>{(p.review?.findings ?? []).map((f, i) => <li key={i}><span className={`chip ${f.severity === 'blocking' ? 'failed' : ''}`}>{f.severity}</span> <b>{f.title}</b>{f.file ? <span className="mono small"> {f.file}{f.line ? `:${f.line}` : ''}</span> : null}{p.focus === 'review' && <Pick k={`review:${i}`} canFix={p.canFix} canPost={p.canPost} />}<div className="small">{f.description}</div>{f.suggestion && <div className="small muted">→ {f.suggestion}</div>}</li>)}{!p.review?.findings.length && <li className="muted">none</li>}</ul>
+            </div>
+          )}
         </div>
       );
     case 'pr_feedback':
-      return <div><a href={p.prUrl} target="_blank" rel="noreferrer">{p.prUrl}</a><ul>{p.comments.map((c) => <li key={c.id}><b>{c.author}</b>{c.reviewState ? <span className="chip">{c.reviewState}</span> : null}{c.path ? <span className="mono small"> {c.path}{c.line ? `:${c.line}` : ''}</span> : null}<Markdown text={c.body} /><a className="small" href={c.url} target="_blank" rel="noreferrer">view</a></li>)}</ul></div>;
+      return <div><a href={p.prUrl} target="_blank" rel="noreferrer">{p.prUrl}</a><div className="small muted">fix: goes to the implementer · skip: marked read, never shown again</div><ul>{p.comments.map((c) => <li key={c.id}><b>{c.author}</b>{c.reviewState ? <span className="chip">{c.reviewState}</span> : null}{c.path ? <span className="mono small"> {c.path}{c.line ? `:${c.line}` : ''}</span> : null}<span className="row" style={{ display: 'inline-flex', gap: 2, marginLeft: 6, verticalAlign: 'middle' }}>{(['fix', 'skip'] as const).map((a) => <button key={a} type="button" className={`small ${(commentActions[c.id] ?? 'fix') === a ? 'primary' : ''}`} style={{ padding: '0 8px' }} disabled={readOnly} onClick={() => setCommentActions({ ...commentActions, [c.id]: a })}>{a}</button>)}</span><Markdown text={c.body} /><a className="small" href={c.url} target="_blank" rel="noreferrer">view</a></li>)}</ul></div>;
     case 'question':
       return (
         <div>{p.questions.map((q) => (
@@ -175,4 +204,14 @@ function Payload({ p, edited, setEdited, answers, setAnswers, readOnly }: { p: H
     case 'escalation':
       return <div><div><b>{p.phaseName}</b> failed{p.resultSubtype ? ` (${p.resultSubtype})` : ''}:</div><pre className="log">{p.error}</pre></div>;
   }
+}
+
+/** What the checkpoint proposes before the human touches anything: the implementer fixes real defects, a reviewer posts everything. */
+function defaultActions(p: HilPayload, saved: HilResponse | null): Record<string, FindingAction> {
+  if (p.kind !== 'approve_result') return {};
+  if (saved?.findings) return saved.findings;
+  const out: Record<string, FindingAction> = {};
+  if (p.focus === 'qa') { (p.qa?.issues ?? []).forEach((f, i) => { out[`qa:${i}`] = p.canFix && f.severity !== 'nit' ? 'fix' : 'skip'; }); return out; }
+  (p.review?.findings ?? []).forEach((f, i) => { out[`review:${i}`] = p.role === 'reviewer' ? (p.canPost ? 'post' : 'skip') : p.canFix && f.severity !== 'nit' ? 'fix' : 'skip'; });
+  return out;
 }

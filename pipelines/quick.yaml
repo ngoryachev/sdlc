@@ -1,5 +1,5 @@
 name: quick
-description: "clarify -> refine(HIL) -> implement (plan inline) -> self_check -> commit -> test(agent) -> review -> approve_result(HIL) -> PR -> qa(best effort)"
+description: "clarify -> refine(HIL) -> implement (plan inline) -> self_check -> commit -> test(agent) -> PR -> review -> approve_result(HIL) -> publish -> qa(best effort)"
 defaults:
   setting_sources: [project]
   effort: high
@@ -64,6 +64,14 @@ phases:
     type: git
     git: commit
     message: "sdlc({{task.id}}): tests"
+  - name: pr
+    type: git
+    git: pr                          # opens the pull request before review; later loops only push to it
+    pr:
+      draft: false
+      title: "{{task.title}}"
+      body: prompts/pr_body.md
+
   - name: review
     type: claude
     prompt: prompts/review.md
@@ -83,15 +91,11 @@ phases:
     type: hil
     hil: approve_result
     back_to: implement
-  - name: pr
-    type: git
-    git: pr
-    pr:
-      draft: false
-      title: "{{task.title}}"
-      body: prompts/pr_body.md
-      post_review: "{{task.post_review}}"
+    then_goto: review                # fixes picked by the human go straight back to review (commit and push on the way)
 
+  - name: publish
+    type: git
+    git: review                      # posts the findings marked `post` at approve_result to the pull request
   - name: qa
     type: claude
     prompt: prompts/qa.md
@@ -115,3 +119,4 @@ phases:
     hil: approve_result
     when: "phases.qa.structured.verdict == 'issues'"
     back_to: implement
+    then_goto: qa                    # after the fix: commit, push, then QA again; test and review are not repeated

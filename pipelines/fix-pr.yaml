@@ -1,0 +1,5 @@
+name: fix-pr
+description: "Fix review comments on a pull request: waits for comments -> pr_feedback(HIL: pick what to fix) -> implement -> self_check -> commit -> test -> push."
+extends: standard
+segment: { from: implement, to: pr }
+wait_for_feedback: true

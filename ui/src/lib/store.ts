@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { HilRequest, SdlcEvent, Task } from '@sdlc/shared';
+import type { ClaudeQuota, HilRequest, SdlcEvent, Task } from '@sdlc/shared';
 import type { HilRow, TaskRow } from './api.js';
 import { api } from './api.js';
 
@@ -11,6 +11,7 @@ interface State {
   hil: HilRow[];
   lastEventId: number;
   rawEvents: SdlcEvent[];
+  quota: ClaudeQuota | null;
   toasts: { id: number; text: string; kind: 'info' | 'error' }[];
   setConn(c: Conn): void;
   loadAll(): Promise<void>;
@@ -21,16 +22,16 @@ interface State {
 
 let toastId = 0;
 export const useStore = create<State>((set, get) => ({
-  conn: 'connecting', tasks: [], hil: [], lastEventId: 0, rawEvents: [], toasts: [],
+  conn: 'connecting', tasks: [], hil: [], lastEventId: 0, rawEvents: [], quota: null, toasts: [],
   setConn: (conn) => set({ conn }),
   loadAll: async () => {
-    const [t, h] = await Promise.all([api.tasks(), api.hil('open')]);
-    set({ tasks: t.tasks, hil: h.requests });
+    const [t, h, q] = await Promise.all([api.tasks(), api.hil('open'), api.quota().catch(() => ({ quota: null }))]);
+    set({ tasks: t.tasks, hil: h.requests, quota: q.quota ?? get().quota });
   },
   applyEvent: (e) => {
     const s = get();
     const raw = [...s.rawEvents, e].slice(-500);
-    let tasks = s.tasks; let hil = s.hil;
+    let tasks = s.tasks; let hil = s.hil; let quota = s.quota;
     const upsertTask = (task: Task, patch: Partial<TaskRow> = {}) => {
       const i = tasks.findIndex((x) => x.id === task.id);
       const row: TaskRow = { ...(i >= 0 ? tasks[i]! : { openHil: 0, currentPhase: null }), ...task, ...patch } as TaskRow;
@@ -45,9 +46,10 @@ export const useStore = create<State>((set, get) => ({
       case 'phase.started': { const p = e.payload as { phaseRun: { taskId: string; phaseName: string } }; tasks = tasks.map((t) => (t.id === p.phaseRun.taskId ? { ...t, currentPhase: p.phaseRun.phaseName } : t)); break; }
       case 'hil.requested': { const h = (e.payload as { hil: HilRequest }).hil; const task = tasks.find((t) => t.id === h.taskId); hil = [{ ...h, task: { id: h.taskId, title: task?.title ?? h.title, status: task?.status ?? '' } }, ...hil.filter((x) => x.id !== h.id)]; tasks = tasks.map((t) => (t.id === h.taskId ? { ...t, openHil: t.openHil + 1 } : t)); break; }
       case 'hil.answered': case 'hil.expired': { const h = (e.payload as { hil: HilRequest }).hil; const had = hil.some((x) => x.id === h.id); hil = hil.filter((x) => x.id !== h.id); if (had) tasks = tasks.map((t) => (t.id === h.taskId ? { ...t, openHil: Math.max(0, t.openHil - 1) } : t)); break; }
+      case 'claude.quota': quota = (e.payload as { quota: ClaudeQuota }).quota; break;
       default: break;
     }
-    set({ rawEvents: raw, tasks, hil, lastEventId: Math.max(s.lastEventId, e.id) });
+    set({ rawEvents: raw, tasks, hil, quota, lastEventId: Math.max(s.lastEventId, e.id) });
   },
   toast: (text, kind = 'info') => { const id = ++toastId; set((s) => ({ toasts: [...s.toasts, { id, text, kind }] })); setTimeout(() => get().dismissToast(id), 5000); },
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),

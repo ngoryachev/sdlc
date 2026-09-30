@@ -10,8 +10,8 @@ import type { PhaseContext, PhaseExecutor, PhaseOutcome } from './executor.js';
 export const HIL_NEXT: Record<HilKind, Partial<Record<HilDecision, string>>> = {
   refine_prompt: { approve: 'Start the pipeline with this prompt', abort: 'Cancel the task' },
   approve_plan: { approve: 'Start implementation', request_changes: 'Re-plan with your comment', abort: 'Cancel the task' },
-  approve_result: { approve: 'Create the pull request', request_changes: 'Back to implementation with your comment', abort: 'Cancel the task' },
-  pr_feedback: { approve: 'Address the comments in implementation', skip: 'Leave for later', abort: 'Cancel the task' },
+  approve_result: { approve: 'Continue; findings marked post go to the pull request', request_changes: 'Back to implementation with the items marked fix and your comment', abort: 'Cancel the task' },
+  pr_feedback: { approve: 'Address the comments marked fix in implementation', skip: 'Leave all for later', abort: 'Cancel the task' },
   question: { answer: 'Continue', abort: 'Cancel the task' },
   escalation: { retry: 'Re-run the phase from scratch', resume: 'Resume the phase with your guidance', skip: 'Skip this phase', abort: 'Cancel the task' },
 };
@@ -58,7 +58,13 @@ async function buildPayload(kind: HilPhaseSpec['hil'], ctx: PhaseContext): Promi
       const test = (phases.test?.structured as TestOutput | null) ?? null;
       const qa = (phases.qa?.structured as QaOutput | null) ?? null;
       const testOutput = test ? [`${test.verdict}: ${test.summary}`, test.commands.length ? `\ncommands:\n${test.commands.map((c) => `  $ ${c}`).join('\n')}` : '', test.failures.length ? `\nfailures:\n${test.failures.map((f) => `  - ${f.title}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ''})` : ''}: ${f.description}`).join('\n')}` : '', test.notes ? `\nnotes: ${test.notes}` : ''].join('\n') : (phases.test?.output || null);
-      return { kind, diffStat: d.stat, diff: d.patch, testOutput, test, review, qa, commits: d.commits, branch: task.branch };
+      // a gate placed after the QA phase decides on QA issues; the checkpoint before it decides on review findings
+      const qaIdx = ctx.spec.phases.findIndex((p) => p.name === 'qa');
+      const focus = qa?.verdict === 'issues' && qaIdx >= 0 && qaIdx < ctx.run.cursor ? 'qa' : 'review';
+      const hilPhase = ctx.spec.phases[ctx.run.cursor];
+      const backIdx = ctx.spec.phases.findIndex((p) => p.name === (hilPhase?.type === 'hil' && hilPhase.back_to ? hilPhase.back_to : 'implement'));
+      return { kind, diffStat: d.stat, diff: d.patch, testOutput, test, review, qa, commits: d.commits, branch: task.branch,
+        focus, canFix: backIdx >= ctx.segment.fromIdx && backIdx >= 0, canPost: !!task.prNumber && focus === 'review', role: ctx.role };
     }
   }
 }

@@ -31,7 +31,6 @@ export function Dashboard() {
   return (
     <>
       <NewTaskForm />
-      <ImportPrForm />
       <div className="card">
         <div className="row"><h3 className="grow" style={{ margin: 0 }}>Tasks</h3><button disabled={syncing} onClick={syncNow} title="check PR states and merged branches on GitHub now (also runs in the background)">{syncing ? 'syncing…' : 'Sync with GitHub'}</button><label className="small muted"><input type="checkbox" style={{ width: 'auto' }} checked={showDone} onChange={(e) => setShowDone(e.target.checked)} /> show merged / closed{hidden ? ` (${hidden})` : ''}</label></div>
         <table><thead><tr><th>Task</th><th>Status</th><th className="hide-sm">Phase</th><th>Cost</th><th className="hide-sm">Age</th></tr></thead>
@@ -50,6 +49,8 @@ export function Dashboard() {
   );
 }
 
+type Source = 'new' | 'branch' | 'pr';
+
 function NewTaskForm() {
   const toast = useStore((s) => s.toast);
   const [cfg, setCfg] = useState<Config | null>(null);
@@ -59,10 +60,12 @@ function NewTaskForm() {
   const [base, setBase] = useState('');
   const [pipeline, setPipeline] = useState('');
   const [reviewMode, setReviewMode] = useState<'conceptual' | 'line'>('conceptual');
-  const [postReview, setPostReview] = useState(false);
   const [prompt, setPrompt] = useState('');
-  const [startAt, setStartAt] = useState('');
+  const [source, setSource] = useState<Source>('new');
   const [existingBranch, setExistingBranch] = useState('');
+  const [prNumber, setPrNumber] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [advanced, setAdvanced] = useState(false);
   const [models, setModels] = useState<ModelChoice[]>([]);
   const [overrides, setOverrides] = useState<ModelOverrides>({});
@@ -79,92 +82,86 @@ function NewTaskForm() {
     }
     void api.branches(repo.name).then((b) => { setBranches(b.branches); setBase(b.default.remote ? `${b.default.remote}/${b.default.branch}` : b.default.branch); }).catch((e) => toast(String(e.message), 'error'));
   }, [repo?.kind, repo?.name]);
+  // a pipeline brings its own default segment; one that lives on a pull request needs one
+  const pl = pipelines.find((p) => p.name === pipeline);
+  useEffect(() => { setFrom(pl?.segment?.from ?? ''); setTo(pl?.segment?.to ?? ''); if (pl?.needsPr) setSource('pr'); }, [pl?.name]);
+
+  const phases = pl?.phases ?? [];
+  const idx = (name: string) => phases.findIndex((p) => p.name === name);
+  const fromIdx = from ? idx(from) : 0; const toIdx = to ? idx(to) : phases.length - 1;
+  const implIdx = idx('implement');
+  const promptOptional = source === 'pr' || (source === 'branch' && implIdx >= 0 && fromIdx > implIdx);
+  const parsedPr = Number(/(\d+)\s*$/.exec(prNumber.trim())?.[1]);
+  const ready = !busy && !!repo && (promptOptional || !!prompt.trim()) && (source !== 'pr' || parsedPr > 0) && (source !== 'branch' || !!existingBranch.trim()) && toIdx >= fromIdx;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim()) return;
+    if (!ready) return;
     setBusy(true);
     try {
       if (!repo) throw new Error('choose a repository');
       const repoPath = await resolveRepoPath(repo);
       if (repo.kind === 'github') { toast(`cloned ${repo.slug}`); setRepo({ kind: 'registered', name: repo.slug!, path: repoPath, account: repo.account }); }
       let baseRemote: string | null | undefined; let baseBranch: string | undefined;
-      if (base) { const found = branches.find((b) => (b.remote ? `${b.remote}/${b.branch}` : b.branch) === base); if (found) { baseRemote = found.remote; baseBranch = found.branch; } else { const [r, ...rest] = base.split('/'); if (rest.length) { baseRemote = r; baseBranch = rest.join('/'); } else { baseRemote = null; baseBranch = r; } } }
-      const t = await api.createTask({ prompt, repoPath, pipeline, baseRemote, baseBranch, reviewMode, postReview, branch: existingBranch || undefined, startAt: startAt || undefined, modelOverrides: Object.keys(overrides).length ? overrides : undefined });
-      toast(`task ${t.id} created`); setPrompt(''); setOverrides({}); setStartAt(''); setExistingBranch('');
+      if (base && source !== 'pr') { const found = branches.find((b) => (b.remote ? `${b.remote}/${b.branch}` : b.branch) === base); if (found) { baseRemote = found.remote; baseBranch = found.branch; } else { const [r, ...rest] = base.split('/'); if (rest.length) { baseRemote = r; baseBranch = rest.join('/'); } else { baseRemote = null; baseBranch = r; } } }
+      const t = await api.createTask({
+        prompt: prompt.trim() || undefined, repoPath, pipeline, baseRemote, baseBranch, reviewMode,
+        branch: source === 'branch' ? existingBranch.trim() : undefined, prNumber: source === 'pr' ? parsedPr : undefined,
+        startAt: from || undefined, stopAfter: to || undefined, modelOverrides: Object.keys(overrides).length ? overrides : undefined,
+      });
+      toast(`task ${t.id} created`); setPrompt(''); setOverrides({}); setExistingBranch(''); setPrNumber('');
     } catch (err) { toast((err as Error).message, 'error'); } finally { setBusy(false); }
   };
+
+  const placeholder = source === 'pr' ? 'Optional: the pull request title and body are the task statement unless you write one here.'
+    : promptOptional ? 'Optional: a short summary of the branch is generated from its commits unless you write one here.'
+    : 'What should be done? Be concrete about the outcome; Claude will ask if something is ambiguous.';
 
   return (
     <form className="card" onSubmit={submit}>
       <h3 style={{ marginTop: 0 }}>New task</h3>
-      <textarea placeholder="What should be done? Be concrete about the outcome; Claude will ask if something is ambiguous." value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+      <textarea placeholder={placeholder} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
       <div className="grid2" style={{ marginTop: 8 }}>
         <div>
           <label className="small muted">Repository</label>
           <RepoPicker value={repo} onChange={setRepo} />
           {cfg && <div className="small muted" style={{ marginTop: 4 }}>new clones go to {cfg.reposDir}</div>}
+          <div className="row" style={{ marginTop: 6 }}>
+            <div><label className="small muted">Work on</label>
+              <select value={source} onChange={(e) => setSource(e.target.value as Source)} disabled={!!pl?.needsPr}><option value="new">a new branch</option><option value="branch">an existing branch</option><option value="pr">a pull request</option></select></div>
+            {source === 'branch' && <div className="grow"><label className="small muted">Branch</label>
+              <input list="local-branches" value={existingBranch} onChange={(e) => setExistingBranch(e.target.value)} placeholder="feature/x" />
+              <datalist id="local-branches">{branches.filter((b) => !b.remote).map((b) => <option key={b.branch} value={b.branch} />)}</datalist></div>}
+            {source === 'pr' && <div className="grow"><label className="small muted">Pull request (number or URL)</label>
+              <input value={prNumber} onChange={(e) => setPrNumber(e.target.value)} placeholder="42" /></div>}
+            {source !== 'pr' && <div className="grow"><label className="small muted">Base (remote/branch)</label>
+              <input list="branches" value={base} onChange={(e) => setBase(e.target.value)} placeholder="origin/main" />
+              <datalist id="branches">{branches.map((b) => { const v = b.remote ? `${b.remote}/${b.branch}` : b.branch; return <option key={v} value={v} />; })}</datalist></div>}
+          </div>
+          {source === 'pr' && <div className="small muted" style={{ marginTop: 4 }}>The PR head branch becomes the task branch, its base the task base. The task re-reviews new commits (review only) or takes review comments into work (with implement).</div>}
         </div>
         <div>
-          <label className="small muted">Base (remote/branch)</label>
-          <input list="branches" value={base} onChange={(e) => setBase(e.target.value)} placeholder="origin/main" />
-          <datalist id="branches">{branches.map((b) => { const v = b.remote ? `${b.remote}/${b.branch}` : b.branch; return <option key={v} value={v} />; })}</datalist>
-          <div className="row" style={{ marginTop: 6 }}>
-            <div className="grow"><label className="small muted">Pipeline</label><select value={pipeline} onChange={(e) => setPipeline(e.target.value)}>{pipelines.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select></div>
+          <div className="row">
+            <div className="grow"><label className="small muted">Pipeline</label><select value={pipeline} onChange={(e) => setPipeline(e.target.value)}>{pipelines.map((p) => <option key={p.name} value={p.name} title={p.description}>{p.name}</option>)}</select></div>
             <div><label className="small muted">Review</label><select value={reviewMode} onChange={(e) => setReviewMode(e.target.value as 'conceptual' | 'line')}><option value="conceptual">conceptual</option><option value="line">line-level</option></select></div>
           </div>
-          <label className="small muted" style={{ display: 'block', marginTop: 6 }}><input type="checkbox" style={{ width: 'auto' }} checked={postReview} onChange={(e) => setPostReview(e.target.checked)} /> post review to GitHub PR</label>
-          {pipelines.find((p) => p.name === pipeline) && <div className="small muted" style={{ marginTop: 4 }}>{pipelines.find((p) => p.name === pipeline)!.phases.map((p) => p.type === 'hil' ? `[${p.name}]` : p.name).join(' → ')}</div>}
+          <div className="row" style={{ marginTop: 6 }}>
+            <div className="grow"><label className="small muted">From phase</label>
+              <select value={from} onChange={(e) => setFrom(e.target.value)}><option value="">first</option>{phases.map((p) => <option key={p.name} value={p.name}>{p.name}{p.type === 'hil' ? ' (checkpoint)' : ''}</option>)}</select></div>
+            <div className="grow"><label className="small muted">To phase</label>
+              <select value={to} onChange={(e) => setTo(e.target.value)}><option value="">last</option>{phases.map((p) => <option key={p.name} value={p.name}>{p.name}{p.type === 'hil' ? ' (checkpoint)' : ''}</option>)}</select></div>
+          </div>
+          {pl && <div className="small muted" style={{ marginTop: 4 }}>{phases.map((p, i) => { const inSeg = i >= fromIdx && i <= toIdx; const label = p.type === 'hil' ? `[${p.name}]` : p.name; return <span key={p.name} style={inSeg ? { color: 'var(--fg)' } : { opacity: 0.45 }}>{i ? ' → ' : ''}{label}</span>; })}{toIdx < fromIdx && <span style={{ color: 'var(--err)' }}> · the end is before the start</span>}</div>}
         </div>
       </div>
-      <div className="small" style={{ marginTop: 8 }}><a href="#" onClick={(e) => { e.preventDefault(); setAdvanced(!advanced); }}>{advanced ? 'hide advanced' : 'advanced: start phase, existing branch, models for this task…'}</a></div>
+      <div className="small" style={{ marginTop: 8 }}><a href="#" onClick={(e) => { e.preventDefault(); setAdvanced(!advanced); }}>{advanced ? 'hide models' : 'models for this task…'}</a></div>
       {advanced && (
-        <div className="grid2" style={{ marginTop: 6 }}>
-          <div>
-            <label className="small muted">Start at phase</label>
-            <select value={startAt} onChange={(e) => setStartAt(e.target.value)}><option value="">first phase</option>{(pipelines.find((p) => p.name === pipeline)?.phases ?? []).map((p) => <option key={p.name} value={p.name}>{p.name}{p.type === 'hil' ? ' (checkpoint)' : ''}</option>)}</select>
-            <label className="small muted" style={{ marginTop: 6, display: 'block' }}>Existing branch (instead of a new one)</label>
-            <input list="local-branches" value={existingBranch} onChange={(e) => setExistingBranch(e.target.value)} placeholder="feature/x — leave empty to create sdlc/<id>" />
-            <datalist id="local-branches">{branches.filter((b) => !b.remote).map((b) => <option key={b.branch} value={b.branch} />)}</datalist>
-            <div className="small muted" style={{ marginTop: 4 }}>Phases before the start phase are recorded as skipped. With an existing branch the base is still used for diffs and the PR.</div>
-          </div>
-          <div>
-            <label className="small muted">Models for this task only (empty = global settings)</label>
-            <ModelPicker phases={(pipelines.find((p) => p.name === pipeline)?.phases ?? []).filter((p) => p.type === 'claude').map((p) => p.name)} models={models} value={overrides} onChange={setOverrides} inheritLabel="global" />
-          </div>
+        <div style={{ marginTop: 6 }}>
+          <label className="small muted">Models for this task only (empty = global settings)</label>
+          <ModelPicker phases={phases.filter((p) => p.type === 'claude').map((p) => p.name)} models={models} value={overrides} onChange={setOverrides} inheritLabel="global" />
         </div>
       )}
-      <div className="row" style={{ marginTop: 10 }}><button className="primary" disabled={busy || !prompt.trim()}>Create task</button><span className="small muted">Human checkpoints are shown in [brackets].</span></div>
-    </form>
-  );
-}
-
-function ImportPrForm() {
-  const toast = useStore((s) => s.toast);
-  const [pipelines, setPipelines] = useState<PipelineInfo[]>([]);
-  const [repo, setRepo] = useState<RepoChoice | null>(null);
-  const [pipeline, setPipeline] = useState('');
-  const [number, setNumber] = useState('');
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { void api.config().then((c) => setPipeline(c.defaultPipeline)); void api.pipelines().then((p) => setPipelines(p.pipelines)); }, []);
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const n = Number(/(\d+)\s*$/.exec(number.trim())?.[1]);
-    if (!repo || !n) { toast('choose a repository and a PR number', 'error'); return; }
-    setBusy(true);
-    try { const repoPath = await resolveRepoPath(repo); const t = await api.importPr({ repoPath, number: n, pipeline }); toast(`task ${t.id} attached to PR #${n}; use "Poll PR comments"`); setNumber(''); }
-    catch (err) { toast((err as Error).message, 'error'); } finally { setBusy(false); }
-  };
-  return (
-    <form className="card" onSubmit={submit}>
-      <div className="row">
-        <b>Import PR</b>
-        <div style={{ minWidth: 320, flex: 1 }}><RepoPicker value={repo} onChange={setRepo} /></div>
-        <input style={{ maxWidth: 200 }} placeholder="PR number or URL" value={number} onChange={(e) => setNumber(e.target.value)} />
-        <select style={{ width: 'auto' }} value={pipeline} onChange={(e) => setPipeline(e.target.value)}>{pipelines.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
-        <button disabled={busy}>Import</button>
-      </div>
-      <div className="small muted" style={{ marginTop: 4 }}>The PR branch becomes the task branch; the task waits for review comments.</div>
+      <div className="row" style={{ marginTop: 10 }}><button className="primary" disabled={!ready}>Create task</button><span className="small muted">Human checkpoints are shown in [brackets]; the greyed phases are outside the task.</span></div>
     </form>
   );
 }

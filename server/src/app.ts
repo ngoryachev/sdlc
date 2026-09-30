@@ -8,9 +8,10 @@ import { Engine } from './engine/engine.js';
 import { GhCli, type GitHub } from './git/gh.js';
 import { RepoAccounts } from './git/accounts.js';
 import type { Notifier } from './notifiers/types.js';
+import { QuotaTracker } from './claude/quota.js';
 
 export interface App {
-  config: SdlcConfig; store: Store; events: EventBus; engine: Engine; runner: ClaudeRunner; github: GitHub; accounts: RepoAccounts;
+  config: SdlcConfig; store: Store; events: EventBus; engine: Engine; runner: ClaudeRunner; github: GitHub; accounts: RepoAccounts; quota: QuotaTracker;
   /** Write the in-memory config back to config.yaml (no-op for an injected config without configPath, i.e. tests). */
   persistConfig(): void;
   notifiers?: Notifier[];
@@ -27,5 +28,8 @@ export function createApp(opts: { config?: SdlcConfig; runner?: ClaudeRunner; db
   const github = opts.github ?? new GhCli();
   const accounts = new RepoAccounts(config, github, persistConfig);
   const engine = new Engine({ config, store, events, runner, github, accounts, persistConfig });
-  return { config, store, events, engine, runner, github, accounts, persistConfig };
+  // every phase stream reports the plan usage; keep the last value and tell the UI when it moves
+  const quota = new QuotaTracker();
+  events.onMessage((f) => { const q = quota.ingest(f.sdk); if (q) events.emit('claude.quota', { quota: q }); });
+  return { config, store, events, engine, runner, github, accounts, quota, persistConfig };
 }

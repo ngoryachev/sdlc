@@ -31,7 +31,7 @@ function printEvent(e: SdlcEvent) {
 
 /** Runs the engine in-process and prints events until the task blocks (HIL) or finishes. */
 export function registerTaskCommands(program: Command) {
-  program.command('new <prompt>')
+  program.command('new [prompt]')
     .description('Create a task and run it in-process until it needs a human or finishes')
     .requiredOption('--repo <path>', 'target repository')
     .option('--pipeline <name>', 'pipeline name or path')
@@ -39,14 +39,18 @@ export function registerTaskCommands(program: Command) {
     .option('--review-mode <mode>', 'conceptual|line')
     .option('--post-review', 'post line review to GitHub')
     .option('--branch <name>', 'work on an existing branch instead of creating one')
-    .option('--start-at <phase>', 'start the pipeline at this phase (earlier phases are skipped)')
+    .option('--pr <number>', 'work on an existing pull request: its head branch becomes the task branch (prompt optional)')
+    .option('--from <phase>', 'first phase to run (earlier phases are skipped)')
+    .option('--start-at <phase>', 'same as --from')
+    .option('--to <phase>', 'last phase to run')
     .option('--quiet', 'do not print the Claude stream')
-    .action(async (prompt: string, o) => {
+    .action(async (prompt: string | undefined, o) => {
+      const seg = { prNumber: o.pr ? Number(o.pr) : undefined, startAt: (o.from ?? o.startAt) as string | undefined, stopAfter: o.to as string | undefined };
       let baseRemote: string | null | undefined; let baseBranch: string | undefined;
       if (o.base) { const [r, ...rest] = String(o.base).split('/'); if (rest.length) { baseRemote = r; baseBranch = rest.join('/'); } else { baseRemote = null; baseBranch = r; } }
       const remote = await ServerClient.detect();
       if (remote) {
-        const task = await remote.call<Task>('POST', '/tasks', { prompt, repoPath: require_resolve(o.repo), pipeline: o.pipeline, baseRemote, baseBranch, reviewMode: o.reviewMode, postReview: o.postReview, branch: o.branch, startAt: o.startAt });
+        const task = await remote.call<Task>('POST', '/tasks', { prompt, repoPath: require_resolve(o.repo), pipeline: o.pipeline, baseRemote, baseBranch, reviewMode: o.reviewMode, postReview: o.postReview, branch: o.branch, ...seg });
         console.log(`[server ${remote.base}] task ${task.id} branch ${task.branch}`);
         await remote.tail(task.id, printEvent, (m) => { if (!o.quiet) { const s = summarize(m.sdk as SDKMessage); if (s) console.log(s); } }, untilTaskSettles);
         const t = await remote.call<{ task: Task; openHil: Hil[] }>('GET', `/tasks/${task.id}`);
@@ -57,7 +61,7 @@ export function registerTaskCommands(program: Command) {
       const app = createApp();
       app.events.on(printEvent);
       if (!o.quiet) app.events.onMessage((m) => { const s = summarize(m.sdk as SDKMessage); if (s) console.log(s); });
-      const task = await app.engine.createTask({ prompt, repoPath: o.repo, pipeline: o.pipeline, baseRemote, baseBranch, reviewMode: o.reviewMode, postReview: o.postReview, branch: o.branch, startAt: o.startAt });
+      const task = await app.engine.createTask({ prompt, repoPath: o.repo, pipeline: o.pipeline, baseRemote, baseBranch, reviewMode: o.reviewMode, postReview: o.postReview, branch: o.branch, ...seg });
       console.log(`task ${task.id} branch ${task.branch}\nworktree ${task.worktreePath}`);
       await app.engine.advance(task.id);
       const t = app.store.getTask(task.id)!;
@@ -81,12 +85,6 @@ export function registerTaskCommands(program: Command) {
     for (const h of app.store.listHil({ status: 'open' })) console.log(`${h.id}  ${h.kind.padEnd(14)} ${h.taskId}  ${h.summary}`);
   });
 
-  program.command('adopt').description('Create a task from an existing pull request; it waits for PR feedback (`sdlc pr <task>`)').requiredOption('--repo <path>').requiredOption('--pr <number>').option('--pipeline <name>').action(async (o) => {
-    const remote = await ServerClient.detect();
-    const body = { repoPath: require_resolve(o.repo), number: Number(o.pr), pipeline: o.pipeline };
-    const t = remote ? await remote.call<Task>('POST', '/tasks/import-pr', body) : await createApp().engine.importPr(body);
-    console.log(`task ${t.id} (${t.status}) branch ${t.branch} ← ${t.baseRemote ? `${t.baseRemote}/` : ''}${t.baseBranch}\n${t.prUrl}`);
-  });
   program.command('land <taskId>').description('Merge the task branch into its base (via the PR when present), restack tasks built on it, remove worktree and branch').option('--method <m>', 'merge|squash|rebase (default from config)').action(async (id, o) => {
     const remote = await ServerClient.detect();
     const r = remote ? await remote.call<{ method: string; via: string; notes: string[] }>('POST', `/tasks/${id}/land`, { method: o.method }) : await createApp().engine.landTask(id, o.method);

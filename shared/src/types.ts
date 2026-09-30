@@ -34,6 +34,8 @@ export interface Task {
   prUrl: string | null;
   prNumber: number | null;
   prFeedbackCursor: string | null;
+  /** Head commit of the PR the last review pass looked at (reviewer tasks re-review when it changes). */
+  prHeadSha: string | null;
   modelOverrides: ModelOverrides | null;
   createdAt: string;
   updatedAt: string;
@@ -51,6 +53,8 @@ export interface PipelineRun {
   cursor: number;
   loopCounts: Record<string, number>;
   pendingResume: PendingResume | null;
+  /** Fast return after a HIL sent the run back: between `after` and `to` only git phases run, the rest is skipped. */
+  returnTo: { to: string; after: string } | null;
   status: RunStatus;
   createdAt: string;
   updatedAt: string;
@@ -77,6 +81,8 @@ export interface PhaseRun {
   error: string | null;
   transcriptPath: string | null;
   artifacts: Record<string, string>;
+  /** HEAD of the worktree when the phase started; a repeat pass of the same phase checks only what changed since. */
+  headSha: string | null;
   startedAt: string | null;
   endedAt: string | null;
 }
@@ -113,7 +119,11 @@ export interface AskUserQuestionItem {
 export type HilPayload =
   | { kind: 'refine_prompt'; prompt: string; questions: ClarifyQuestion[]; suggestedPrompt: string | null; assumptions: string[]; suggestedTitle: string | null; suggestedBranch: string | null }
   | { kind: 'approve_plan'; planMd: string; summary: string; costUsd: number }
-  | { kind: 'approve_result'; diffStat: string; diff: string; testOutput: string | null; test: TestOutput | null; review: ReviewOutput | null; qa: QaOutput | null; commits: string[]; branch: string }
+  | { kind: 'approve_result'; diffStat: string; diff: string; testOutput: string | null; test: TestOutput | null; review: ReviewOutput | null; qa: QaOutput | null; commits: string[]; branch: string;
+      /** Which list the human decides on: review findings, or QA issues at a gate placed after the QA phase. */
+      focus: 'review' | 'qa';
+      /** `fix` is offered only when the implementing phase is inside the task's segment; `post` only when there is a PR. */
+      canFix: boolean; canPost: boolean; role: TaskRole }
   | { kind: 'pr_feedback'; prUrl: string; comments: { id: string; author: string; body: string; path?: string; line?: number; url: string; reviewState?: string }[] }
   | { kind: 'question'; questions: AskUserQuestionItem[] }
   | { kind: 'escalation'; phaseName: string; error: string; resultSubtype: string | null };
@@ -123,7 +133,22 @@ export interface HilResponse {
   comment?: string;
   edited?: { prompt?: string; planMd?: string; title?: string };
   answers?: Record<string, string>;
+  /** approve_result: what to do with each item, keyed `review:<index>` / `qa:<index>`. Default: skip. */
+  findings?: Record<string, FindingAction>;
+  /** pr_feedback: per comment id. Default: fix. */
+  comments?: Record<string, 'fix' | 'skip'>;
+  /** Reviewer tasks: the GitHub review event the selected findings are published with. */
+  reviewEvent?: ReviewEvent;
 }
+
+export type FindingAction = 'fix' | 'post' | 'skip';
+export type ReviewEvent = 'comment' | 'approve' | 'request_changes';
+/** author: the task's segment contains the implementing phase (it fixes PR comments); reviewer: it only reviews (it re-reviews new commits). */
+export type TaskRole = 'author' | 'reviewer';
+
+/** Plan usage windows of the Claude subscription, as last reported by the CLI. Utilization is 0-100. */
+export interface QuotaWindow { utilization: number; resetsAt: string | null }
+export interface ClaudeQuota { fiveHour: QuotaWindow | null; sevenDay: QuotaWindow | null; status: string | null; updatedAt: string }
 
 export type HilStatus = 'open' | 'answered' | 'expired' | 'cancelled';
 

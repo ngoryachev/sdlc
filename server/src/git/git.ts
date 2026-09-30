@@ -283,6 +283,22 @@ export async function diffAgainst(wt: string, baseRef: string, maxBytes = 400_00
   return { stat, patch, commits: log ? log.split('\n') : [], truncated };
 }
 
+/** New-side line numbers of the branch diff (added and context lines), per file: the lines a PR review comment may anchor to. */
+export async function diffRightLines(wt: string, baseRef: string): Promise<Map<string, Set<number>>> {
+  const out = await git(wt, ['diff', '--unified=3', '--no-color', `${baseRef}...HEAD`], { allowFail: true });
+  const map = new Map<string, Set<number>>();
+  let file: string | null = null; let line = 0; let inHunk = false;
+  for (const l of out.split('\n')) {
+    if (l.startsWith('diff --git ')) { file = null; inHunk = false; continue; }
+    if (!inHunk && l.startsWith('+++ ')) { const p = l.slice(4).trim(); file = p === '/dev/null' ? null : p.replace(/^b\//, ''); if (file && !map.has(file)) map.set(file, new Set()); continue; }
+    const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+    if (h) { line = Number(h[1]); inHunk = true; continue; }
+    if (!file || !inHunk) continue;
+    if (l.startsWith('+') || l.startsWith(' ')) { map.get(file)!.add(line); line++; }
+  }
+  return map;
+}
+
 export async function push(wt: string, remote: string, branch: string, auth?: NetAuth): Promise<void> { await git(wt, ['push', '-u', remote, `refs/heads/${branch}:refs/heads/${branch}`], { env: netEnv(auth) }); }
 export async function remoteHasBranch(cwd: string, remote: string, branch: string, auth?: NetAuth): Promise<boolean> { return (await git(cwd, ['ls-remote', '--heads', remote, branch], { allowFail: true, env: netEnv(auth) })) !== ''; }
 /** Publish a local branch without changing its upstream (used for a local base branch before a PR). */

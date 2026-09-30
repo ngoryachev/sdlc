@@ -1,0 +1,4 @@
+name: review-pr
+description: "Review someone's pull request: review -> approve_result(HIL: pick the findings to post) -> publish. New commits in the PR start the review again."
+extends: standard
+segment: { from: review, to: publish }

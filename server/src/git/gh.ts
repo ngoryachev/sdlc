@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import type { ReviewOutput } from '@sdlc/shared';
 import { git, netEnv } from './git.js';
 
 const execFileP = promisify(execFile);
@@ -12,9 +11,11 @@ const execFileP = promisify(execFile);
 export interface RepoAuth { user: string | null; token: string | null }
 export interface GhAccount { login: string; active: boolean }
 export interface GhRepo { slug: string; description: string; isFork: boolean; isPrivate: boolean; pushedAt: string | null; defaultBranch: string; canPush: boolean }
-export interface PrInfo { number: number; url: string; title: string; body: string; headRefName: string; baseRefName: string; state: string; isDraft: boolean }
+export interface PrInfo { number: number; url: string; title: string; body: string; headRefName: string; baseRefName: string; state: string; isDraft: boolean; headRefOid?: string }
 export interface PrComment { id: string; author: string; body: string; path?: string; line?: number; url: string; reviewState?: string; createdAt: string; association?: string }
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
+export type ReviewEventName = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
+export interface ReviewLineComment { path: string; line: number; body: string }
 export const TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 /** Everything sdlc asks of GitHub. The default implementation shells out to `gh`; tests use a fake. */
@@ -33,7 +34,8 @@ export interface GitHub {
   prEditBase(cwd: string, number: number, base: string, auth: RepoAuth): Promise<void>;
   prClose(cwd: string, number: number, auth: RepoAuth): Promise<void>;
   prComment(cwd: string, number: number, body: string, auth: RepoAuth): Promise<void>;
-  postReview(o: { cwd: string; number: number; review: ReviewOutput }, auth: RepoAuth): Promise<void>;
+  /** Line comments must point at lines of the PR diff (the caller checks); if GitHub rejects them anyway, their text is kept in the review body. */
+  postReview(o: { cwd: string; number: number; event: ReviewEventName; body: string; comments: ReviewLineComment[] }, auth: RepoAuth): Promise<void>;
   prFeedback(cwd: string, number: number, auth: RepoAuth): Promise<{ state: string; comments: PrComment[] }>;
 }
 
@@ -138,7 +140,7 @@ export class GhCli implements GitHub {
 
   async prView(cwd: string, number: number, auth: RepoAuth): Promise<PrInfo> {
     const repo = await this.prRepo(cwd, auth);
-    return JSON.parse(await gh(['pr', 'view', String(number), '--repo', repo, '--json', 'number,url,title,body,headRefName,baseRefName,state,isDraft'], { token: auth.token })) as PrInfo;
+    return JSON.parse(await gh(['pr', 'view', String(number), '--repo', repo, '--json', 'number,url,title,body,headRefName,baseRefName,state,isDraft,headRefOid'], { token: auth.token })) as PrInfo;
   }
 
   async prCreate(o: { cwd: string; head: string; base: string; title: string; body: string; draft: boolean }, auth: RepoAuth): Promise<{ url: string; number: number }> {
@@ -177,13 +179,21 @@ export class GhCli implements GitHub {
     await gh(['pr', 'comment', String(number), '--repo', repo, '--body', body], { token: auth.token });
   }
 
-  async postReview(o: { cwd: string; number: number; review: ReviewOutput }, auth: RepoAuth): Promise<void> {
+  async postReview(o: { cwd: string; number: number; event: ReviewEventName; body: string; comments: ReviewLineComment[] }, auth: RepoAuth): Promise<void> {
     const repo = await this.prRepo(o.cwd, auth);
-    const comments = o.review.findings.filter((f) => f.file && f.line).map((f) => ({ path: f.file!, line: f.line!, body: `**${f.severity}: ${f.title}**\n\n${f.description}${f.suggestion ? `\n\nSuggestion: ${f.suggestion}` : ''}` }));
-    const tmp = path.join(os.tmpdir(), `sdlc-review-${process.pid}-${Date.now()}.json`);
-    fs.writeFileSync(tmp, JSON.stringify({ body: o.review.summary, event: 'COMMENT', comments }));
-    try { await gh(['api', `repos/${repo}/pulls/${o.number}/reviews`, '--method', 'POST', '--input', tmp], { token: auth.token }); }
-    finally { fs.rmSync(tmp, { force: true }); }
+    const send = async (payload: unknown) => {
+      const tmp = path.join(os.tmpdir(), `sdlc-review-${process.pid}-${Date.now()}.json`);
+      fs.writeFileSync(tmp, JSON.stringify(payload));
+      try { await gh(['api', `repos/${repo}/pulls/${o.number}/reviews`, '--method', 'POST', '--input', tmp], { token: auth.token }); }
+      finally { fs.rmSync(tmp, { force: true }); }
+    };
+    const body = o.body || (o.event === 'REQUEST_CHANGES' ? 'Changes requested, see the comments.' : '');
+    try { await send({ body, event: o.event, comments: o.comments.map((c) => ({ ...c, side: 'RIGHT' })) }); }
+    catch (e) {
+      // one comment outside the diff makes GitHub reject the whole review (422): keep every text, drop the anchors
+      if (!o.comments.length || !/422|unprocessable|must be part of the diff|review_thread|could not be resolved/i.test(e instanceof Error ? e.message : String(e))) throw e;
+      await send({ body: [body, ...o.comments.map((c) => `\`${c.path}:${c.line}\`\n\n${c.body}`)].filter(Boolean).join('\n\n---\n\n'), event: o.event, comments: [] });
+    }
   }
 
   async prFeedback(cwd: string, number: number, auth: RepoAuth): Promise<{ state: string; comments: PrComment[] }> {

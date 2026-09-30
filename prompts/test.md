@@ -14,6 +14,8 @@ Approved plan (if present):
 
 Repository hint: declared test command is `{{repo.test_command?}}` (empty if none).
 
+{{recheck.note?}}
+
 How to work:
 1. Read the change: `git diff {{task.base_ref}}...HEAD --stat`, then the diff and the touched files. Understand what behaviour changed and what could break.
 2. Pick the level of verification that matches the change. A one-line doc or config change needs nothing; a behaviour change needs tests for the new behaviour and its edge cases; a refactor needs the existing suite plus a check that callers still work.

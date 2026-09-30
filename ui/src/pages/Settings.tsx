@@ -11,10 +11,10 @@ export function SettingsPage() {
   const [models, setModels] = useState<ModelChoice[]>([]);
   const [modelsErr, setModelsErr] = useState<string | null>(null);
   const [pipelines, setPipelines] = useState<PipelineInfo[]>([]);
-  const [form, setForm] = useState<{ default_pipeline: string; max_parallel_tasks: number; max_loops: number; task_budget_usd: string; limits: 'pipeline' | 'off'; merge_method: string; cleanup: string; model: string; effort: string; phases: ModelOverrides } | null>(null);
+  const [form, setForm] = useState<{ default_pipeline: string; max_parallel_tasks: number; max_loops: number; recheck_scope: 'delta' | 'full'; pr_feedback_from: 'collaborators' | 'anyone'; pr_sync_interval: string; task_budget_usd: string; limits: 'pipeline' | 'off'; merge_method: string; cleanup: string; model: string; effort: string; phases: ModelOverrides } | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useStore((s) => s.toast);
-  const load = () => api.config().then((c) => { setCfg(c); setForm({ default_pipeline: c.defaultPipeline, max_parallel_tasks: c.maxParallelTasks, max_loops: c.maxLoops, task_budget_usd: String(c.taskBudgetUsd), limits: c.limits.phases, merge_method: c.mergeMethod, cleanup: c.cleanup, model: c.models.default ?? '', effort: c.models.effort ?? '', phases: c.models.phases as ModelOverrides }); });
+  const load = () => api.config().then((c) => { setCfg(c); setForm({ default_pipeline: c.defaultPipeline, max_parallel_tasks: c.maxParallelTasks, max_loops: c.maxLoops, recheck_scope: c.recheckScope, pr_feedback_from: c.prFeedbackFrom, pr_sync_interval: c.prSyncInterval, task_budget_usd: String(c.taskBudgetUsd), limits: c.limits.phases, merge_method: c.mergeMethod, cleanup: c.cleanup, model: c.models.default ?? '', effort: c.models.effort ?? '', phases: c.models.phases as ModelOverrides }); });
   useEffect(() => { void load(); void api.pipelines().then((p) => setPipelines(p.pipelines)); void api.models().then((r) => { setModels(r.models); if (r.error) setModelsErr(r.error); }).catch((e) => setModelsErr(String(e.message))); }, []);
   if (!cfg || !form) return <div className="muted">loading…</div>;
   const save = async () => {
@@ -23,7 +23,7 @@ export function SettingsPage() {
       const budget = form.task_budget_usd.trim() === 'off' || form.task_budget_usd.trim() === '' ? 'off' : Number(form.task_budget_usd);
       if (budget !== 'off' && !(budget > 0)) throw new Error('task budget must be a positive number or "off"');
       const models = { ...(form.model ? { default: form.model } : {}), ...(form.effort ? { effort: form.effort } : {}), phases: form.phases };
-      const c = await api.updateConfig({ default_pipeline: form.default_pipeline, max_parallel_tasks: form.max_parallel_tasks, max_loops: form.max_loops, task_budget_usd: budget, limits: { phases: form.limits }, merge_method: form.merge_method, cleanup: form.cleanup, models });
+      const c = await api.updateConfig({ default_pipeline: form.default_pipeline, max_parallel_tasks: form.max_parallel_tasks, max_loops: form.max_loops, recheck_scope: form.recheck_scope, pr_feedback_from: form.pr_feedback_from, pr_sync_interval: form.pr_sync_interval, task_budget_usd: budget, limits: { phases: form.limits }, merge_method: form.merge_method, cleanup: form.cleanup, models });
       setCfg(c); toast('settings saved; they apply from the next phase of every task');
     } catch (e) { toast((e as Error).message, 'error'); } finally { setBusy(false); }
   };
@@ -40,6 +40,12 @@ export function SettingsPage() {
             <input type="number" min={1} value={form.max_parallel_tasks} onChange={(e) => setForm({ ...form, max_parallel_tasks: Math.max(1, Number(e.target.value) || 1) })} />
             <label className="small muted" style={{ marginTop: 6, display: 'block' }}>Max fix loops (test/review → implement before escalating)</label>
             <input type="number" min={0} value={form.max_loops} onChange={(e) => setForm({ ...form, max_loops: Math.max(0, Number(e.target.value) || 0) })} />
+            <label className="small muted" style={{ marginTop: 6, display: 'block' }}>Repeat passes of review / test / qa</label>
+            <select value={form.recheck_scope} onChange={(e) => setForm({ ...form, recheck_scope: e.target.value as 'delta' | 'full' })}><option value="delta">delta: only what changed since the previous pass</option><option value="full">full: everything again</option></select>
+            <label className="small muted" style={{ marginTop: 6, display: 'block' }}>PR comments taken as feedback</label>
+            <select value={form.pr_feedback_from} onChange={(e) => setForm({ ...form, pr_feedback_from: e.target.value as 'collaborators' | 'anyone' })}><option value="collaborators">from collaborators, members and owners</option><option value="anyone">from anyone</option></select>
+            <label className="small muted" style={{ marginTop: 6, display: 'block' }}>GitHub polling interval (PR state, new comments, new commits; e.g. 3m, 1h, or "off")</label>
+            <input value={form.pr_sync_interval} onChange={(e) => setForm({ ...form, pr_sync_interval: e.target.value })} />
             <label className="small muted" style={{ marginTop: 6, display: 'block' }}>Task budget, $ (or "off")</label>
             <input value={form.task_budget_usd} onChange={(e) => setForm({ ...form, task_budget_usd: e.target.value })} />
             <label className="small muted" style={{ marginTop: 6, display: 'block' }}>Phase limits (max_turns / max_budget_usd from pipelines)</label>

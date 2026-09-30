@@ -36,6 +36,9 @@ const MIGRATIONS: string[] = [
     hil_id TEXT NOT NULL, channel TEXT NOT NULL, ref TEXT NOT NULL, PRIMARY KEY (hil_id, channel));
   `,
   `ALTER TABLE tasks ADD COLUMN model_overrides TEXT;`,
+  `ALTER TABLE tasks ADD COLUMN pr_head_sha TEXT;
+   ALTER TABLE pipeline_runs ADD COLUMN return_to TEXT;
+   ALTER TABLE phase_runs ADD COLUMN head_sha TEXT;`,
 ];
 
 export function openDb(file: string): DatabaseSync {

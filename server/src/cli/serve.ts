@@ -28,19 +28,19 @@ export function registerServe(program: Command) {
       });
       await app.engine.recover();
       // reconcile with GitHub in the background: merged/closed PRs, bases changed on GitHub, branches merged outside sdlc
+      // author tasks also get new review comments, reviewer tasks new commits. The interval is read on every tick, so a Settings change applies without a restart.
       let syncTimer: NodeJS.Timeout | null = null;
-      if (app.config.pr_sync_interval !== 'off') {
-        let busy = false;
-        const tick = async () => {
-          if (busy) return; busy = true;
-          try { const r = await app.engine.syncTasks(); for (const ch of r.changes) console.log(`[sync] ${ch.title} (${ch.taskId}): ${ch.change}`); for (const e of r.errors) console.error(`[sync] ${e}`); }
-          catch (e) { console.error('[sync] failed:', e instanceof Error ? e.message : e); }
-          finally { busy = false; }
-        };
-        setTimeout(() => void tick(), 5_000);
-        syncTimer = setInterval(() => void tick(), parseDuration(app.config.pr_sync_interval));
-      }
-      const shutdown = () => { console.log('\n[sdlc] shutting down'); stop(); if (syncTimer) clearInterval(syncTimer); server.close(); setTimeout(() => process.exit(0), 500); };
+      let busy = false;
+      const tick = async () => {
+        if (busy || app.config.pr_sync_interval === 'off') return;
+        busy = true;
+        try { const r = await app.engine.syncTasks(); for (const ch of r.changes) console.log(`[sync] ${ch.title} (${ch.taskId}): ${ch.change}`); for (const e of r.errors) console.error(`[sync] ${e}`); }
+        catch (e) { console.error('[sync] failed:', e instanceof Error ? e.message : e); }
+        finally { busy = false; }
+      };
+      const schedule = (ms: number) => { syncTimer = setTimeout(() => { void tick().finally(() => schedule(app.config.pr_sync_interval === 'off' ? 60_000 : parseDuration(app.config.pr_sync_interval))); }, ms); };
+      schedule(5_000);
+      const shutdown = () => { console.log('\n[sdlc] shutting down'); stop(); if (syncTimer) clearTimeout(syncTimer); server.close(); setTimeout(() => process.exit(0), 500); };
       process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
     });
 }

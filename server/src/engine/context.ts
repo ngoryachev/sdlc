@@ -14,12 +14,14 @@ export function buildTemplateContext(o: {
   const artifacts: Record<string, unknown> = {};
   const hil: Record<string, unknown> = {};
   const runs = store.phaseRunsForRun(run.id);
-  // latest attempt per phase wins
+  // latest attempt per phase wins; a skipped pass (when / fast return) keeps the output of the last pass that really ran
   const latest = new Map<string, PhaseRun>();
-  for (const pr of runs) latest.set(pr.phaseName, pr);
+  const lastReal = new Map<string, PhaseRun>();
+  for (const pr of runs) { latest.set(pr.phaseName, pr); if (pr.status !== 'skipped') lastReal.set(pr.phaseName, pr); }
   for (const [name, pr] of latest) {
-    phases[name] = { output: pr.resultText ?? '', structured: pr.structuredOutput ?? null, status: pr.status, attempt: pr.attempt, error: pr.error ?? '' };
-    for (const [aName, aPath] of Object.entries(pr.artifacts)) {
+    const real = lastReal.get(name);
+    phases[name] = { output: real?.resultText ?? '', structured: real?.structuredOutput ?? null, status: pr.status, attempt: pr.attempt, error: pr.error ?? '' };
+    for (const [aName, aPath] of Object.entries((real ?? pr).artifacts)) {
       artifacts[aName] = fs.existsSync(aPath) ? fs.readFileSync(aPath, 'utf8') : '';
     }
   }
@@ -37,6 +39,7 @@ export function buildTemplateContext(o: {
     },
     phases, artifacts, hil,
     loop: o.loop ?? { feedback: '', count: 0 },
+    recheck: { note: '' },
     repo: { ...o.repoConfig, test_command: o.repoConfig.test_command ?? '', lint_command: o.repoConfig.lint_command ?? '' },
   };
 }

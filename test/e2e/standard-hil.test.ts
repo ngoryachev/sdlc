@@ -3,12 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { FakeRunner } from '../fakes/fake-runner.js';
-import { makeRepo, testApp, tmpDir } from '../helpers.js';
+import { makeRemoteRepo, makeRepo, remoteFile, sh, testApp, tmpDir } from '../helpers.js';
+import { FakeGitHub } from '../fakes/fake-github.js';
 
 describe('standard pipeline with HIL (fake runner)', () => {
-  it('refine → plan → approve_plan(request_changes resumes plan) → implement → test → review → approve_result(request_changes → implement) → approve', async () => {
+  it('refine → plan → approve_plan(request_changes resumes plan) → implement → test → PR → review → approve_result(request_changes → implement → review) → approve → qa', async () => {
     const dir = tmpDir('sdlc-hil-');
-    const repo = makeRepo(dir, { 'a.txt': 'x\n', 'test.js': "console.log('ok')\n" }, 'test_command: node test.js\n');
+    const { repo, bare } = makeRemoteRepo(dir, { 'a.txt': 'x\n', 'test.js': "console.log('ok')\n", '.sdlc.yaml': 'test_command: node test.js\n' });
+    const gh = new FakeGitHub(bare);
     const calls: string[] = [];
     const runner = new FakeRunner((spec) => ({
       act: () => {
@@ -25,8 +27,8 @@ describe('standard pipeline with HIL (fake runner)', () => {
         throw new Error('unexpected prompt: ' + p.slice(0, 100));
       },
     }));
-    const app = testApp(dir, runner);
-    const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'standard', baseRemote: null });
+    const app = testApp(dir, runner, {}, gh);
+    const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'standard' });
     await app.engine.advance(task.id);
 
     // 1. refine HIL with clarify output
@@ -46,7 +48,7 @@ describe('standard pipeline with HIL (fake runner)', () => {
     hil = app.store.openHilForTask(task.id)[0]!;
     expect(hil.kind).toBe('approve_plan');
     expect(hil.payload.kind === 'approve_plan' && hil.payload.planMd).toBe('# Plan v1\n');
-    await expect(app.engine.respondHil(hil.id, { decision: 'request_changes' }, 'web')).rejects.toThrow(/comment is required/);
+    await expect(app.engine.respondHil(hil.id, { decision: 'request_changes' }, 'web')).rejects.toThrow(/needs a comment/);
     await app.engine.respondHil(hil.id, { decision: 'request_changes', comment: 'do it differently' }, 'web');
     await app.engine.advance(task.id);
     hil = app.store.openHilForTask(task.id)[0]!;
@@ -58,35 +60,36 @@ describe('standard pipeline with HIL (fake runner)', () => {
     await app.engine.respondHil(hil.id, { decision: 'approve', edited: { planMd: '# Plan v2 (edited)\n' } }, 'web');
     await app.engine.advance(task.id);
 
-    // 4. approve_result → request changes → implement resumed → back to approve_result
+    // 4. the pull request is opened before review; approve_result → request changes → implement resumed → straight back to review
     hil = app.store.openHilForTask(task.id)[0]!;
     expect(hil.kind).toBe('approve_result');
+    expect(gh.calls).toEqual([expect.stringMatching(/^create #1 sdlc\/flip-a-txt-.* -> main$/)]);
+    expect(app.store.getTask(task.id)!.prNumber).toBe(1);
     expect(hil.payload.kind === 'approve_result' && hil.payload.commits.length).toBe(1);
     expect(hil.payload.kind === 'approve_result' && hil.payload.review?.verdict).toBe('approve');
     expect(hil.payload.kind === 'approve_result' && hil.payload.test?.verdict).toBe('pass');
     expect(hil.payload.kind === 'approve_result' && hil.payload.testOutput).toMatch(/^pass: ok/);
+    expect(hil.payload.kind === 'approve_result' && [hil.payload.focus, hil.payload.canFix, hil.payload.canPost, hil.payload.role]).toEqual(['review', true, true, 'author']);
     await app.engine.respondHil(hil.id, { decision: 'request_changes', comment: 'make it z' }, 'web');
     await app.engine.advance(task.id);
     hil = app.store.openHilForTask(task.id)[0]!;
     expect(hil.kind).toBe('approve_result');
     expect(hil.payload.kind === 'approve_result' && hil.payload.commits.length).toBe(2);
     expect(calls.some((c) => c.startsWith('implement-resume:fake-session-'))).toBe(true);
+    expect(remoteFile(bare, app.store.getTask(task.id)!.branch, 'a.txt')).toBe(true);
+    expect(sh(bare, ['show', `${app.store.getTask(task.id)!.branch}:a.txt`])).toBe('z');   // the fix was pushed to the PR before the second review
 
-    // 5. approve → pr phase fails (no gh/remote) → escalation with skip
+    // 5. approve → nothing marked to publish → qa → report on the PR → the task idles with the PR open
     await app.engine.respondHil(hil.id, { decision: 'approve' }, 'web');
     await app.engine.advance(task.id);
-    const t = app.store.getTask(task.id)!;
-    hil = app.store.openHilForTask(task.id)[0]!;
-    expect(t.status).toBe('waiting_hil');
-    expect(hil.kind).toBe('escalation');
-    expect(hil.payload.kind === 'escalation' && hil.payload.phaseName).toBe('pr');
-    await app.engine.respondHil(hil.id, { decision: 'skip' }, 'web');
-    await app.engine.advance(task.id);
-    expect(app.store.getTask(task.id)!.status).toBe('succeeded');
-    // qa ran (best effort), qa_report skipped (no PR), qa_gate skipped (no issues)
-    const byName = Object.fromEntries(app.store.phaseRunsForTask(task.id).map((p) => [p.phaseName, p.status]));
-    expect(byName.qa).toBe('succeeded'); expect(byName.qa_report).toBe('skipped'); expect(byName.qa_gate).toBe('skipped');
-    expect(calls).toEqual(['clarify', 'plan', expect.stringMatching(/^plan-resume:/), 'implement', 'test', 'review', expect.stringMatching(/^implement-resume:/), 'test', 'review', 'qa']);
+    expect(app.store.getTask(task.id)!.status).toBe('pr_open');
+    const runs = app.store.phaseRunsForTask(task.id);
+    const last = Object.fromEntries(runs.map((p) => [p.phaseName, p.status]));
+    expect(last.publish).toBe('skipped'); expect(last.qa).toBe('succeeded'); expect(last.qa_report).toBe('succeeded'); expect(last.qa_gate).toBe('skipped');
+    // the fix went implement → commit → push → review: the test phase was not repeated (fast return), review was
+    expect(runs.filter((p) => p.phaseName === 'test').map((p) => p.status)).toEqual(['succeeded', 'skipped']);
+    expect(calls).toEqual(['clarify', 'plan', expect.stringMatching(/^plan-resume:/), 'implement', 'test', 'review', expect.stringMatching(/^implement-resume:/), 'review', 'qa']);
+    expect(gh.reviews).toEqual([]);
   });
 
   it('abort from HIL cancels the task and removes the worktree', async () => {

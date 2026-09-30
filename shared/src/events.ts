@@ -1,4 +1,4 @@
-import type { HilRequest, PhaseRun, Task } from './types.js';
+import type { ClaudeQuota, HilRequest, PhaseRun, Task } from './types.js';
 
 export type EventType =
   | 'task.created' | 'task.status' | 'task.updated' | 'task.cost' | 'task.worktree' | 'task.branch'
@@ -6,7 +6,8 @@ export type EventType =
   | 'hil.requested' | 'hil.answered' | 'hil.expired' | 'hil.reminder'
   | 'git.committed' | 'git.pushed' | 'git.pr_created' | 'git.merged'
   | 'notifier.sent' | 'notifier.error'
-  | 'engine.warning' | 'engine.error';
+  | 'engine.warning' | 'engine.error'
+  | 'claude.quota';
 
 export interface EventPayloads {
   'task.created': { task: Task };
@@ -32,6 +33,7 @@ export interface EventPayloads {
   'notifier.error': { channel: string; message: string };
   'engine.warning': { taskId?: string; message: string };
   'engine.error': { taskId?: string; phaseRunId?: string; message: string; stack?: string };
+  'claude.quota': { quota: ClaudeQuota };
 }
 
 export interface SdlcEvent<T extends EventType = EventType> {

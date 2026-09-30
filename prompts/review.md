@@ -16,6 +16,8 @@ Result of the test phase (empty if it did not run):
 
 {{phases.test.structured?}}
 
+{{recheck.note?}}
+
 Evaluate the result against the intent, not against style preferences:
 - Does it do what was asked, fully? Anything silently simplified, skipped or over-built?
 - Correctness risks: edge cases, error handling, regressions in callers.

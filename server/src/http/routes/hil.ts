@@ -8,6 +8,9 @@ const Respond = z.object({
   comment: z.string().optional(),
   edited: z.object({ prompt: z.string().optional(), planMd: z.string().optional(), title: z.string().optional() }).optional(),
   answers: z.record(z.string(), z.string()).optional(),
+  findings: z.record(z.string(), z.enum(['fix', 'post', 'skip'])).optional(),
+  comments: z.record(z.string(), z.enum(['fix', 'skip'])).optional(),
+  reviewEvent: z.enum(['comment', 'approve', 'request_changes']).optional(),
 });
 
 export function hilRoutes(app: App) {

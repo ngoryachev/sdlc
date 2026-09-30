@@ -54,20 +54,20 @@ export const HilPhaseSchema = z.object({
   show: z.array(z.string()).default([]),
   timeout: z.string().regex(/^\d+(m|h|d)$/).optional(),
   back_to: z.string().optional(), // where request_changes resumes; defaults by kind
-  then_goto: z.string().optional(), // after back_to completes, jump here (default: phase after back_to)
+  then_goto: z.string().optional(), // fast return: after back_to completes only git phases run until this phase (default: every phase after back_to runs again)
 }).strict();
 
 export const GitPhaseSchema = z.object({
   ...Common,
   type: z.literal('git'),
-  git: z.enum(['commit', 'push', 'pr', 'comment']),
+  git: z.enum(['commit', 'push', 'pr', 'comment', 'review']),   // review: publish the findings the human marked `post` at the approve_result checkpoint
   message: z.string().optional(),
   body: z.string().optional(),      // comment: markdown template file (pipeline-relative)
   pr: z.object({
-    draft: z.union([z.boolean(), z.string()]).default(true),
+    draft: z.union([z.boolean(), z.string()]).default(false),
     title: z.string().optional(),
     body: z.string().optional(),
-    post_review: z.union([z.boolean(), z.string()]).default(false),
+    post_review: z.union([z.boolean(), z.string()]).default(false),   // deprecated, ignored: findings are published by a `git: review` phase
   }).strict().optional(),
 }).strict();
 
@@ -83,6 +83,12 @@ export const PipelineSchema = z.object({
     max_budget_usd: z.number().positive().optional(),
     setting_sources: z.array(z.enum(['user', 'project', 'local'])).default(['project']),
   }).strict().default({ setting_sources: ['project'] }),
+  /** Preset: take the phases (and defaults) of another pipeline in the same directory; see `segment`. */
+  extends: z.string().optional(),
+  /** Default slice of the phases a task runs (both ends inclusive); a task may override it. */
+  segment: z.object({ from: z.string().optional(), to: z.string().optional() }).strict().optional(),
+  /** The task is created idle on an existing pull request and is driven by its review comments. */
+  wait_for_feedback: z.boolean().default(false),
   phases: z.array(PhaseSchema).min(1),
 }).strict().superRefine((p, ctx) => {
   const names = new Set<string>();
@@ -95,6 +101,7 @@ export const PipelineSchema = z.object({
       ph.type === 'hil' ? ph.back_to : undefined, ph.type === 'hil' ? ph.then_goto : undefined].filter(Boolean) as string[];
     for (const r of refs) if (!names.has(r)) ctx.addIssue({ code: 'custom', message: `phase ${ph.name} references unknown phase: ${r}`, path: ['phases'] });
   }
+  for (const end of [p.segment?.from, p.segment?.to]) if (end && !names.has(end)) ctx.addIssue({ code: 'custom', message: `segment references unknown phase: ${end}`, path: ['segment'] });
 });
 
 export type PipelineSpec = z.infer<typeof PipelineSchema>;

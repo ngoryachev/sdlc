@@ -4,18 +4,18 @@ import { promisify } from 'node:util';
 const execFileP = promisify(execFile);
 import path from 'node:path';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
-import type { AskUserQuestionItem, HilRequest, HilResponse, ModelOverrides, PhaseRun, PipelineRun, Task, TaskStatus } from '@sdlc/shared';
+import type { AskUserQuestionItem, HilRequest, HilResponse, ModelOverrides, PhaseRun, PipelineRun, Task, TaskRole, TaskStatus } from '@sdlc/shared';
 import { ACTIVE_STATUSES, FINISHED_STATUSES } from '@sdlc/shared';
 import type { SdlcConfig } from '../config/config.js';
 import { loadRepoConfig, parseDuration } from '../config/config.js';
 import type { ClaudeRunner } from '../claude/runner.js';
-import { findPipelineFile, loadPipeline, phaseIndex, resolvePipelineFile, type LoadedPipeline } from '../pipeline/loader.js';
+import { findPipelineFile, loadPipeline, phaseIndex, resolvePipelineFile, roleOf, segmentOf, type LoadedPipeline } from '../pipeline/loader.js';
 import type { PhaseSpec, PipelineSpec, RepoConfig } from '../pipeline/schema.js';
 import { PipelineSchema } from '../pipeline/schema.js';
 import { evalExpr } from '../pipeline/expr.js';
 import { renderTemplate } from '../pipeline/template.js';
-import { adoptWorktree, branchNameFor, createWorktree, defaultBase, deleteLocalBranch, deleteRemoteBranch, fetchBranch, isAncestor, isSdlcBranch, mergeLocally, push, pushBranch, recreateWorktree, refExists, remoteHasBranch, remotes, removeWorktree, renameBranch, repoToplevel, slugFromRemote, syncBranchWithRemote, syncLocalBase, taskCommitCount } from '../git/git.js';
-import { TRUSTED_ASSOCIATIONS, type GitHub, type MergeMethod, type RepoAuth } from '../git/gh.js';
+import { adoptWorktree, branchNameFor, createWorktree, defaultBase, deleteLocalBranch, deleteRemoteBranch, diffAgainst, fetchBranch, git, isAncestor, isSdlcBranch, mergeLocally, push, pushBranch, recreateWorktree, refExists, remoteHasBranch, remotes, removeWorktree, renameBranch, repoToplevel, slugFromRemote, syncBranchWithRemote, syncLocalBase, taskCommitCount } from '../git/git.js';
+import { TRUSTED_ASSOCIATIONS, type GitHub, type MergeMethod, type PrInfo, type RepoAuth } from '../git/gh.js';
 import type { RepoAccounts } from '../git/accounts.js';
 import type { Store } from '../store/repo.js';
 import type { EventBus } from '../store/events.js';
@@ -29,13 +29,17 @@ import { buildTemplateContext } from './context.js';
 import { HilBroker } from './hil-broker.js';
 
 export interface CreateTaskInput {
-  prompt: string; repoPath: string; pipeline?: string; baseRemote?: string | null; baseBranch?: string;
+  /** May be omitted for a pull request (its title and body are used) or when starting after `implement` on an existing branch (a short summary of the branch is generated). */
+  prompt?: string; repoPath: string; pipeline?: string; baseRemote?: string | null; baseBranch?: string;
   reviewMode?: 'conceptual' | 'line'; postReview?: boolean; title?: string;
-  /** Work on an existing branch instead of creating one (imported PR, "start from this branch"). */
+  /** Work on an existing branch instead of creating one ("start from this branch"). */
   branch?: string;
-  /** Start the pipeline at this phase; earlier phases are recorded as skipped. 'end' = do not run anything (imported PR waits for feedback). */
+  /** An open pull request as the source: its head branch becomes the task branch, its base the task base. */
+  prNumber?: number;
+  /** First phase to run; earlier phases are recorded as skipped. 'end' = run nothing (the task idles). Default: the pipeline's `segment.from`, else the first phase. */
   startAt?: string;
-  pr?: { number: number; url: string };
+  /** Last phase to run (inclusive). Default: the pipeline's `segment.to`, else the last phase. */
+  stopAfter?: string;
   modelOverrides?: ModelOverrides | null;
 }
 
@@ -52,6 +56,8 @@ class Semaphore {
     return () => this.release();
   }
   private release() { this.n--; const w = this.q.shift(); if (w) w(); }
+  /** Applied at once: waiters are woken up to the new limit; running phases are never interrupted. */
+  setMax(max: number) { this.max = max; for (let free = this.max - this.n; free > 0 && this.q.length; free--) this.q.shift()!(); }
 }
 
 export class Engine {
@@ -69,6 +75,9 @@ export class Engine {
 
   constructor(private d: EngineDeps) { this.slots = new Semaphore(d.config.max_parallel_tasks); }
 
+  /** Called after a config change: `max_parallel_tasks` takes effect without a restart. */
+  applyConfig(): void { this.slots.setMax(this.d.config.max_parallel_tasks); }
+
   // ------------------------------------------------------------------ tasks
   async createTask(input: CreateTaskInput): Promise<Task> {
     const { config, store, events } = this.d;
@@ -76,61 +85,94 @@ export class Engine {
     const repoConfig = loadRepoConfig(repoPath);
     const pipelineFile = findPipelineFile(input.pipeline ?? config.default_pipeline, config.pipelines_dirs);
     const loaded = loadPipeline(pipelineFile);
+    const spec = loaded.spec;
+    const auth = await this.d.accounts.forRepo(repoPath);
+
+    // a pull request as the source of the task
+    let pr: PrInfo | null = null;
+    if (input.prNumber) {
+      pr = await this.d.github.prView(repoPath, input.prNumber, auth);
+      if (pr.state !== 'OPEN') throw new HttpError(409, `PR #${input.prNumber} is ${pr.state}`);
+      if (store.listTasks().some((t) => t.prNumber === pr!.number && t.repoPath === repoPath && !['failed', 'aborted', 'merged', 'closed'].includes(t.status))) throw new HttpError(409, `PR #${pr.number} is already attached to a task`);
+    }
+    if (spec.wait_for_feedback && !pr) throw new HttpError(400, `pipeline ${spec.name} works on an existing pull request: pass its number`);
+
+    // the slice of the pipeline this task runs
+    const fromName = input.startAt && input.startAt !== 'end' ? input.startAt : spec.segment?.from;
+    const toName = input.stopAfter ?? spec.segment?.to;
+    const seg = segmentOf(spec, fromName, toName);
+    if (seg.toIdx < seg.fromIdx) throw new HttpError(400, `the segment ends (${toName}) before it starts (${fromName})`);
+    const idle = input.startAt === 'end' || spec.wait_for_feedback;
+    const startIdx = idle ? spec.phases.length : seg.fromIdx;
+
     const def = await defaultBase(repoPath);
-    let baseRemote = input.baseRemote === undefined ? (repoConfig.base_remote ?? def.remote) : input.baseRemote;
-    let baseBranch = input.baseBranch ?? repoConfig.base_branch ?? def.branch;
+    let baseRemote = pr ? await defaultRemote(repoPath) : input.baseRemote === undefined ? (repoConfig.base_remote ?? def.remote) : input.baseRemote;
+    let baseBranch = pr ? pr.baseRefName : input.baseBranch ?? repoConfig.base_branch ?? def.branch;
     // "sdlc/t_123" split on the first slash is not remote "sdlc": when the remote does not exist, treat the whole ref as a local branch.
     if (baseRemote && !(await remotes(repoPath)).includes(baseRemote)) { baseBranch = `${baseRemote}/${baseBranch}`; baseRemote = null; }
+    if (pr && baseRemote) await fetchBranch(repoPath, baseRemote, baseBranch, auth).catch(() => false);
     const baseRef = baseRemote ? `${baseRemote}/${baseBranch}` : baseBranch;
     if (!(await refExists(repoPath, baseRef))) throw new Error(`base ref ${baseRef} does not exist in ${repoPath}`);
+    const existingBranch = pr?.headRefName ?? input.branch;
+
+    // the prompt may be omitted when the change already exists: a pull request describes itself, a finished branch is summarised
+    let prompt = input.prompt?.trim() || (pr ? [pr.title, pr.body].filter(Boolean).join('\n\n') : '');
+    const implIdx = spec.phases.findIndex((p) => p.name === 'implement');
+    const summarise = !prompt;
+    if (summarise && !(existingBranch && implIdx >= 0 && seg.fromIdx > implIdx)) throw new HttpError(400, 'prompt is required; it may be omitted only for a pull request, or when starting after implement on an existing branch');
+
     const id = newId('t');
     const worktreesDir = config.worktrees_dir ?? path.join(path.dirname(repoPath), '.sdlc-worktrees', path.basename(repoPath));
-    const auth = await this.d.accounts.forRepo(repoPath);
-    const wt = input.branch
-      ? await adoptWorktree({ repo: repoPath, worktreesDir, taskId: id, branch: input.branch, remote: baseRemote, auth })
+    const wt = existingBranch
+      ? await adoptWorktree({ repo: repoPath, worktreesDir, taskId: id, branch: existingBranch, remote: baseRemote, auth })
       : await createWorktree({ repo: repoPath, worktreesDir, taskId: id, baseRemote, baseBranch, copyUntracked: repoConfig.copy_untracked, auth });
     try { await runSetup(repoConfig, wt.worktreePath); }
     catch (e) { await removeWorktree(repoPath, wt.worktreePath, wt.branch, { deleteBranchIfEmpty: wt.baseRef }).catch(() => {}); throw e; }
+    if (summarise) prompt = await this.describeBranch(wt.worktreePath, baseRef);
     const slug = await slugFromRemote(repoPath);
     const now = nowIso();
-    const title = input.title ?? titleFrom(input.prompt);
+    const title = input.title ?? pr?.title ?? titleFrom(prompt);
     const task: Task = {
-      id, title, initialPrompt: input.prompt, refinedPrompt: null, repoPath, repoSlug: slug,
-      baseRemote, baseBranch, branch: wt.branch, worktreePath: wt.worktreePath, pipelineName: loaded.spec.name,
+      id, title, initialPrompt: prompt, refinedPrompt: null, repoPath, repoSlug: slug,
+      baseRemote, baseBranch, branch: wt.branch, worktreePath: wt.worktreePath, pipelineName: spec.name,
       reviewMode: input.reviewMode ?? repoConfig.review_mode ?? 'conceptual', postReview: input.postReview ?? repoConfig.post_review ?? false,
-      status: 'created', totalCostUsd: 0, prUrl: input.pr?.url ?? null, prNumber: input.pr?.number ?? null, prFeedbackCursor: null, modelOverrides: input.modelOverrides ?? null, createdAt: now, updatedAt: now,
+      status: 'created', totalCostUsd: 0, prUrl: pr?.url ?? null, prNumber: pr?.number ?? null, prFeedbackCursor: null, prHeadSha: pr?.headRefOid ?? null,
+      modelOverrides: input.modelOverrides ?? null, createdAt: now, updatedAt: now,
     };
-    const startIdx = input.startAt === 'end' ? loaded.spec.phases.length : input.startAt ? phaseIndex(loaded.spec, input.startAt) : 0;
-    const idle = startIdx >= loaded.spec.phases.length;
-    const run: PipelineRun = { id: newId('r'), taskId: id, pipelineName: loaded.spec.name, pipelineSnapshot: { spec: loaded.spec, baseDir: loaded.baseDir, filePath: loaded.filePath },
-      cursor: startIdx, loopCounts: {}, pendingResume: null, status: idle ? 'succeeded' : 'running', createdAt: now, updatedAt: now };
+    const run: PipelineRun = { id: newId('r'), taskId: id, pipelineName: spec.name,
+      pipelineSnapshot: { spec, baseDir: loaded.baseDir, filePath: loaded.filePath, from: spec.phases[seg.fromIdx]!.name, to: spec.phases[seg.toIdx]!.name },
+      cursor: startIdx, loopCounts: {}, pendingResume: null, returnTo: null, status: idle ? 'succeeded' : 'running', createdAt: now, updatedAt: now };
     store.tx(() => {
       store.insertTask(task); store.insertRun(run);
-      for (const ph of loaded.spec.phases.slice(0, startIdx)) { const pr = this.newPhaseRun(run, task, ph); pr.status = 'skipped'; pr.resultText = `skipped: task started at ${input.startAt}`; pr.endedAt = now; store.insertPhaseRun(pr); }
+      for (const ph of spec.phases.slice(0, seg.fromIdx)) { const p = this.newPhaseRun(run, task, ph); p.status = 'skipped'; p.resultText = `skipped: task starts at ${spec.phases[seg.fromIdx]!.name}`; p.endedAt = now; store.insertPhaseRun(p); }
     });
     events.emit('task.created', { task }, { taskId: id });
     this.registerRepo(repoPath, slug);
     // a readable title and branch (sdlc/<english-slug>-<id>) come from a short haiku call in the background;
     // refine may rename them again later, as long as the branch has not been pushed
-    if (!input.title || !input.branch) this.background(id, this.nameTask(id, { title: !input.title, branch: !input.branch }));
-    if (idle) { this.setTaskStatus(task, task.prUrl ? 'pr_open' : 'succeeded'); return task; }
+    const want = { title: !input.title && !pr, branch: !existingBranch };
+    if (want.title || want.branch) this.background(id, this.nameTask(id, want));
+    if (idle) {
+      this.setTaskStatus(task, task.prUrl ? 'pr_open' : 'succeeded');
+      // a task that lives on review comments picks up the ones already there
+      if (spec.wait_for_feedback) this.background(id, this.pollPrFeedback(id).then(() => {}));
+      return task;
+    }
     this.setTaskStatus(task, 'running');
     void this.advance(id);
     return task;
   }
 
-  /** Create a task from an existing pull request: its head branch becomes the task branch, the task waits for PR feedback. */
-  async importPr(input: { repoPath: string; number: number; pipeline?: string; reviewMode?: 'conceptual' | 'line'; modelOverrides?: ModelOverrides | null }): Promise<Task> {
-    const repoPath = await repoToplevel(path.resolve(input.repoPath));
-    const pr = await this.d.github.prView(repoPath, input.number, await this.d.accounts.forRepo(repoPath));
-    if (pr.state !== 'OPEN') throw new HttpError(409, `PR #${input.number} is ${pr.state}`);
-    if (this.d.store.listTasks().some((t) => t.prNumber === pr.number && t.repoPath === repoPath && !['failed', 'aborted', 'merged', 'closed'].includes(t.status))) throw new HttpError(409, `PR #${pr.number} is already attached to a task`);
-    const rs = await remotes(repoPath);
-    const remote = rs.includes('origin') ? 'origin' : rs[0] ?? null;
-    return this.createTask({
-      prompt: [pr.title, pr.body].filter(Boolean).join('\n\n'), title: pr.title, repoPath, pipeline: input.pipeline, baseRemote: remote, baseBranch: pr.baseRefName,
-      branch: pr.headRefName, pr: { number: pr.number, url: pr.url }, startAt: 'end', reviewMode: input.reviewMode, modelOverrides: input.modelOverrides,
-    });
+  /** A task statement for a branch nobody described: one cheap model call over its commits and diffstat. */
+  private async describeBranch(worktree: string, baseRef: string): Promise<string> {
+    const d = await diffAgainst(worktree, baseRef, 1);
+    const facts = `Commits (newest first):\n${d.commits.slice(0, 40).join('\n') || '(none)'}\n\nFiles changed:\n${d.stat.slice(0, 4000) || '(none)'}`;
+    const fallback = `No task description was given. Judge the change on this branch by its diff against ${baseRef}.\n\n${facts}`;
+    if (!this.d.runner.brief) return fallback;
+    try {
+      const text = (await this.d.runner.brief(`Describe, in 3 to 6 sentences, what the change on this git branch does, written as the task statement a developer would have been given. Use only the facts below, do not invent details.\n\n${facts}`)).trim();
+      return text ? `${text}\n\n(This description was generated from the branch itself; the diff against ${baseRef} is the source of truth.)` : fallback;
+    } catch { return fallback; }
   }
 
   // ------------------------------------------------------------------ delivery
@@ -267,7 +309,15 @@ export class Engine {
         this.d.events.emit('task.updated', { task: t, change: `base ${from} → ${pr.baseRefName} (changed on GitHub)` }, { taskId });
         return `base → ${pr.baseRefName}`;
       }
-      return null;
+      // the author side picks up new review comments, the reviewer side new commits
+      if (this.roleOfTask(taskId) === 'reviewer') {
+        if (!pr.headRefOid || pr.headRefOid === t.prHeadSha) return null;
+        await this.rereview(t, pr.headRefOid, auth);
+        return `new commits (${pr.headRefOid.slice(0, 7)}) → review`;
+      }
+      if (this.d.store.openHilForTask(taskId).some((h) => h.kind === 'pr_feedback')) return null;
+      const fb = await this.pollPrFeedbackInner(taskId);
+      return fb.new ? `${fb.new} new PR comment(s) → HIL` : null;
     }
     // no PR: did the branch reach its base some other way (merged by hand, another tool)?
     if (!(await refExists(t.repoPath, `refs/heads/${t.branch}`))) return null;
@@ -428,10 +478,23 @@ export class Engine {
       const run = task && store.latestRunForTask(taskId);
       if (!task || !run) return;
       if (run.status !== 'running') return;
-      const { spec, loaded } = snapshot(run);
+      const { spec, loaded, seg } = snapshot(run);
       const repoConfig = loadRepoConfig(task.repoPath);
       const phase = spec.phases[run.cursor];
-      if (!phase) { this.finishTask(task, run, 'succeeded'); return; }
+      if (!phase || run.cursor > seg.toIdx) { this.finishTask(task, run, 'succeeded'); return; }
+
+      // fast return (hil `then_goto`): after the phase the human sent the run back to, only git phases run until the target
+      if (run.returnTo) {
+        const toIdx = phaseIndex(spec, run.returnTo.to); const afterIdx = phaseIndex(spec, run.returnTo.after);
+        if (run.cursor >= toIdx || run.cursor < afterIdx) { run.returnTo = null; this.saveRun(run); }
+        else if (run.cursor > afterIdx && phase.type !== 'git') {
+          const pr = this.newPhaseRun(run, task, phase);
+          pr.status = 'skipped'; pr.resultText = `skipped: fast return to ${run.returnTo.to}`; pr.startedAt = pr.endedAt = nowIso();
+          store.insertPhaseRun(pr);
+          events.emit('phase.finished', { phaseRun: pr }, { taskId, phaseRunId: pr.id });
+          run.cursor++; this.saveRun(run); continue;
+        }
+      }
 
       // loop / resume context
       const resume = run.pendingResume && run.pendingResume.phase === phase.name ? run.pendingResume : null;
@@ -456,6 +519,10 @@ export class Engine {
 
       const pr = this.newPhaseRun(run, task, phase);
       pr.status = 'running'; pr.startedAt = nowIso();
+      if (phase.type === 'claude') {
+        pr.headSha = (await git(task.worktreePath, ['rev-parse', 'HEAD'], { allowFail: true })) || null;
+        tpl.recheck = { note: this.recheckNote(run, phase.name, pr.headSha) };
+      }
       store.insertPhaseRun(pr);
       events.emit('phase.started', { phaseRun: pr }, { taskId, phaseRunId: pr.id });
       let injected = this.pendingInject.get(taskId)?.splice(0).join('\n\n') ?? '';
@@ -463,6 +530,7 @@ export class Engine {
 
       const ctx: PhaseContext = {
         task, run, spec, loaded, repoConfig, config: this.d.config, store, events, runner: this.d.runner, github: this.d.github, accounts: this.d.accounts, tpl,
+        segment: seg, role: roleOf(spec, seg),
         resumeFeedback: feedback,
         abortRequested: this.abortFlags.has(taskId),
         canUseTool: (p) => this.makeCanUseTool(task, p),
@@ -527,7 +595,10 @@ export class Engine {
             void retriesUsed;
             continue; // same cursor, fresh attempt
           }
-          if (policy?.back_to) {
+          // a loop target outside the task's segment (a review-only task has no implement) is never entered
+          const loopable = !!policy?.back_to && phaseIndex(spec, policy.back_to) >= seg.fromIdx;
+          if (policy?.back_to && !loopable && isSoftFailure(phase)) { run.cursor++; this.saveRun(run); continue; }
+          if (policy?.back_to && loopable) {
             const key = `${phase.name}->${policy.back_to}`;
             const maxLoops = config.max_loops;   // global cap; the pipeline's own max_loops is only the fallback documented in the yaml
             if ((run.loopCounts[key] ?? 0) < maxLoops) {
@@ -535,6 +606,7 @@ export class Engine {
               tpl = buildTemplateContext({ task: fresh, run, spec, repoConfig, store });
               const fb = policy.feedback ? renderTemplate(policy.feedback, tpl) : `Phase ${phase.name} failed: ${outcome.error}`;
               run.pendingResume = { phase: policy.back_to, feedback: fb };
+              run.returnTo = null;
               run.cursor = phaseIndex(spec, policy.back_to);
               this.saveRun(run);
               continue;
@@ -560,7 +632,8 @@ export class Engine {
     if (!hil) throw new HttpError(404, 'hil not found');
     if (hil.status !== 'open') throw new HttpError(409, `already ${hil.status}`, { answeredVia: hil.answeredVia });
     if (!hil.allowedDecisions.includes(response.decision)) throw new HttpError(400, `decision ${response.decision} not allowed for ${hil.kind}`);
-    if (response.decision === 'request_changes' && !response.comment?.trim()) throw new HttpError(400, 'comment is required for request_changes');
+    const fixKeys = Object.entries(response.findings ?? {}).filter(([, a]) => a === 'fix').map(([k]) => k);
+    if (response.decision === 'request_changes' && !response.comment?.trim() && !fixKeys.length) throw new HttpError(400, 'request_changes needs a comment or at least one finding marked to fix');
     if (hil.payload.kind === 'refine_prompt' && response.decision === 'approve') {
       // every clarifying question needs an explicit answer: an unanswered one silently becomes the implementer's own choice
       const unanswered = hil.payload.questions.filter((q) => !response.answers?.[q.question]?.trim());
@@ -569,7 +642,8 @@ export class Engine {
 
     const task = store.getTask(hil.taskId)!;
     const run = store.latestRunForTask(task.id)!;
-    const { spec } = snapshot(run);
+    const { spec, seg } = snapshot(run);
+    if (hil.payload.kind === 'approve_result' && (response.decision === 'request_changes' || fixKeys.length) && !hil.payload.canFix) throw new HttpError(400, 'this task has no implementing phase in its segment: findings can be published or skipped, not fixed');
     hil.status = 'answered'; hil.response = response; hil.answeredVia = via; hil.answeredAt = nowIso();
     store.updateHil(hil);
     events.emit('hil.answered', { hil }, { taskId: task.id, phaseRunId: hil.phaseRunId });
@@ -582,9 +656,12 @@ export class Engine {
       phaseRun.status = status; phaseRun.resultText = text; phaseRun.endedAt = nowIso(); store.updatePhaseRun(phaseRun);
       events.emit('phase.finished', { phaseRun }, { taskId: task.id, phaseRunId: phaseRun.id });
     };
-    const goBack = (target: string, feedback: string) => {
+    /** `thenGoto`: fast return, see PipelineRun.returnTo. */
+    const goBack = (target: string, feedback: string, thenGoto?: string) => {
+      const idx = phaseIndex(spec, target);
       run.pendingResume = { phase: target, feedback };
-      run.cursor = phaseIndex(spec, target);
+      run.returnTo = thenGoto && phaseIndex(spec, thenGoto) > idx ? { to: thenGoto, after: target } : null;
+      run.cursor = idx;
     };
     const hilPhase = phaseRun ? spec.phases[run.cursor] : undefined;
     const backTarget = (fallbacks: string[]) => {
@@ -616,16 +693,27 @@ export class Engine {
         break;
       }
       case 'approve_result': {
-        if (response.decision === 'approve') { closePhase('succeeded', 'approved'); run.cursor++; }
-        else { closePhase('succeeded', 'request_changes'); goBack(backTarget(['implement']), `The human reviewed the result and requested changes:\n\n${response.comment}\n\nAddress this, keep the change minimal, then stop.`); }
+        const p = hil.payload as Extract<typeof hil.payload, { kind: 'approve_result' }>;
+        if (response.decision === 'approve' && !fixKeys.length) { closePhase('succeeded', 'approved'); run.cursor++; break; }
+        // the human picked what to fix: only those items go back to the implementer, the rest was deliberately left out
+        const picked = fixKeys.map((k) => { const [list, i] = k.split(':'); return list === 'qa' ? p.qa?.issues[Number(i)] : p.review?.findings[Number(i)]; }).filter(Boolean);
+        const parts = ['The human reviewed the result and requested changes.'];
+        if (picked.length) parts.push(`Fix exactly these ${picked.length} item(s); other findings were deliberately skipped, do not touch them:\n\n${JSON.stringify(picked, null, 2)}`);
+        if (response.comment?.trim()) parts.push(picked.length ? `Comment from the human:\n\n${response.comment.trim()}` : response.comment.trim());
+        parts.push('Address this, keep the change minimal, then stop.');
+        closePhase('succeeded', 'request_changes');
+        goBack(backTarget(['implement']), parts.join('\n\n'), hilPhase?.type === 'hil' ? hilPhase.then_goto : undefined);
         break;
       }
       case 'pr_feedback': {
         if (response.decision === 'approve') {
           await this.ensureWorktree(task);
           const p = hil.payload as Extract<typeof hil.payload, { kind: 'pr_feedback' }>;
-          const text = p.comments.map((c) => `- ${c.author}${c.path ? ` (${c.path}${c.line ? `:${c.line}` : ''})` : ''}: ${c.body}`).join('\n');
           task.prFeedbackCursor = p.comments.at(-1)?.id ?? task.prFeedbackCursor;
+          // per comment: fix (default) or skip; skipped ones are marked read and never come back
+          const picked = p.comments.filter((c) => response.comments?.[c.id] !== 'skip');
+          if (!picked.length) { closePhase('skipped', 'skipped'); store.updateTask(task); run.status = 'succeeded'; this.saveRun(run); this.setTaskStatus(task, 'pr_open'); return hil; }
+          const text = picked.map((c) => `- ${c.author}${c.path ? ` (${c.path}${c.line ? `:${c.line}` : ''})` : ''}: ${c.body}`).join('\n');
           goBack(backTarget(['implement']), `Reviewers left comments on the pull request. Address each one, keep changes minimal, then stop.\n\n${text}${response.comment ? `\n\nAdditional guidance: ${response.comment}` : ''}`);
         } else { // skip: stay idle with the PR open
           closePhase('skipped', 'skipped');
@@ -674,6 +762,7 @@ export class Engine {
     if (!task.prNumber) throw new HttpError(409, 'task has no pull request');
     if (task.status !== 'pr_open') throw new HttpError(409, `task is ${task.status}; PR feedback can be pulled only while the PR is open and the task idle`);
     if (store.openHilForTask(taskId).some((h) => h.kind === 'pr_feedback')) throw new HttpError(409, 'a pr_feedback request is already open');
+    if (this.roleOfTask(taskId) === 'reviewer') throw new HttpError(409, 'this task only reviews the pull request; it re-reviews new commits and does not take review comments');
     const auth = await this.d.accounts.forRepo(task.repoPath);
     const fb = await this.d.github.prFeedback(task.repoPath, task.prNumber, auth);
     if (fb.state === 'MERGED') { await this.markMerged(task, auth); return { new: 0, state: fb.state }; }
@@ -694,6 +783,47 @@ export class Engine {
     run.status = 'waiting_hil'; this.saveRun(run);
     this.setTaskStatus(task, 'waiting_hil');
     return { new: fresh.length, hilId: hil.id, state: fb.state };
+  }
+
+  roleOfTask(taskId: string): TaskRole {
+    const run = this.d.store.latestRunForTask(taskId);
+    if (!run) return 'author';
+    const { spec, seg } = snapshot(run);
+    return roleOf(spec, seg);
+  }
+
+  /** The pull request under review got new commits: bring the worktree to its head and run the task's segment again. */
+  private async rereview(task: Task, headSha: string, auth: RepoAuth): Promise<void> {
+    const { store } = this.d;
+    const run = store.latestRunForTask(task.id)!;
+    const { seg } = snapshot(run);
+    await this.ensureWorktree(task);
+    const remote = task.baseRemote ?? (await defaultRemote(task.repoPath));
+    if (remote && (await fetchBranch(task.repoPath, remote, task.branch, auth))) {
+      // a reviewer never commits, so the local branch simply follows the remote one (also after a force-push)
+      await git(task.worktreePath, ['reset', '--hard', '--quiet', `refs/remotes/${remote}/${task.branch}`]);
+    }
+    const fresh = store.getTask(task.id)!;
+    fresh.prHeadSha = headSha; fresh.updatedAt = nowIso(); store.updateTask(fresh);
+    run.cursor = seg.fromIdx; run.pendingResume = null; run.returnTo = null; run.status = 'running'; this.saveRun(run);
+    this.setTaskStatus(fresh, 'running');
+    void this.advance(task.id);
+  }
+
+  /** Text for `{{recheck.note?}}`: on a repeat pass of a checking phase, narrow it to what changed since its previous pass. */
+  private recheckNote(run: PipelineRun, phaseName: string, head: string | null): string {
+    if (this.d.config.recheck_scope !== 'delta' || !head) return '';
+    const prev = this.d.store.phaseRunsForRun(run.id).filter((p) => p.phaseName === phaseName && p.headSha && (p.status === 'succeeded' || p.status === 'failed')).at(-1);
+    if (!prev?.headSha || prev.headSha === head) return '';
+    const found = prev.structuredOutput ? `\n\nWhat you reported on that pass:\n\n${JSON.stringify(prev.structuredOutput, null, 2)}` : '';
+    return `## Repeat pass: check only what changed
+
+You already went over this branch at commit \`${prev.headSha.slice(0, 12)}\`. Since then it changed: \`git diff ${prev.headSha}..HEAD\`.
+
+- First confirm that what you reported on that pass is really resolved.
+- Then look only at what that diff changes and at what it can affect (callers, shared state, related tests). Do not go over the rest of the branch again, it was already covered.
+- If you run the project's test suite, run all of it: that is cheap and catches regressions. Narrow your investigation and any new tests, not the suite.
+- Report only what is wrong now.${found}`;
   }
 
   private escalate(task: Task, run: PipelineRun, pr: PhaseRun, error: string) {
@@ -818,7 +948,7 @@ export class Engine {
   private newPhaseRun(run: PipelineRun, task: Task, phase: PhaseSpec): PhaseRun {
     return { id: newId('p'), runId: run.id, taskId: task.id, phaseName: phase.name, phaseType: phase.type, attempt: this.d.store.countAttempts(run.id, phase.name) + 1,
       status: 'pending', sessionId: null, resumedFromSessionId: null, costUsd: 0, numTurns: 0, resultText: null, structuredOutput: null, resultSubtype: null,
-      error: null, transcriptPath: null, artifacts: {}, startedAt: null, endedAt: null };
+      error: null, transcriptPath: null, artifacts: {}, startedAt: null, endedAt: null, headSha: null };
   }
   private saveRun(run: PipelineRun) { run.updatedAt = nowIso(); this.d.store.updateRun(run); }
   private setTaskStatus(task: Task, status: TaskStatus) {
@@ -873,10 +1003,10 @@ async function runSetup(repoConfig: RepoConfig, cwd: string): Promise<void> {
 
 export class HttpError extends Error { constructor(public status: number, message: string, public extra: Record<string, unknown> = {}) { super(message); } }
 
-export function snapshot(run: PipelineRun): { spec: PipelineSpec; loaded: LoadedPipeline } {
-  const s = run.pipelineSnapshot as { spec: unknown; baseDir: string; filePath: string };
+export function snapshot(run: PipelineRun): { spec: PipelineSpec; loaded: LoadedPipeline; seg: { fromIdx: number; toIdx: number } } {
+  const s = run.pipelineSnapshot as { spec: unknown; baseDir: string; filePath: string; from?: string; to?: string };
   const spec = PipelineSchema.parse(s.spec);
-  return { spec, loaded: { spec, baseDir: s.baseDir, filePath: s.filePath } };
+  return { spec, loaded: { spec, baseDir: s.baseDir, filePath: s.filePath }, seg: segmentOf(spec, s.from, s.to) };
 }
 
 function latestArtifact(store: Store, runId: string, name: string): string | null {

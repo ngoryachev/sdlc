@@ -16,6 +16,8 @@ What the test phase covered:
 
 {{phases.test.structured?}}
 
+{{recheck.note?}}
+
 How to work:
 1. Work out how this project is actually used: a web app (start the dev server, drive it with a browser tool the project already has, such as Playwright or Cypress, or with `curl` against its HTTP endpoints), an HTTP service (call the endpoints), a CLI (run it), a library (write a short script under `.sdlc/qa/` that exercises the public API the way a consumer would).
 2. Exercise the changed behaviour as a user would: the happy path, the edge cases the request implies, and the ways it interacts with existing features. Compare what you see with what was asked.

@@ -1,4 +1,4 @@
-import type { PhaseRun, PipelineRun, Task } from '@sdlc/shared';
+import type { PhaseRun, PipelineRun, Task, TaskRole } from '@sdlc/shared';
 import type { PhaseSpec, PipelineSpec, RepoConfig } from '../pipeline/schema.js';
 import type { LoadedPipeline } from '../pipeline/loader.js';
 import type { SdlcConfig } from '../config/config.js';
@@ -30,7 +30,10 @@ export interface PhaseContext {
   runner: ClaudeRunner;
   github: GitHub;
   accounts: RepoAccounts;
-  /** Template context (task.*, phases.*, artifacts.*, repo.*, loop.*, hil.*). */
+  /** Inclusive index range of the phases this task runs, and what that makes the task on its pull request. */
+  segment: { fromIdx: number; toIdx: number };
+  role: TaskRole;
+  /** Template context (task.*, phases.*, artifacts.*, repo.*, loop.*, hil.*, recheck.*). */
   tpl: TemplateContext;
   /** Feedback to deliver by resuming this phase's previous session (set when re-entering via back_to / request_changes). */
   resumeFeedback: string | null;
