@@ -1,0 +1,21 @@
+[Unit]
+Description=sdlc orchestrator (Claude Code SDLC)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# the server's own checkout, apart from any working copy: editing or landing sdlc itself never touches the running server
+WorkingDirectory=@SDLC_DIR@
+# the PATH of the installing shell: gh, claude and the project toolchains (flutter, go, ...) the phases need
+Environment=PATH=@PATH@
+# optional: SDLC_TELEGRAM_TOKEN, SDLC_TOKEN, CLAUDE_CODE_OAUTH_TOKEN
+EnvironmentFile=-%h/.sdlc/env
+ExecStart=@NODE@ server/dist/cli/index.js serve
+Restart=always
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

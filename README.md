@@ -12,10 +12,27 @@ Humans step in only at declared checkpoints (HIL), from a web UI or Telegram. Ev
 
 ## Install & run
 
+One command on Ubuntu (installs Node 22, `gh` and Claude Code when missing, clones this repo into `~/.sdlc/app`, builds it and registers a systemd user service that starts at boot):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ngoryachev/sdlc/main/deploy/install.sh | bash
+```
+
+The server runs from its own checkout, `~/.sdlc/app`, never from a working copy. That is what makes it safe to develop sdlc with sdlc: tasks and your own edits change a clone (`~/.sdlc/repos/...` or wherever you work), while the running server keeps its code, pipelines and prompts until you update it:
+
+```bash
+bash ~/.sdlc/app/deploy/update.sh     # pull → build → test → back up the database → restart; any failure leaves the old version running
+journalctl --user -u sdlc -f          # logs; failed HTTP requests are logged with their reason
+```
+
+A data directory has one server: a second `sdlc serve` on the same `~/.sdlc` refuses to start (it would resume the same tasks in parallel). For experiments run it on its own data: `SDLC_HOME=$(mktemp -d) node server/dist/cli/index.js serve --port 7400`.
+
+From a working copy, for development:
+
 ```bash
 npm install
 npm run build                # shared + server + ui
-node server/dist/cli/index.js serve      # or: npm start
+SDLC_HOME=/tmp/sdlc-dev node server/dist/cli/index.js serve --port 7400
 # dev: npm run dev (tsx watch + vite on :5173 proxying /api to :7337)
 ```
 
@@ -102,9 +119,9 @@ Base ref: `--base origin/main` or a local branch such as `--base feature/x` (a n
 
 ## Deploy on a server
 
-`deploy/install.sh` (Ubuntu) installs Node 22, `gh`, Claude Code, clones this repo, builds it, writes a public-safe `~/.sdlc/config.yaml`
-(`token_in_url: false`, `pr_feedback_from: collaborators`) and registers `deploy/sdlc.service`. Then:
+`SDLC_UNIT=system bash deploy/install.sh` does the same install with a system-wide unit (`deploy/sdlc.service`) and a public-safe `~/.sdlc/config.yaml`
+(`token_in_url: false`, `pr_feedback_from: collaborators`). Then:
 
-- **Auth:** `gh auth login`; for Claude either log in once with `claude`, or put `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on your laptop) into `/etc/sdlc.env`. Never set `ANTHROPIC_API_KEY` there unless you want API billing.
+- **Auth:** `gh auth login`; for Claude either log in once with `claude`, or put `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on your laptop) into `/etc/sdlc.env` (`~/.sdlc/env` for the user unit). Never set `ANTHROPIC_API_KEY` there unless you want API billing.
 - **Access:** simplest is a VPN (Tailscale) with `server.host: 0.0.0.0` and no proxy. For a public host use `deploy/Caddyfile` (HTTPS + basic auth, long random password) plus `deploy/fail2ban/` (bans IPs after 5 × 401), and keep `token_in_url: false`: the sdlc token is then entered once per device in the login form and never travels in URLs or Telegram links.
 - **Blast radius to keep in mind:** whoever can open the UI can run code on this server as the sdlc user with its `gh` and Claude credentials. Read/Write of Claude phases are confined to the task worktree by hooks (`read_allow` in `.sdlc.yaml` widens reads), secrets-looking env vars are not passed to phases, and PR comments are only ingested from repository collaborators by default.

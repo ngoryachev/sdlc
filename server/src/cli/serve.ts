@@ -5,12 +5,18 @@ import { createHttpApp, ensureToken } from '../http/app.js';
 import { startNotifierHub, ConsoleNotifier } from '../notifiers/hub.js';
 import type { Notifier } from '../notifiers/types.js';
 import { TelegramNotifier } from '../notifiers/telegram.js';
-import { parseDuration } from '../config/config.js';
+import { loadConfig, parseDuration } from '../config/config.js';
+import { acquireServerLock } from './lock.js';
 
 export function registerServe(program: Command) {
   program.command('serve').description('Start the orchestrator: engine + API + UI')
     .option('--port <n>', 'port').option('--host <h>', 'bind address')
     .action(async (o) => {
+      // before the database is opened: a second server on the same data would resume the same tasks in parallel
+      let unlock: () => void;
+      try { unlock = acquireServerLock(loadConfig().data_dir); }
+      catch (e) { console.error(`[sdlc] ${e instanceof Error ? e.message : String(e)}`); process.exit(1); }
+      process.on('exit', unlock);
       const app = createApp();
       if (o.port) app.config.server.port = Number(o.port);
       if (o.host) app.config.server.host = o.host;
