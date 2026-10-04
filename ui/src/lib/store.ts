@@ -51,6 +51,7 @@ export const useStore = create<State>((set, get) => ({
     }
     set({ rawEvents: raw, tasks, hil, quota, lastEventId: Math.max(s.lastEventId, e.id) });
   },
-  toast: (text, kind = 'info') => { const id = ++toastId; set((s) => ({ toasts: [...s.toasts, { id, text, kind }] })); setTimeout(() => get().dismissToast(id), 5000); },
+  // errors stay long enough to be read; a click dismisses any toast
+  toast: (text, kind = 'info') => { const id = ++toastId; set((s) => ({ toasts: [...s.toasts, { id, text, kind }] })); setTimeout(() => get().dismissToast(id), kind === 'error' ? 20000 : 5000); },
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 }));

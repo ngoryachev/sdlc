@@ -26,8 +26,9 @@ export function createHttpApp(app: App) {
   const hono = new Hono();
 
   hono.onError((err, c) => {
-    if (err instanceof HttpError) return c.json({ error: err.message, ...err.extra }, err.status as 400);
-    console.error('[http]', err);
+    // every failed request lands in the journal: a toast in the UI is gone in seconds
+    if (err instanceof HttpError) { console.error(`[http] ${c.req.method} ${c.req.path} → ${err.status}: ${err.message}`); return c.json({ error: err.message, ...err.extra }, err.status as 400); }
+    console.error(`[http] ${c.req.method} ${c.req.path} → 500:`, err);
     return c.json({ error: err.message }, 500);
   });
 

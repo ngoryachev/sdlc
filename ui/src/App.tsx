@@ -12,6 +12,7 @@ export function App() {
   const conn = useStore((s) => s.conn);
   const hilCount = useStore((s) => s.hil.length);
   const toasts = useStore((s) => s.toasts);
+  const dismissToast = useStore((s) => s.dismissToast);
   const [loc] = useLocation();
   useEffect(() => setBadge(hilCount), [hilCount]);
   useEffect(() => {
@@ -47,7 +48,7 @@ export function App() {
           <Route>Not found</Route>
         </Switch>
       </main>
-      <div className="toasts">{toasts.map((t) => <div key={t.id} className={`toast ${t.kind}`}>{t.text}</div>)}</div>
+      <div className="toasts">{toasts.map((t) => <div key={t.id} className={`toast ${t.kind}`} onClick={() => dismissToast(t.id)} title="click to dismiss">{t.text}</div>)}</div>
     </>
   );
 }
