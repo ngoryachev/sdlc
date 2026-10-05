@@ -25,7 +25,7 @@ export class RepoAccounts {
     const login = await pending;
     const again = this.entry(repoPath);
     if (again && login && !again.gh_user) { again.gh_user = login; this.persist(); }
-    else if (!again) this.unregistered.set(repoPath, login);
+    else if (!again && login) this.unregistered.set(repoPath, login);   // "no account" is not remembered: gh may simply not be ready yet
     return login;
   }
 

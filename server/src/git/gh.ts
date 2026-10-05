@@ -59,14 +59,19 @@ export async function gh(args: string[], o: { cwd?: string; token?: string | nul
 
 export async function ghAvailable(): Promise<boolean> { try { await gh(['--version']); return true; } catch { return false; } }
 
-class TtlCache<V> {
+/**
+ * Remembers what `gh` answered. A failure (null, or an empty list) is never remembered: right after boot the keyring is
+ * still locked and `gh` has no tokens, and a cached "nothing" would keep every GitHub call failing for the whole TTL.
+ */
+export class TtlCache<V> {
   private m = new Map<string, { at: number; v: V }>();
   constructor(private ttlMs: number) {}
   async get(key: string, load: () => Promise<V>): Promise<V> {
     const hit = this.m.get(key);
     if (hit && Date.now() - hit.at < this.ttlMs) return hit.v;
     const v = await load();
-    this.m.set(key, { at: Date.now(), v });
+    if (v === null || v === undefined || (Array.isArray(v) && v.length === 0)) this.m.delete(key);
+    else this.m.set(key, { at: Date.now(), v });
     return v;
   }
   drop(key?: string) { if (key === undefined) this.m.clear(); else this.m.delete(key); }
