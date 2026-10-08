@@ -12,7 +12,7 @@ let sessionCounter = 0;
 export class FakeRunner implements ClaudeRunner {
   public specs: ClaudeRunSpec[] = [];
   /** Unset by default (so tests see the "no cheap model" path); a test assigns it to script the cheap call. */
-  public brief?: (prompt: string, timeoutMs?: number) => Promise<string>;
+  public brief?: (prompt: string, opts?: { model?: string; timeoutMs?: number }) => Promise<string>;
   constructor(private script: (spec: ClaudeRunSpec) => FakeTurn) {}
 
   start(spec: ClaudeRunSpec): ClaudeRunHandle {

@@ -5,11 +5,11 @@ import { testApp, tmpDir } from '../helpers.js';
 import { HttpError } from '../../server/src/engine/engine.js';
 import { clearTranslationCache, translateRoutes } from '../../server/src/http/routes/translate.js';
 
-/** Reading-only translation of checkpoint texts: one cheap call per checkpoint, never the real Claude, never the database. */
+/** Reading-only translation of checkpoint texts: one call per checkpoint, never the real Claude, never the database. */
 describe('POST /translate', () => {
   beforeEach(() => clearTranslationCache());
 
-  const mount = (brief?: (prompt: string, timeoutMs?: number) => Promise<string>) => {
+  const mount = (brief?: (prompt: string, opts?: { model?: string; timeoutMs?: number }) => Promise<string>) => {
     const app = testApp(tmpDir('sdlc-translate-'), new FakeRunner(() => ({ act: () => ({}) })));
     if (brief) (app.runner as FakeRunner).brief = brief;
     // the real app maps HttpError via hono.onError; mirror just that much here
@@ -54,12 +54,31 @@ describe('POST /translate', () => {
     expect(got.filter((_, i) => i !== 41)).toEqual(texts.filter((_, i) => i !== 41).map((x) => `ru:${x}`));
   });
 
-  /** A branch slug fits brief()'s default 20s; translating prose does not, so the call is given minutes. */
-  it('gives the call far longer than the default cheap-call timeout', async () => {
-    let timeout: number | undefined;
-    const hono = mount(async (p, t) => { timeout = t; return JSON.stringify(asked(p)); });
+  /** The default cheap call is haiku on a 20s leash: it cannot hold a checkpoint, so translation asks for more. */
+  it('asks for a model that holds the whole checkpoint, and for far longer than a branch slug gets', async () => {
+    let opts: { model?: string; timeoutMs?: number } | undefined;
+    const hono = mount(async (p, o) => { opts = o; return JSON.stringify(asked(p).map((x) => `ru:${x}`)); });
     expect((await post(hono, { texts: ['first'], lang: 'ru' })).status).toBe(200);
-    expect(timeout).toBeGreaterThanOrEqual(60_000);
+    expect(opts?.model).toBeTruthy();
+    expect(opts?.model).not.toBe('haiku');
+    expect(opts?.timeoutMs).toBeGreaterThanOrEqual(600_000);
+  });
+
+  /** Quality drops near the end of a long answer: some fragments come back in English. They must stay askable. */
+  it('does not cache a fragment the model handed back unchanged', async () => {
+    const seen: string[][] = [];
+    let n = 0;
+    const hono = mount(async (p) => {
+      const a = asked(p);
+      seen.push(a);
+      // first answer leaves the second text in English, the next one translates it
+      return ++n === 1 ? JSON.stringify([`ru:${a[0]!}`, a[1]!]) : JSON.stringify(a.map((x) => `ru:${x}`));
+    });
+    const texts = ['the review found a race', 'await the handle'];
+    expect(await (await post(hono, { texts, lang: 'ru' })).json()).toEqual({ texts: ['ru:the review found a race', 'await the handle'] });
+    // the translated one is cached, the untouched one is asked again and heals
+    expect(await (await post(hono, { texts, lang: 'ru' })).json()).toEqual({ texts: ['ru:the review found a race', 'ru:await the handle'] });
+    expect(seen).toEqual([texts, ['await the handle']]);
   });
 
   it('keeps empty strings and asks the model only for the rest', async () => {
