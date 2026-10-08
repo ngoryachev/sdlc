@@ -71,4 +71,87 @@ describe('POST /translate', () => {
     expect((await post(hono, { texts: ['first'], lang: 'ru', save: true })).ok).toBe(false);
     expect(calls).toBe(0);
   });
+
+  /** Echo translator: answers with "ru:<text>" for every element of the array it was handed. */
+  const echo = (seen: string[][]) => async (p: string) => {
+    const asked = JSON.parse(p.slice(p.indexOf('\n["') + 1)) as string[];
+    seen.push(asked);
+    return JSON.stringify(asked.map((x) => `ru:${x}`));
+  };
+
+  it('splits a long checkpoint into batches and keeps the input order', async () => {
+    const seen: string[][] = [];
+    const texts = Array.from({ length: 25 }, (_, i) => `finding ${i}`);
+    const res = await post(mount(echo(seen)), { texts, lang: 'ru' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ texts: texts.map((x) => `ru:${x}`) });
+    expect(seen.map((b) => b.length)).toEqual([20, 5]);   // 20 items per call
+  });
+
+  it('splits by characters too: one long plan per call', async () => {
+    const seen: string[][] = [];
+    const texts = ['a'.repeat(3000), 'b'.repeat(3000)];
+    const res = await post(mount(echo(seen)), { texts, lang: 'ru' });
+    expect((await res.json() as { texts: string[] }).texts).toEqual(texts.map((x) => `ru:${x}`));
+    expect(seen.map((b) => b.length)).toEqual([1, 1]);
+  });
+
+  it('translates a repeated text once and fills every slot it appears in', async () => {
+    const seen: string[][] = [];
+    const res = await post(mount(echo(seen)), { texts: ['a', 'b', 'a'], lang: 'ru' });
+    expect(await res.json()).toEqual({ texts: ['ru:a', 'ru:b', 'ru:a'] });
+    expect(seen).toEqual([['a', 'b']]);
+  });
+
+  it('asks only for what the cache is missing, and still answers in input order', async () => {
+    const seen: string[][] = [];
+    const hono = mount(echo(seen));
+    await post(hono, { texts: ['a'], lang: 'ru' });
+    expect(await (await post(hono, { texts: ['b', 'a', 'c'], lang: 'ru' })).json()).toEqual({ texts: ['ru:b', 'ru:a', 'ru:c'] });
+    expect(seen).toEqual([['a'], ['b', 'c']]);
+  });
+
+  it('an empty list costs no call, even without a cheap runner', async () => {
+    const res = await post(mount(), { texts: [], lang: 'ru' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ texts: [] });
+  });
+
+  it('a batch that failed is retried, the batch that succeeded is not', async () => {
+    let n = 0;
+    const hono = mount(async (p) => {
+      const asked = JSON.parse(p.slice(p.indexOf('\n["') + 1)) as string[];
+      return ++n === 2 ? 'sorry' : JSON.stringify(asked.map((x) => `ru:${x}`));
+    });
+    const texts = Array.from({ length: 25 }, (_, i) => `finding ${i}`);
+    expect((await post(hono, { texts, lang: 'ru' })).status).toBe(502);
+    expect(n).toBe(2);
+    expect(await (await post(hono, { texts, lang: 'ru' })).json()).toEqual({ texts: texts.map((x) => `ru:${x}`) });
+    expect(n).toBe(3);   // only the tail of 5 is asked again
+  });
+
+  /** An aborted brief() answers '' rather than throwing: the toast should not blame the shape of the answer. */
+  it('distinguishes an answer that never came from a malformed one, and names the bad field', async () => {
+    const empty = await post(mount(async () => ''), { texts: ['first'], lang: 'ru' });
+    expect(empty.status).toBe(502);
+    expect((await empty.json() as { error: string }).error).toMatch(/returned nothing/);
+    const bad = await post(mount(), { texts: ['first'], lang: 'de' });
+    expect(bad.status).toBe(400);
+    expect((await bad.json() as { error: string }).error).toMatch(/^bad translate request: lang/);
+  });
+
+  it('never answers a non-empty text with an empty one', async () => {
+    let n = 0;
+    const hono = mount(async (p) => {
+      const asked = JSON.parse(p.slice(p.indexOf('\n["') + 1)) as string[];
+      // the model keeps the count but drops the content of one element
+      return ++n === 1 ? JSON.stringify(['перевод', '']) : JSON.stringify(asked.map((x) => `ru:${x}`));
+    });
+    const body = { texts: ['the review found a race', 'await the handle'], lang: 'ru' };
+    const first = await post(hono, body);
+    if (first.status === 200) expect((await first.json() as { texts: string[] }).texts[1]).not.toBe('');
+    else expect(first.status).toBe(502);
+    // and pressing Translate again must be able to recover: a blank is not a translation worth caching
+    expect((await (await post(hono, body)).json() as { texts: string[] }).texts[1]).not.toBe('');
+  });
 });

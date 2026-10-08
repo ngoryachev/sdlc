@@ -33,7 +33,9 @@ export function translateRoutes(app: App) {
   const r = new Hono();
   /** Read-only translation of checkpoint texts: the English original stays the data, this never leaves the screen. */
   r.post('/translate', async (c) => {
-    const { texts, lang } = Body.parse(await c.req.json());
+    const body = Body.safeParse(await c.req.json());
+    if (!body.success) throw new HttpError(400, `bad translate request: ${body.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; ')}`);
+    const { texts, lang } = body.data;
     // empty and whitespace-only strings come back as they are; repeated texts are translated once
     const todo = [...new Set(texts.filter((t) => t.trim() && !cache.has(keyOf(lang, t))))];
     if (todo.length) {
@@ -62,9 +64,12 @@ function batches(texts: string[]): string[][] {
 }
 
 async function translateBatch(brief: (prompt: string) => Promise<string>, texts: string[], lang: TranslateLang): Promise<string[]> {
-  const raw = await brief(prompt(texts, lang));
+  const raw = (await brief(prompt(texts, lang))).trim();
+  // brief() answers '' when its 20s timeout aborts the call or the run fails: that is not a shape problem
+  if (!raw) throw new HttpError(502, 'the translation model returned nothing (timed out or failed); the original text is still available');
   const parsed = parseArray(raw);
-  if (!parsed || parsed.length !== texts.length) throw new HttpError(502, 'translation returned an unexpected shape; the original text is still available');
+  // every text handed to a batch is non-blank, so a blank back is a lost finding, not a translation: never cache it
+  if (!parsed || parsed.length !== texts.length || parsed.some((s) => !s.trim())) throw new HttpError(502, 'translation returned an unexpected shape; the original text is still available');
   return parsed;
 }
 
