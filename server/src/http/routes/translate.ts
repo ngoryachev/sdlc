@@ -17,6 +17,8 @@ const BATCH_CHARS = 2000;
 const PIECE_CHARS = 1500;
 /** Calls are independent; a big review should not wait for one at a time. */
 const PARALLEL = 3;
+/** Beyond this the human would wait minutes for one checkpoint; only what is not cached yet counts. */
+const MAX_CHARS = 60_000;
 /** Translations live in process memory only: nothing is written to the database or sent to GitHub. */
 const CACHE_MAX = 2000;
 const cache = new Map<string, string>();
@@ -43,6 +45,8 @@ export function translateRoutes(app: App) {
     // empty and whitespace-only strings come back as they are; a long text is sliced, repeated slices translated once
     const jobs = texts.map((text) => (text.trim() ? slice(text) : { parts: [], joiners: [] }));
     const todo = [...new Set(jobs.flatMap((j) => j.parts).filter((x) => x.trim() && !cache.has(keyOf(lang, x))))];
+    const chars = todo.reduce((n, x) => n + x.length, 0);
+    if (chars > MAX_CHARS) throw new HttpError(413, `this checkpoint is too large to translate at once (${Math.round(chars / 1000)} KB of text, limit ${MAX_CHARS / 1000} KB); read it in English`);
     if (todo.length) {
       if (!app.runner.brief) throw new HttpError(503, 'translation is not available on this server (no cheap model runner)');
       const brief = app.runner.brief.bind(app.runner);
@@ -60,27 +64,43 @@ export function translateRoutes(app: App) {
 /** One input text as the slices sent to the model plus the separators that put it back together. */
 interface Job { parts: string[]; joiners: string[] }
 
+/** Where a too-long text may be cut, widest boundary first; past the last one it is cut at the limit. */
+const BOUNDARIES = [/(\n{2,})/, /(\n)/, /([.!?] )/, /( )/];
+
+/** One slice and the separator that goes before it ('' for the first and for a cut made at the limit). */
+interface Piece { pre: string; text: string }
+
 /**
- * Slices a text too long for one cheap call on the widest boundary that occurs in it: blank lines, then lines, then
- * spaces. Each slice is translated and cached on its own, so a failure costs only the slice that failed, and one text
- * still comes back as exactly one text.
+ * Cuts a text too long for one cheap call. Neighbours are grouped up to the limit on the current boundary, and only a
+ * group that is still too long is cut finer — one over-long paragraph no longer pushes the whole text onto word
+ * boundaries. `pieces.map((x) => x.pre + x.text).join('')` is the text it came from, character for character.
  */
-function slice(text: string): Job {
-  if (text.length <= PIECE_CHARS) return { parts: [text], joiners: [] };
-  for (const re of [/(\n{2,})/, /(\n)/, /( )/]) {
-    const bits = text.split(re);                    // [part, separator, part, separator, ...]
-    if (bits.length < 3) continue;                  // that boundary does not occur in this text
-    const parts: string[] = []; const joiners: string[] = [];
-    let cur = bits[0]!;
-    for (let i = 1; i < bits.length; i += 2) {
-      const sep = bits[i]!; const next = bits[i + 1] ?? '';
-      if (cur && cur.length + sep.length + next.length > PIECE_CHARS) { parts.push(cur); joiners.push(sep); cur = next; }
-      else cur += sep + next;
-    }
-    parts.push(cur);
-    if (parts.every((x) => x.length <= PIECE_CHARS)) return { parts, joiners };
+function cut(text: string, level: number): Piece[] {
+  if (text.length <= PIECE_CHARS) return [{ pre: '', text }];
+  const re = BOUNDARIES[level];
+  if (!re) {                                        // nothing left to cut on (base64, one long URL): cut at the limit
+    const out: Piece[] = [];
+    for (let i = 0; i < text.length; i += PIECE_CHARS) out.push({ pre: '', text: text.slice(i, i + PIECE_CHARS) });
+    return out;
   }
-  return { parts: [text], joiners: [] };            // nothing to split on: send it whole
+  const bits = text.split(re);                      // [part, separator, part, separator, ...]
+  if (bits.length < 3) return cut(text, level + 1); // that boundary does not occur in this text
+  const out: Piece[] = [];
+  let cur = bits[0]!; let pre = '';
+  const flush = () => { cut(cur, level + 1).forEach((x, i) => out.push(i ? x : { pre, text: x.text })); };
+  for (let i = 1; i < bits.length; i += 2) {
+    const sep = bits[i]!; const next = bits[i + 1] ?? '';
+    if (cur && cur.length + sep.length + next.length > PIECE_CHARS) { flush(); pre = sep; cur = next; }
+    else cur += sep + next;
+  }
+  flush();
+  return out;
+}
+
+/** Each slice is translated and cached on its own, so a failure costs only the slice that failed. */
+function slice(text: string): Job {
+  const pieces = cut(text, 0);
+  return { parts: pieces.map((x) => x.text), joiners: pieces.slice(1).map((x) => x.pre) };
 }
 
 /** The text as the human sees it: translated slices in place, original separators between them. */

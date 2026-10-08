@@ -88,9 +88,9 @@ describe('POST /translate', () => {
     expect(seen.map((b) => b.length)).toEqual([20, 5]);   // 20 items per call
   });
 
-  it('splits by characters too: one long plan per call', async () => {
+  it('splits by characters too: one long text per call', async () => {
     const seen: string[][] = [];
-    const texts = ['a'.repeat(3000), 'b'.repeat(3000)];
+    const texts = ['a'.repeat(1400), 'b'.repeat(1400)];   // each fits one slice, but not one call together
     const res = await post(mount(echo(seen)), { texts, lang: 'ru' });
     expect((await res.json() as { texts: string[] }).texts).toEqual(texts.map((x) => `ru:${x}`));
     expect(seen.map((b) => b.length)).toEqual([1, 1]);
@@ -203,14 +203,39 @@ describe('POST /translate', () => {
     }
   });
 
-  /** No blank line, no newline, no space: there is nothing to slice on, so it goes whole rather than cut mid-token. */
-  it('sends a text with no boundary in one piece instead of cutting it', async () => {
+  /** No blank line, no newline, no space (base64, one long URL): cut at the limit, since whole it would never finish. */
+  it('cuts a text with no boundary at all rather than sending it whole', async () => {
     const seen: string[][] = [];
     const blob = 'z'.repeat(4000);
     const res = await post(mount(echo(seen)), { texts: [blob], lang: 'ru' });
     expect(res.status).toBe(200);
-    expect((await res.json() as { texts: string[] }).texts).toEqual([`ru:${blob}`]);
-    expect(seen).toEqual([[blob]]);
+    expect(seen.flat().every((x) => x.length <= 1500)).toBe(true);
+    expect((await res.json() as { texts: string[] }).texts).toEqual([`ru:${'z'.repeat(1500)}ru:${'z'.repeat(1500)}ru:${'z'.repeat(1000)}`]);
+  });
+
+  /** One over-long paragraph used to push the whole text onto word boundaries, cutting markers off their content. */
+  it('cuts finer only the slice that did not fit, leaving the other joints on blank lines', async () => {
+    const seen: string[][] = [];
+    const long = Array.from({ length: 24 }, (_, i) => `- item ${i}: ${'x'.repeat(70)}`).join('\n');   // >1500, no blank line
+    const text = ['# Plan', long, 'the last paragraph'].join('\n\n');
+    const hono = mount(async (p) => { const asked = JSON.parse(p.slice(p.indexOf('\n["') + 1)) as string[]; seen.push(asked); return JSON.stringify(asked); });
+    const got = (await (await post(hono, { texts: [text], lang: 'ru' })).json() as { texts: string[] }).texts;
+    expect(got[0]).toBe(text);                                     // identity translation: put back together exactly
+    const asked = seen.flat();
+    expect(asked.every((x) => x.length <= 1500)).toBe(true);
+    expect(asked).toContain('# Plan');                             // the paragraphs that fit stayed whole…
+    expect(asked).toContain('the last paragraph');
+    expect(asked.every((x) => x === x.trim())).toBe(true);         // …and nothing was cut at a space
+  });
+
+  it('refuses a checkpoint too large to translate instead of making the human wait minutes', async () => {
+    let calls = 0;
+    const hono = mount(async () => { calls++; return '[]'; });
+    const huge = Array.from({ length: 700 }, (_, i) => `paragraph ${i} ${'x'.repeat(100)}`).join('\n\n');   // ~80 KB
+    const res = await post(hono, { texts: [huge], lang: 'ru' });
+    expect(res.status).toBe(413);
+    expect((await res.json() as { error: string }).error).toMatch(/too large to translate/);
+    expect(calls).toBe(0);
   });
 
   /** Calls run a few at a time: concurrency must not reorder or lose an answer. */
