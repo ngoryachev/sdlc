@@ -140,6 +140,31 @@ describe('POST /translate', () => {
     expect((await bad.json() as { error: string }).error).toMatch(/^bad translate request: lang/);
   });
 
+  /** A plan is one 6-8 KB string: whole it would never finish inside brief()'s 20s, so it travels in slices. */
+  it('slices a long text, translates the slices and joins them back on their own separators', async () => {
+    const seen: string[][] = [];
+    const planMd = ['# Plan', 'a'.repeat(1400), 'b'.repeat(1400), 'c'.repeat(1400)].join('\n\n');
+    const res = await post(mount(echo(seen)), { texts: [planMd], lang: 'ru' });
+    expect(res.status).toBe(200);
+    const got = (await res.json() as { texts: string[] }).texts;
+    expect(got).toHaveLength(1);                              // one text in, one text out
+    expect(got[0]).toBe(`ru:# Plan\n\n${'a'.repeat(1400)}\n\nru:${'b'.repeat(1400)}\n\nru:${'c'.repeat(1400)}`);
+    expect(seen.map((b) => b.length)).toEqual([1, 1, 1]);      // three slices, one per call
+  });
+
+  it('a slice that failed does not cost the slices that went through', async () => {
+    let n = 0;
+    const hono = mount(async (p) => {
+      const asked = JSON.parse(p.slice(p.indexOf('\n["') + 1)) as string[];
+      return ++n === 1 ? 'sorry' : JSON.stringify(asked.map((x) => `ru:${x}`));
+    });
+    const planMd = ['a'.repeat(1400), 'b'.repeat(1400), 'c'.repeat(1400)].join('\n\n');
+    expect((await post(hono, { texts: [planMd], lang: 'ru' })).status).toBe(502);
+    expect(n).toBe(3);                                        // the other slices were asked for all the same
+    expect((await post(hono, { texts: [planMd], lang: 'ru' })).status).toBe(200);
+    expect(n).toBe(4);                                        // and only the one that failed is asked again
+  });
+
   it('never answers a non-empty text with an empty one', async () => {
     let n = 0;
     const hono = mount(async (p) => {

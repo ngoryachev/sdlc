@@ -54,9 +54,9 @@ export function HilPage() {
   const [tr, setTr] = useState<Record<string, string> | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const [translating, setTranslating] = useState(false);
-  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? 'comment'); setTr(null); setShowOriginal(false); }).catch((e) => toast(e.message, 'error')); }, [id]);
+  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? 'comment'); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => toast(e.message, 'error')); }, [id]);
   useEffect(() => { if (h && h.status === 'open' && !openList.some((x) => x.id === h.id)) void api.hilOne(id).then(setH); }, [openList, h?.id]);
-  useEffect(() => { setTr(null); setShowOriginal(false); }, [readingLang]);
+  useEffect(() => { setTr(null); setShowOriginal(false); setTranslating(false); }, [readingLang]);
   // j/k can move to the next checkpoint while a translation is in flight: that answer belongs to the old one
   const shownRef = useRef({ id, lang: readingLang });
   useEffect(() => { shownRef.current = { id, lang: readingLang }; }, [id, readingLang]);
@@ -263,7 +263,8 @@ function translatable(p: HilPayload, summary: string): string[] {
   const out: string[] = [summary];
   switch (p.kind) {
     case 'refine_prompt':
-      out.push(p.prompt, ...p.assumptions);
+      if (p.suggestedPrompt) out.push(p.prompt);   // shown under "original prompt"; without it the prompt is the editable textarea
+      out.push(...p.assumptions);
       for (const q of p.questions) out.push(q.header, q.question, ...(q.options ?? []));
       break;
     case 'approve_plan':

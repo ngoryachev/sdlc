@@ -10,9 +10,13 @@ const Body = z.object({
   lang: z.enum(TRANSLATE_LANGS),
 }).strict();
 
-/** One cheap call translates up to this much at once; `brief()` has a 20s timeout, so long checkpoints are split. */
+/** One cheap call must finish inside brief()'s hard 20s timeout, so it gets few texts and not too many characters. */
 const BATCH_ITEMS = 20;
-const BATCH_CHARS = 4000;
+const BATCH_CHARS = 2000;
+/** A text longer than this is translated in slices and joined back: a 7 KB plan would never fit one call. */
+const PIECE_CHARS = 1500;
+/** Calls are independent; a big review should not wait for one at a time. */
+const PARALLEL = 3;
 /** Translations live in process memory only: nothing is written to the database or sent to GitHub. */
 const CACHE_MAX = 2000;
 const cache = new Map<string, string>();
@@ -36,19 +40,63 @@ export function translateRoutes(app: App) {
     const body = Body.safeParse(await c.req.json());
     if (!body.success) throw new HttpError(400, `bad translate request: ${body.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; ')}`);
     const { texts, lang } = body.data;
-    // empty and whitespace-only strings come back as they are; repeated texts are translated once
-    const todo = [...new Set(texts.filter((t) => t.trim() && !cache.has(keyOf(lang, t))))];
+    // empty and whitespace-only strings come back as they are; a long text is sliced, repeated slices translated once
+    const jobs = texts.map((text) => (text.trim() ? slice(text) : { parts: [], joiners: [] }));
+    const todo = [...new Set(jobs.flatMap((j) => j.parts).filter((x) => x.trim() && !cache.has(keyOf(lang, x))))];
     if (todo.length) {
       if (!app.runner.brief) throw new HttpError(503, 'translation is not available on this server (no cheap model runner)');
       const brief = app.runner.brief.bind(app.runner);
-      for (const batch of batches(todo)) {
+      // what a batch managed is cached before the failure of another one surfaces: Translate again asks only for the rest
+      await pool(batches(todo), async (batch) => {
         const got = await translateBatch(brief, batch, lang);
         batch.forEach((text, j) => cachePut(keyOf(lang, text), got[j]!));
-      }
+      });
     }
-    return c.json({ texts: texts.map((t) => (t.trim() ? cache.get(keyOf(lang, t)) ?? t : t)) });
+    return c.json({ texts: texts.map((text, i) => assemble(jobs[i]!, lang, text)) });
   });
   return r;
+}
+
+/** One input text as the slices sent to the model plus the separators that put it back together. */
+interface Job { parts: string[]; joiners: string[] }
+
+/**
+ * Slices a text too long for one cheap call on the widest boundary that occurs in it: blank lines, then lines, then
+ * spaces. Each slice is translated and cached on its own, so a failure costs only the slice that failed, and one text
+ * still comes back as exactly one text.
+ */
+function slice(text: string): Job {
+  if (text.length <= PIECE_CHARS) return { parts: [text], joiners: [] };
+  for (const re of [/(\n{2,})/, /(\n)/, /( )/]) {
+    const bits = text.split(re);                    // [part, separator, part, separator, ...]
+    if (bits.length < 3) continue;                  // that boundary does not occur in this text
+    const parts: string[] = []; const joiners: string[] = [];
+    let cur = bits[0]!;
+    for (let i = 1; i < bits.length; i += 2) {
+      const sep = bits[i]!; const next = bits[i + 1] ?? '';
+      if (cur && cur.length + sep.length + next.length > PIECE_CHARS) { parts.push(cur); joiners.push(sep); cur = next; }
+      else cur += sep + next;
+    }
+    parts.push(cur);
+    if (parts.every((x) => x.length <= PIECE_CHARS)) return { parts, joiners };
+  }
+  return { parts: [text], joiners: [] };            // nothing to split on: send it whole
+}
+
+/** The text as the human sees it: translated slices in place, original separators between them. */
+function assemble(job: Job, lang: TranslateLang, original: string): string {
+  if (!job.parts.length) return original;           // blank input, nothing was asked for
+  return job.parts.reduce((acc, x, i) => acc + (i ? job.joiners[i - 1]! : '') + (x.trim() ? cache.get(keyOf(lang, x)) ?? x : x), '');
+}
+
+/** Runs the calls a few at a time; every rejection is awaited, so one failure cannot take the process down. */
+async function pool(items: string[][], f: (x: string[]) => Promise<void>): Promise<void> {
+  const queue = [...items];
+  const workers = Array.from({ length: Math.min(PARALLEL, queue.length) }, async () => {
+    for (let item = queue.shift(); item !== undefined; item = queue.shift()) await f(item);
+  });
+  const failed = (await Promise.allSettled(workers)).find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failed) throw failed.reason;
 }
 
 function batches(texts: string[]): string[][] {
