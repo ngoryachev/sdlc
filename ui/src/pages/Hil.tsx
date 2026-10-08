@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'wouter';
-import type { FindingAction, HilDecision, HilPayload, HilResponse, ReviewEvent } from '@sdlc/shared';
+import type { FindingAction, HilDecision, HilPayload, HilResponse, ReviewEvent, TranslateLang } from '@sdlc/shared';
+import { TRANSLATE_LANGS, TRANSLATE_LANG_NAMES } from '@sdlc/shared';
 import { api, ApiError, type HilRow } from '../lib/api.js';
 import { useStore } from '../lib/store.js';
 import { requestNotifyPermission } from '../lib/notify.js';
@@ -47,8 +48,35 @@ export function HilPage() {
   const [commentActions, setCommentActions] = useState<Record<string, 'fix' | 'skip'>>({});
   const [reviewEvent, setReviewEvent] = useState<ReviewEvent>('comment');
   const [busy, setBusy] = useState(false);
-  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? 'comment'); }).catch((e) => toast(e.message, 'error')); }, [id]);
+  const readingLang = useStore((s) => s.readingLang);
+  const setReadingLang = useStore((s) => s.setReadingLang);
+  // translation of this checkpoint: screen only, never saved and never part of the response
+  const [tr, setTr] = useState<Record<string, string> | null>(null);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? 'comment'); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => toast(e.message, 'error')); }, [id]);
   useEffect(() => { if (h && h.status === 'open' && !openList.some((x) => x.id === h.id)) void api.hilOne(id).then(setH); }, [openList, h?.id]);
+  useEffect(() => { setTr(null); setShowOriginal(false); setTranslating(false); }, [readingLang]);
+  // j/k can move to the next checkpoint while a translation is in flight: that answer belongs to the old one
+  const shownRef = useRef({ id, lang: readingLang });
+  useEffect(() => { shownRef.current = { id, lang: readingLang }; }, [id, readingLang]);
+
+  const translate = async () => {
+    if (!h) return;
+    const texts = translatable(h.payload, h.summary);
+    if (!texts.length) return;
+    const asked = { id, lang: readingLang };
+    setTranslating(true);
+    try {
+      const r = await api.translate(texts, readingLang);
+      if (shownRef.current.id !== asked.id || shownRef.current.lang !== asked.lang) return;
+      setTr(Object.fromEntries(texts.map((x, i) => [x, r.texts[i] ?? x])));
+      setShowOriginal(false);
+    } catch (e) { toast((e as Error).message, 'error'); }
+    finally { setTranslating(false); }
+  };
+  /** Translated text where there is one, the English original otherwise; identity before Translate is pressed. */
+  const t = (s: string) => (tr && !showOriginal ? tr[s] ?? s : s);
 
   const unanswered = h?.payload.kind === 'refine_prompt' ? h.payload.questions.filter((q) => !answers[q.question]?.trim()).map((q) => q.header) : [];
   const counts = { fix: 0, post: 0, skip: 0 };
@@ -79,7 +107,7 @@ export function HilPage() {
     const k = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { const d = h?.allowedDecisions.find((x) => ['approve', 'answer', 'allow', 'retry'].includes(x)); if (d) void respond(d); return; }
-      if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+      if (tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') return;
       if (!h || h.status !== 'open') return;
       if (e.key === 'a' && h.allowedDecisions.includes('approve')) void respond('approve');
       if (e.key === 'r' && h.allowedDecisions.includes('request_changes')) document.getElementById('hil-comment')?.focus();
@@ -93,9 +121,16 @@ export function HilPage() {
   return (
     <div className="card">
       <div className="row"><span className="kind">{h.kind}</span><h2 className="grow" style={{ margin: 0 }}><Link href={`/tasks/${h.taskId}`}>{h.task.title}</Link></h2><span className="small muted">{ago(h.createdAt)} ago</span></div>
-      <div className="muted" style={{ marginBottom: 10 }}>{h.summary}</div>
+      <div className="muted" style={{ marginBottom: 10 }}>{t(h.summary)}</div>
+      <div className="row small" style={{ marginBottom: 10, gap: 6, flexWrap: 'wrap' }}>
+        <select style={{ width: 'auto' }} value={readingLang} disabled={translating} onChange={(e) => setReadingLang(e.target.value as TranslateLang)}>{TRANSLATE_LANGS.map((l) => <option key={l} value={l}>{TRANSLATE_LANG_NAMES[l]}</option>)}</select>
+        {tr
+          ? <button onClick={() => setShowOriginal(!showOriginal)}>{showOriginal ? `Show ${TRANSLATE_LANG_NAMES[readingLang].toLowerCase()}` : 'Show original'}</button>
+          : <button disabled={translating} onClick={() => void translate()}>{translating ? 'translating… this can take a few minutes, the English text stays' : 'Translate'}</button>}
+        <span className="muted">for reading only: diff, logs, commands and editable fields stay in English, nothing is saved or sent</span>
+      </div>
       {h.status !== 'open' && <div className="chip" style={{ marginBottom: 10 }}>{h.status}{h.response ? ` · ${h.response.decision} via ${h.answeredVia}` : ''}</div>}
-      <Payload p={p} edited={edited} setEdited={setEdited} answers={answers} setAnswers={setAnswers} actions={actions} setActions={setActions} commentActions={commentActions} setCommentActions={setCommentActions} reviewEvent={reviewEvent} setReviewEvent={setReviewEvent} readOnly={h.status !== 'open'} />
+      <Payload p={p} edited={edited} setEdited={setEdited} answers={answers} setAnswers={setAnswers} actions={actions} setActions={setActions} commentActions={commentActions} setCommentActions={setCommentActions} reviewEvent={reviewEvent} setReviewEvent={setReviewEvent} readOnly={h.status !== 'open'} t={t} />
       {h.status === 'open' && (
         <>
           {h.allowedDecisions.some((d) => ['request_changes', 'resume', 'deny', 'approve'].includes(d)) && h.kind !== 'question' && (
@@ -125,10 +160,12 @@ function ArmedAbort({ onClick, disabled }: { onClick: () => void; disabled: bool
   return <button className={`danger ${armed ? 'confirm' : ''}`} disabled={disabled} onClick={() => { if (armed) onClick(); else setArmed(true); }}>{armed ? 'Confirm abort?' : 'Abort task'}</button>;
 }
 
-function Payload({ p, edited, setEdited, answers, setAnswers, actions, setActions, commentActions, setCommentActions, reviewEvent, setReviewEvent, readOnly }: {
+function Payload({ p, edited, setEdited, answers, setAnswers, actions, setActions, commentActions, setCommentActions, reviewEvent, setReviewEvent, readOnly, t }: {
   p: HilPayload; edited: { prompt?: string; planMd?: string; title?: string }; setEdited: (e: { prompt?: string; planMd?: string; title?: string }) => void; answers: Record<string, string>; setAnswers: (a: Record<string, string>) => void;
   actions: Record<string, FindingAction>; setActions: (a: Record<string, FindingAction>) => void; commentActions: Record<string, 'fix' | 'skip'>; setCommentActions: (a: Record<string, 'fix' | 'skip'>) => void;
   reviewEvent: ReviewEvent; setReviewEvent: (e: ReviewEvent) => void; readOnly: boolean;
+  /** Applied on display only: every value the human sends back is taken from the untranslated payload. */
+  t: (s: string) => string;
 }) {
   const [tab, setTab] = useState<'review' | 'diff' | 'tests' | 'findings' | 'qa'>(p.kind === 'approve_result' ? (p.focus === 'qa' ? 'qa' : p.review?.findings.length ? 'findings' : 'review') : 'review');
   /** fix / post / skip for one item; an action the task cannot perform is not offered. */
@@ -150,19 +187,19 @@ function Payload({ p, edited, setEdited, answers, setAnswers, actions, setAction
               <b>Claude asks</b> <span className="small muted">— every question needs an answer; they are appended to the prompt</span>
               {p.questions.map((q, i) => (
                 <div key={i} style={{ marginTop: 8 }}>
-                  <div><b>{q.header}:</b> {q.question}</div>
-                  {q.options?.length ? <div className="row" style={{ gap: 4, flexWrap: 'wrap', marginTop: 4 }}>{q.options.map((o) => <button key={o} type="button" className={answers[q.question] === o ? 'primary' : ''} disabled={readOnly} onClick={() => setAnswers({ ...answers, [q.question]: o })}>{o}</button>)}</div> : null}
+                  <div><b>{t(q.header)}:</b> {t(q.question)}</div>
+                  {q.options?.length ? <div className="row" style={{ gap: 4, flexWrap: 'wrap', marginTop: 4 }}>{q.options.map((o) => <button key={o} type="button" className={answers[q.question] === o ? 'primary' : ''} disabled={readOnly} onClick={() => setAnswers({ ...answers, [q.question]: o })}>{t(o)}</button>)}</div> : null}
                   <input style={{ marginTop: 4 }} placeholder="your answer" readOnly={readOnly} value={answers[q.question] ?? ''} onChange={(e) => setAnswers({ ...answers, [q.question]: e.target.value })} />
                 </div>
               ))}
             </div>
           )}
-          {p.assumptions.length > 0 && <div className="small muted" style={{ marginBottom: 6 }}><b>Assumptions:</b> {p.assumptions.join(' · ')}</div>}
+          {p.assumptions.length > 0 && <div className="small muted" style={{ marginBottom: 6 }}><b>Assumptions:</b> {p.assumptions.map(t).join(' · ')}</div>}
           <label className="small muted">Task title</label>
           <input value={edited.title ?? p.suggestedTitle ?? ''} placeholder="short title" readOnly={readOnly} onChange={(e) => setEdited({ ...edited, title: e.target.value })} style={{ marginBottom: 8 }} />
           <label className="small muted">Prompt for the pipeline {p.suggestedPrompt ? '(rewritten by Claude; original below)' : ''}</label>
           <textarea style={{ minHeight: 180 }} value={value} readOnly={readOnly} onChange={(e) => setEdited({ ...edited, prompt: e.target.value })} />
-          {p.suggestedPrompt && <details><summary className="small muted">original prompt</summary><pre className="small">{p.prompt}</pre></details>}
+          {p.suggestedPrompt && <details><summary className="small muted">original prompt</summary><pre className="small">{t(p.prompt)}</pre></details>}
         </div>
       );
     }
@@ -170,39 +207,39 @@ function Payload({ p, edited, setEdited, answers, setAnswers, actions, setAction
       return (
         <div>
           <div className="row"><span className="grow" />{!readOnly && <button onClick={() => setEditPlan(!editPlan)}>{editPlan ? 'Preview' : 'Edit plan'}</button>}</div>
-          {editPlan ? <textarea style={{ minHeight: 360 }} value={edited.planMd ?? p.planMd} onChange={(e) => setEdited({ ...edited, planMd: e.target.value })} /> : <Markdown text={edited.planMd ?? p.planMd} />}
+          {editPlan ? <textarea style={{ minHeight: 360 }} value={edited.planMd ?? p.planMd} onChange={(e) => setEdited({ ...edited, planMd: e.target.value })} /> : <Markdown text={t(edited.planMd ?? p.planMd)} />}
           {edited.planMd !== undefined && edited.planMd !== p.planMd && <div className="small" style={{ color: 'var(--warn)' }}>plan edited — the edited version will be used for implementation</div>}
         </div>
       );
     case 'approve_result':
       return (
         <div>
-          <Tabs tabs={[{ id: 'review', label: `review${p.review ? ` · ${p.review.verdict}` : ''}` }, { id: 'diff', label: `diff · ${p.commits.length} commits` }, { id: 'tests', label: 'tests' }, { id: 'findings', label: `findings${p.review ? ` (${p.review.findings.length})` : ''}` }, ...(p.qa ? [{ id: 'qa', label: `qa · ${p.qa.verdict}${p.qa.issues.length ? ` (${p.qa.issues.length})` : ''}` }] : [])]} value={tab} onChange={(t) => setTab(t as typeof tab)} />
-          {tab === 'review' && (p.review ? <Markdown text={p.review.summary} /> : <div className="muted">no review</div>)}
+          <Tabs tabs={[{ id: 'review', label: `review${p.review ? ` · ${p.review.verdict}` : ''}` }, { id: 'diff', label: `diff · ${p.commits.length} commits` }, { id: 'tests', label: 'tests' }, { id: 'findings', label: `findings${p.review ? ` (${p.review.findings.length})` : ''}` }, ...(p.qa ? [{ id: 'qa', label: `qa · ${p.qa.verdict}${p.qa.issues.length ? ` (${p.qa.issues.length})` : ''}` }] : [])]} value={tab} onChange={(id) => setTab(id as typeof tab)} />
+          {tab === 'review' && (p.review ? <Markdown text={t(p.review.summary)} /> : <div className="muted">no review</div>)}
           {tab === 'diff' && <><pre className="small muted">{p.diffStat}</pre><DiffView patch={p.diff} /></>}
-          {tab === 'tests' && (p.test ? <div><div><span className={`chip ${p.test.verdict === 'fail' ? 'failed' : ''}`}>{p.test.verdict}</span></div><Markdown text={p.test.summary} />{p.test.commands.length > 0 && <pre className="small muted">{p.test.commands.map((c) => `$ ${c}`).join('\n')}</pre>}{p.test.failures.length > 0 && <ul>{p.test.failures.map((f, i) => <li key={i}><b>{f.title}</b>{f.file ? <span className="mono small"> {f.file}{f.line ? `:${f.line}` : ''}</span> : null}<div className="small">{f.description}</div></li>)}</ul>}{p.test.tests_added.length > 0 && <div className="small muted">tests: {p.test.tests_added.join(', ')}</div>}{p.test.notes && <div className="small muted">{p.test.notes}</div>}</div> : <pre className="log">{p.testOutput ?? '(tests were not run)'}</pre>)}
-          {tab === 'qa' && p.qa && <div><Markdown text={p.qa.summary} /><ul>{p.qa.checks.map((c, i) => <li key={i}><span className={`chip ${c.result === 'failed' ? 'failed' : ''}`}>{c.result}</span> {c.name} <span className="small muted">{c.method}</span></li>)}</ul>{p.qa.issues.length > 0 && <ul>{p.qa.issues.map((f, i) => <li key={i}><span className={`chip ${f.severity === 'blocking' ? 'failed' : ''}`}>{f.severity}</span> <b>{f.title}</b>{p.focus === 'qa' && <Pick k={`qa:${i}`} canFix={p.canFix} canPost={false} />}<div className="small">{f.description}</div></li>)}</ul>}</div>}
+          {tab === 'tests' && (p.test ? <div><div><span className={`chip ${p.test.verdict === 'fail' ? 'failed' : ''}`}>{p.test.verdict}</span></div><Markdown text={t(p.test.summary)} />{p.test.commands.length > 0 && <pre className="small muted">{p.test.commands.map((c) => `$ ${c}`).join('\n')}</pre>}{p.test.failures.length > 0 && <ul>{p.test.failures.map((f, i) => <li key={i}><b>{t(f.title)}</b>{f.file ? <span className="mono small"> {f.file}{f.line ? `:${f.line}` : ''}</span> : null}<div className="small">{t(f.description)}</div></li>)}</ul>}{p.test.tests_added.length > 0 && <div className="small muted">tests: {p.test.tests_added.join(', ')}</div>}{p.test.notes && <div className="small muted">{t(p.test.notes)}</div>}</div> : <pre className="log">{p.testOutput ?? '(tests were not run)'}</pre>)}
+          {tab === 'qa' && p.qa && <div><Markdown text={t(p.qa.summary)} /><ul>{p.qa.checks.map((c, i) => <li key={i}><span className={`chip ${c.result === 'failed' ? 'failed' : ''}`}>{c.result}</span> {t(c.name)} <span className="small muted">{t(c.method)}</span></li>)}</ul>{p.qa.issues.length > 0 && <ul>{p.qa.issues.map((f, i) => <li key={i}><span className={`chip ${f.severity === 'blocking' ? 'failed' : ''}`}>{f.severity}</span> <b>{t(f.title)}</b>{p.focus === 'qa' && <Pick k={`qa:${i}`} canFix={p.canFix} canPost={false} />}<div className="small">{t(f.description)}</div></li>)}</ul>}</div>}
           {tab === 'findings' && (
             <div>
               {p.focus === 'review' && (p.review?.findings.length ?? 0) > 0 && <div className="small muted" style={{ marginBottom: 6 }}>{p.canFix ? 'fix: goes back to the implementer · ' : ''}{p.canPost ? 'post: published on the pull request · ' : ''}skip: nothing happens{p.canPost && p.role === 'reviewer' && <> · published as <select style={{ width: 'auto', display: 'inline-block' }} value={reviewEvent} disabled={readOnly} onChange={(e) => setReviewEvent(e.target.value as ReviewEvent)}><option value="comment">comment</option><option value="approve">approve</option><option value="request_changes">request changes</option></select></>}</div>}
-              <ul>{(p.review?.findings ?? []).map((f, i) => <li key={i}><span className={`chip ${f.severity === 'blocking' ? 'failed' : ''}`}>{f.severity}</span> <b>{f.title}</b>{f.file ? <span className="mono small"> {f.file}{f.line ? `:${f.line}` : ''}</span> : null}{p.focus === 'review' && <Pick k={`review:${i}`} canFix={p.canFix} canPost={p.canPost} />}<div className="small">{f.description}</div>{f.suggestion && <div className="small muted">→ {f.suggestion}</div>}</li>)}{!p.review?.findings.length && <li className="muted">none</li>}</ul>
+              <ul>{(p.review?.findings ?? []).map((f, i) => <li key={i}><span className={`chip ${f.severity === 'blocking' ? 'failed' : ''}`}>{f.severity}</span> <b>{t(f.title)}</b>{f.file ? <span className="mono small"> {f.file}{f.line ? `:${f.line}` : ''}</span> : null}{p.focus === 'review' && <Pick k={`review:${i}`} canFix={p.canFix} canPost={p.canPost} />}<div className="small">{t(f.description)}</div>{f.suggestion && <div className="small muted">→ {t(f.suggestion)}</div>}</li>)}{!p.review?.findings.length && <li className="muted">none</li>}</ul>
             </div>
           )}
         </div>
       );
     case 'pr_feedback':
-      return <div><a href={p.prUrl} target="_blank" rel="noreferrer">{p.prUrl}</a><div className="small muted">fix: goes to the implementer · skip: marked read, never shown again</div><ul>{p.comments.map((c) => <li key={c.id}><b>{c.author}</b>{c.reviewState ? <span className="chip">{c.reviewState}</span> : null}{c.path ? <span className="mono small"> {c.path}{c.line ? `:${c.line}` : ''}</span> : null}<span className="row" style={{ display: 'inline-flex', gap: 2, marginLeft: 6, verticalAlign: 'middle' }}>{(['fix', 'skip'] as const).map((a) => <button key={a} type="button" className={`small ${(commentActions[c.id] ?? 'fix') === a ? 'primary' : ''}`} style={{ padding: '0 8px' }} disabled={readOnly} onClick={() => setCommentActions({ ...commentActions, [c.id]: a })}>{a}</button>)}</span><Markdown text={c.body} /><a className="small" href={c.url} target="_blank" rel="noreferrer">view</a></li>)}</ul></div>;
+      return <div><a href={p.prUrl} target="_blank" rel="noreferrer">{p.prUrl}</a><div className="small muted">fix: goes to the implementer · skip: marked read, never shown again</div><ul>{p.comments.map((c) => <li key={c.id}><b>{c.author}</b>{c.reviewState ? <span className="chip">{c.reviewState}</span> : null}{c.path ? <span className="mono small"> {c.path}{c.line ? `:${c.line}` : ''}</span> : null}<span className="row" style={{ display: 'inline-flex', gap: 2, marginLeft: 6, verticalAlign: 'middle' }}>{(['fix', 'skip'] as const).map((a) => <button key={a} type="button" className={`small ${(commentActions[c.id] ?? 'fix') === a ? 'primary' : ''}`} style={{ padding: '0 8px' }} disabled={readOnly} onClick={() => setCommentActions({ ...commentActions, [c.id]: a })}>{a}</button>)}</span><Markdown text={t(c.body)} /><a className="small" href={c.url} target="_blank" rel="noreferrer">view</a></li>)}</ul></div>;
     case 'question':
       return (
         <div>{p.questions.map((q) => (
           <div key={q.question} className="card" style={{ background: 'var(--bg)' }}>
-            <b>{q.header}</b><div>{q.question}</div>
-            <div style={{ marginTop: 6 }}>{q.options.map((o) => <label key={o.label} style={{ display: 'block' }}><input type={q.multiSelect ? 'checkbox' : 'radio'} style={{ width: 'auto' }} name={q.question} disabled={readOnly} checked={(answers[q.question] ?? '').split(', ').includes(o.label)} onChange={(e) => { if (q.multiSelect) { const cur = (answers[q.question] ?? '').split(', ').filter(Boolean); const next = e.target.checked ? [...cur, o.label] : cur.filter((x) => x !== o.label); setAnswers({ ...answers, [q.question]: next.join(', ') }); } else setAnswers({ ...answers, [q.question]: o.label }); }} /> <b>{o.label}</b> <span className="muted small">{o.description}</span></label>)}</div>
+            <b>{t(q.header)}</b><div>{t(q.question)}</div>
+            <div style={{ marginTop: 6 }}>{q.options.map((o) => <label key={o.label} style={{ display: 'block' }}><input type={q.multiSelect ? 'checkbox' : 'radio'} style={{ width: 'auto' }} name={q.question} disabled={readOnly} checked={(answers[q.question] ?? '').split(', ').includes(o.label)} onChange={(e) => { if (q.multiSelect) { const cur = (answers[q.question] ?? '').split(', ').filter(Boolean); const next = e.target.checked ? [...cur, o.label] : cur.filter((x) => x !== o.label); setAnswers({ ...answers, [q.question]: next.join(', ') }); } else setAnswers({ ...answers, [q.question]: o.label }); }} /> <b>{t(o.label)}</b> <span className="muted small">{o.description ? t(o.description) : ''}</span></label>)}</div>
             <input style={{ marginTop: 6 }} placeholder="or type your own answer" disabled={readOnly} value={q.options.some((o) => o.label === answers[q.question]) ? '' : answers[q.question] ?? ''} onChange={(e) => setAnswers({ ...answers, [q.question]: e.target.value })} />
           </div>))}</div>
       );
     case 'escalation':
-      return <div><div><b>{p.phaseName}</b> failed{p.resultSubtype ? ` (${p.resultSubtype})` : ''}:</div><pre className="log">{p.error}</pre></div>;
+      return <div><div><b>{p.phaseName}</b> failed{p.resultSubtype ? ` (${p.resultSubtype})` : ''}:</div><pre className="log">{t(p.error)}</pre></div>;
   }
 }
 
@@ -214,4 +251,39 @@ function defaultActions(p: HilPayload, saved: HilResponse | null): Record<string
   if (p.focus === 'qa') { (p.qa?.issues ?? []).forEach((f, i) => { out[`qa:${i}`] = p.canFix && f.severity !== 'nit' ? 'fix' : 'skip'; }); return out; }
   (p.review?.findings ?? []).forEach((f, i) => { out[`review:${i}`] = p.role === 'reviewer' ? (p.canPost ? 'post' : 'skip') : p.canFix && f.severity !== 'nit' ? 'fix' : 'skip'; });
   return out;
+}
+
+/**
+ * The prose of one checkpoint, deduplicated, in display order.
+ * Left out on purpose: the diff, test logs and commands, severity / verdict / result names, file paths and line numbers,
+ * PR links and authors, the phase name and every editable field (title, prompt textarea, plan in Edit mode) — translating
+ * those would either break the markup or put a translated value into the response.
+ */
+function translatable(p: HilPayload, summary: string): string[] {
+  const out: string[] = [summary];
+  switch (p.kind) {
+    case 'refine_prompt':
+      if (p.suggestedPrompt) out.push(p.prompt);   // shown under "original prompt"; without it the prompt is the editable textarea
+      out.push(...p.assumptions);
+      for (const q of p.questions) out.push(q.header, q.question, ...(q.options ?? []));
+      break;
+    case 'approve_plan':
+      out.push(p.planMd);
+      break;
+    case 'approve_result':
+      if (p.review) out.push(p.review.summary, ...p.review.findings.flatMap((f) => [f.title, f.description, ...(f.suggestion ? [f.suggestion] : [])]));
+      if (p.test) out.push(p.test.summary, p.test.notes, ...p.test.failures.flatMap((f) => [f.title, f.description]));
+      if (p.qa) out.push(p.qa.summary, ...p.qa.checks.flatMap((c) => [c.name, c.method]), ...p.qa.issues.flatMap((i) => [i.title, i.description]));
+      break;
+    case 'pr_feedback':
+      out.push(...p.comments.map((c) => c.body));
+      break;
+    case 'question':
+      for (const q of p.questions) out.push(q.header, q.question, ...q.options.flatMap((o) => [o.label, ...(o.description ? [o.description] : [])]));
+      break;
+    case 'escalation':
+      out.push(p.error);
+      break;
+  }
+  return [...new Set(out.filter((s) => s && s.trim()))];
 }

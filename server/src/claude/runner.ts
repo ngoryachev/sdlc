@@ -45,8 +45,8 @@ export interface ClaudeRunner {
   models?(): Promise<ModelChoice[]>;
   /** Raw plan usage from the CLI (experimental SDK call); null when it is not available (API key, Bedrock, old CLI). */
   usage?(): Promise<unknown | null>;
-  /** One cheap, tool-less completion (haiku): used for the branch slug at task creation. */
-  brief?(prompt: string): Promise<string>;
+  /** One tool-less completion in a single turn: the branch slug (haiku, 20s), a checkpoint translation on demand. */
+  brief?(prompt: string, opts?: { model?: string; timeoutMs?: number }): Promise<string>;
 }
 
 /** Async queue used as the streaming-input prompt so the session stays open for inject()/interrupt(). */
@@ -136,12 +136,12 @@ export class SdkClaudeRunner implements ClaudeRunner {
     finally { input.close(); abortController.abort(); }
   }
 
-  async brief(prompt: string): Promise<string> {
+  async brief(prompt: string, opts: { model?: string; timeoutMs?: number } = {}): Promise<string> {
     const input = new InputQueue();
     input.push(userMessage(prompt));
     const abortController = new AbortController();
-    const q: Query = query({ prompt: input, options: { cwd: process.cwd(), model: 'haiku', maxTurns: 1, permissionMode: 'dontAsk', disallowedTools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'WebSearch', 'WebFetch', 'AskUserQuestion'], systemPrompt: 'Answer with the requested text only, nothing else.', settingSources: [], abortController, env: filteredEnv({}) } });
-    const timer = setTimeout(() => abortController.abort(), 20_000);
+    const q: Query = query({ prompt: input, options: { cwd: process.cwd(), model: opts.model ?? 'haiku', maxTurns: 1, permissionMode: 'dontAsk', disallowedTools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'WebSearch', 'WebFetch', 'AskUserQuestion'], systemPrompt: 'Answer with the requested text only, nothing else.', settingSources: [], abortController, env: filteredEnv({}) } });
+    const timer = setTimeout(() => abortController.abort(), opts.timeoutMs ?? 20_000);
     try {
       for await (const m of q) { if (m.type === 'result') { input.close(); return m.subtype === 'success' ? m.result : ''; } }
       return '';
