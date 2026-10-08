@@ -126,7 +126,7 @@ export function HilPage() {
         <select style={{ width: 'auto' }} value={readingLang} disabled={translating} onChange={(e) => setReadingLang(e.target.value as TranslateLang)}>{TRANSLATE_LANGS.map((l) => <option key={l} value={l}>{TRANSLATE_LANG_NAMES[l]}</option>)}</select>
         {tr
           ? <button onClick={() => setShowOriginal(!showOriginal)}>{showOriginal ? `Show ${TRANSLATE_LANG_NAMES[readingLang].toLowerCase()}` : 'Show original'}</button>
-          : <button disabled={translating} onClick={() => void translate()}>{translating ? 'translating…' : 'Translate'}</button>}
+          : <button disabled={translating} onClick={() => void translate()}>{translating ? 'translating the whole checkpoint, this takes a while…' : 'Translate'}</button>}
         <span className="muted">for reading only: diff, logs, commands and editable fields stay in English, nothing is saved or sent</span>
       </div>
       {h.status !== 'open' && <div className="chip" style={{ marginBottom: 10 }}>{h.status}{h.response ? ` · ${h.response.decision} via ${h.answeredVia}` : ''}</div>}
