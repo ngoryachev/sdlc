@@ -15,6 +15,12 @@ export type ModelOverrides = Record<string, PhaseModel>;
 
 export type ReviewMode = 'conceptual' | 'line';
 
+/** Reading languages the on-demand translation of checkpoint texts offers; a new language is added to this list only. */
+export const TRANSLATE_LANGS = ['ru', 'uk', 'sv'] as const;
+export type TranslateLang = typeof TRANSLATE_LANGS[number];
+/** Shown in the language selector; the model is told the English name. */
+export const TRANSLATE_LANG_NAMES: Record<TranslateLang, string> = { ru: 'Russian', uk: 'Ukrainian', sv: 'Swedish' };
+
 export interface Task {
   id: string;
   title: string;

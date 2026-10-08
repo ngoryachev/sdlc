@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { ModelOverrides } from '@sdlc/shared';
+import type { ModelOverrides, TranslateLang } from '@sdlc/shared';
+import { TRANSLATE_LANGS, TRANSLATE_LANG_NAMES } from '@sdlc/shared';
 import { api, type Config, type GhAccount, type ModelChoice, type PipelineInfo } from '../lib/api.js';
 import { useStore } from '../lib/store.js';
 import { EFFORTS, ModelPicker } from '../components/ModelPicker.js';
@@ -14,6 +15,8 @@ export function SettingsPage() {
   const [form, setForm] = useState<{ default_pipeline: string; max_parallel_tasks: number; max_loops: number; recheck_scope: 'delta' | 'full'; pr_feedback_from: 'collaborators' | 'anyone'; pr_sync_interval: string; task_budget_usd: string; limits: 'pipeline' | 'off'; merge_method: string; cleanup: string; model: string; effort: string; phases: ModelOverrides } | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useStore((s) => s.toast);
+  const readingLang = useStore((s) => s.readingLang);
+  const setReadingLang = useStore((s) => s.setReadingLang);
   const load = () => api.config().then((c) => { setCfg(c); setForm({ default_pipeline: c.defaultPipeline, max_parallel_tasks: c.maxParallelTasks, max_loops: c.maxLoops, recheck_scope: c.recheckScope, pr_feedback_from: c.prFeedbackFrom, pr_sync_interval: c.prSyncInterval, task_budget_usd: String(c.taskBudgetUsd), limits: c.limits.phases, merge_method: c.mergeMethod, cleanup: c.cleanup, model: c.models.default ?? '', effort: c.models.effort ?? '', phases: c.models.phases as ModelOverrides }); });
   useEffect(() => { void load(); void api.pipelines().then((p) => setPipelines(p.pipelines)); void api.models().then((r) => { setModels(r.models); if (r.error) setModelsErr(r.error); }).catch((e) => setModelsErr(String(e.message))); }, []);
   if (!cfg || !form) return <div className="muted">loading…</div>;
@@ -56,6 +59,9 @@ export function SettingsPage() {
             <select value={form.merge_method} onChange={(e) => setForm({ ...form, merge_method: e.target.value })}><option value="merge">merge commit</option><option value="squash">squash</option><option value="rebase">rebase</option></select>
             <label className="small muted" style={{ marginTop: 6, display: 'block' }}>Worktree cleanup</label>
             <select value={form.cleanup} onChange={(e) => setForm({ ...form, cleanup: e.target.value })}><option value="never">never (explicit: button / sdlc cleanup / Land)</option><option value="on_pr">on PR</option><option value="on_approve">on approve</option></select>
+            <label className="small muted" style={{ marginTop: 6, display: 'block' }}>Reading language (the Translate button at a checkpoint)</label>
+            <select value={readingLang} onChange={(e) => setReadingLang(e.target.value as TranslateLang)}>{TRANSLATE_LANGS.map((l) => <option key={l} value={l}>{TRANSLATE_LANG_NAMES[l]}</option>)}</select>
+            <div className="small muted">kept in this browser, not in config.yaml; translation is on demand, for reading only — the pipeline keeps writing in the language of the request</div>
             <div className="small muted" style={{ marginTop: 10 }}>public URL <span className="mono">{cfg.publicUrl}</span> · repos dir <span className="mono">{cfg.reposDir}</span></div>
             <div className="small muted" style={{ marginTop: 4 }}>telegram: {cfg.telegram.enabled ? (cfg.telegram.configured ? `enabled · chat ${cfg.telegram.chatId ?? '(unset: message the bot, see server log)'}` : 'enabled but no bot_token') : 'disabled'} {cfg.telegram.configured && <button onClick={() => api.telegramTest().then((r) => toast(r.ok ? 'sent' : r.error ?? 'failed', r.ok ? 'info' : 'error')).catch((e) => toast(e.message, 'error'))}>send test</button>}</div>
           </div>

@@ -11,6 +11,8 @@ let sessionCounter = 0;
 /** Scripted runner: `match(spec)` picks a turn; every run yields init → (tool calls) → assistant → result. */
 export class FakeRunner implements ClaudeRunner {
   public specs: ClaudeRunSpec[] = [];
+  /** Unset by default (so tests see the "no cheap model" path); a test assigns it to script the cheap call. */
+  public brief?: (prompt: string) => Promise<string>;
   constructor(private script: (spec: ClaudeRunSpec) => FakeTurn) {}
 
   start(spec: ClaudeRunSpec): ClaudeRunHandle {

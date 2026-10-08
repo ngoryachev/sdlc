@@ -1,4 +1,4 @@
-import type { ClaudeQuota, EffortLevel, HilRequest, HilResponse, ModelOverrides, PhaseRun, PipelineRun, Task, TaskRole } from '@sdlc/shared';
+import type { ClaudeQuota, EffortLevel, HilRequest, HilResponse, ModelOverrides, PhaseRun, PipelineRun, Task, TaskRole, TranslateLang } from '@sdlc/shared';
 
 export class ApiError extends Error { constructor(public status: number, message: string, public body: unknown) { super(message); } }
 
@@ -59,4 +59,6 @@ export const api = {
   addRepo: (b: { path?: string; slug?: string; gh_user?: string | null }) => req<{ name: string; path: string; ghUser: string | null }>('POST', '/repos', { ...b, gh_user: b.gh_user ?? undefined }),
   branches: (name: string) => req<{ branches: { remote: string | null; branch: string }[]; default: { remote: string | null; branch: string } }>('GET', `/repos/${encodeURIComponent(name)}/branches`),
   telegramTest: () => req<{ ok: boolean; error?: string }>('POST', '/config/telegram/test'),
+  /** Read-only translation of checkpoint texts; the answer has one string per input, in the same order. */
+  translate: (texts: string[], lang: TranslateLang) => req<{ texts: string[] }>('POST', '/translate', { texts, lang }),
 };

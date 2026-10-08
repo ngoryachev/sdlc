@@ -12,6 +12,7 @@ import { tasksRoutes } from './routes/tasks.js';
 import { hilRoutes } from './routes/hil.js';
 import { configRoutes } from './routes/config.js';
 import { reposRoutes } from './routes/repos.js';
+import { translateRoutes } from './routes/translate.js';
 
 export function ensureToken(app: App): string {
   if (!app.config.server.token) {
@@ -70,6 +71,7 @@ export function createHttpApp(app: App) {
   hono.route('/api', hilRoutes(app));
   hono.route('/api', configRoutes(app));
   hono.route('/api', reposRoutes(app));
+  hono.route('/api', translateRoutes(app));
 
   // static UI (built) with SPA fallback
   const uiDist = path.join(sdlcRoot(), 'ui', 'dist');

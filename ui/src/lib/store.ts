@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import type { ClaudeQuota, HilRequest, SdlcEvent, Task } from '@sdlc/shared';
+import type { ClaudeQuota, HilRequest, SdlcEvent, Task, TranslateLang } from '@sdlc/shared';
+import { TRANSLATE_LANGS } from '@sdlc/shared';
 import type { HilRow, TaskRow } from './api.js';
 import { api } from './api.js';
 
@@ -13,6 +14,9 @@ interface State {
   rawEvents: SdlcEvent[];
   quota: ClaudeQuota | null;
   toasts: { id: number; text: string; kind: 'info' | 'error' }[];
+  /** Language the human reads checkpoints in; translation is on demand only, the data stays English. */
+  readingLang: TranslateLang;
+  setReadingLang(l: TranslateLang): void;
   setConn(c: Conn): void;
   loadAll(): Promise<void>;
   applyEvent(e: SdlcEvent): void;
@@ -21,8 +25,16 @@ interface State {
 }
 
 let toastId = 0;
+const LANG_KEY = 'sdlc.readingLang';
+function storedLang(): TranslateLang {
+  try { const v = localStorage.getItem(LANG_KEY); if (v && (TRANSLATE_LANGS as readonly string[]).includes(v)) return v as TranslateLang; } catch { /* private mode */ }
+  return 'ru';
+}
+
 export const useStore = create<State>((set, get) => ({
   conn: 'connecting', tasks: [], hil: [], lastEventId: 0, rawEvents: [], quota: null, toasts: [],
+  readingLang: storedLang(),
+  setReadingLang: (readingLang) => { try { localStorage.setItem(LANG_KEY, readingLang); } catch { /* private mode */ } set({ readingLang }); },
   setConn: (conn) => set({ conn }),
   loadAll: async () => {
     const [t, h, q] = await Promise.all([api.tasks(), api.hil('open'), api.quota().catch(() => ({ quota: null }))]);
