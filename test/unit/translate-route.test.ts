@@ -179,4 +179,56 @@ describe('POST /translate', () => {
     // and pressing Translate again must be able to recover: a blank is not a translation worth caching
     expect((await (await post(hono, body)).json() as { texts: string[] }).texts[1]).not.toBe('');
   });
+  /** The slicer must put a text back together character for character: a lost or doubled separator is a corrupted plan. */
+  it('reassembles a sliced text character for character, whatever it is split on', async () => {
+    const cases: Record<string, string> = {
+      'blank lines': ['# Plan', '## Summary', 'x'.repeat(900), '- a '.repeat(200), '```ts\n' + 'const a = 1;\n'.repeat(120) + '```', 'tail'].join('\n\n'),
+      'single newlines only': Array.from({ length: 200 }, (_, i) => `- line ${i} ${'y'.repeat(20)}`).join('\n'),
+      'spaces only': Array.from({ length: 500 }, (_, i) => `word${i}`).join(' '),
+      'crlf': Array.from({ length: 80 }, (_, i) => `line ${i} ${'c'.repeat(30)}`).join('\r\n'),
+      'runs of blank space between long blocks': '\n\n' + 'q'.repeat(900) + '\n\n   \n\n' + 'w'.repeat(900) + '\n\n',
+    };
+    for (const [name, text] of Object.entries(cases)) {
+      clearTranslationCache();
+      const seen: string[][] = [];
+      // identity "translation": whatever comes back must be the original, separators and all
+      const hono = mount(async (p) => { const asked = JSON.parse(p.slice(p.indexOf('\n["') + 1)) as string[]; seen.push(asked); return JSON.stringify(asked); });
+      const res = await post(hono, { texts: [text], lang: 'ru' });
+      expect(res.status, name).toBe(200);
+      const got = (await res.json() as { texts: string[] }).texts;
+      expect(got, name).toHaveLength(1);
+      expect(got[0], name).toBe(text);
+      // and nothing blank was ever sent to the model
+      expect(seen.flat().filter((x) => !x.trim()), name).toEqual([]);
+    }
+  });
+
+  /** No blank line, no newline, no space: there is nothing to slice on, so it goes whole rather than cut mid-token. */
+  it('sends a text with no boundary in one piece instead of cutting it', async () => {
+    const seen: string[][] = [];
+    const blob = 'z'.repeat(4000);
+    const res = await post(mount(echo(seen)), { texts: [blob], lang: 'ru' });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { texts: string[] }).texts).toEqual([`ru:${blob}`]);
+    expect(seen).toEqual([[blob]]);
+  });
+
+  /** Calls run a few at a time: concurrency must not reorder or lose an answer. */
+  it('keeps count and order when the request needs many parallel calls', async () => {
+    const seen: string[][] = [];
+    const texts = [
+      ...Array.from({ length: 60 }, (_, i) => `finding ${i} ${'z'.repeat(60)}`),
+      ['# Plan', 'a'.repeat(1400), 'b'.repeat(1400)].join('\n\n'),
+      '',
+      ...Array.from({ length: 60 }, (_, i) => `note ${i}`),
+    ];
+    const res = await post(mount(echo(seen)), { texts, lang: 'ru' });
+    expect(res.status).toBe(200);
+    const got = (await res.json() as { texts: string[] }).texts;
+    expect(got).toHaveLength(texts.length);
+    expect(got[60]).toBe(`ru:# Plan\n\n${'a'.repeat(1400)}\n\nru:${'b'.repeat(1400)}`);
+    expect(got[61]).toBe('');
+    expect(got.filter((x, i) => i !== 60 && i !== 61)).toEqual(texts.filter((x, i) => i !== 60 && i !== 61).map((x) => `ru:${x}`));
+    expect(seen.length).toBeGreaterThan(3);   // more batches than the pool runs at once
+  });
 });
