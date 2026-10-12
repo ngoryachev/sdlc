@@ -1,7 +1,7 @@
 name: standard
 description: "clarify -> refine(HIL) -> plan -> approve_plan(HIL) -> implement -> self_check -> commit -> test(agent) -> PR -> review -> approve_result(HIL) -> publish -> qa(best effort). Any slice of it can be run as a task."
 defaults:
-  setting_sources: [project]
+  setting_sources: [user, project, local]
   effort: high
 
 phases:

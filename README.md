@@ -111,7 +111,8 @@ Base ref: `--base origin/main` or a local branch such as `--base feature/x` (a n
 - Every phase runs in the task's worktree; `.sdlc/` (plan, transcripts) is excluded from git.
 - A PreToolUse hook denies writes outside the worktree / `.git`, enforces `write_scope`, and blocks `git push`, `git commit --amend`, `sudo`, `rm -rf /|~`, `curl | sh` in every mode. `Bash(git commit*)`/`Bash(git push*)` are additionally denied in implement phases; the orchestrator commits.
 - Per-phase `max_turns`/`max_budget_usd`, task-level `task_budget_usd` (escalates to a human), `max_parallel_tasks`.
-- Credentials-looking env vars (`*TOKEN*`, `*SECRET*`, `AWS_*`, `GH_*`) are not passed to Claude/shell phases (`env_allow` whitelists).
+- Claude/shell phases get the server's whole environment (API keys for skills and MCP servers included, e.g. from `~/.sdlc/env`) except sdlc's own `SDLC_*` settings (`env_allow` passes a named one through).
+- Claude phases load settings, skills, plugins and MCP servers like an interactive `claude` (`setting_sources: [user, project, local]`); the repo's `.mcp.json` servers start without the approval prompt.
 
 ## Tests
 
@@ -124,4 +125,4 @@ Base ref: `--base origin/main` or a local branch such as `--base feature/x` (a n
 
 - **Auth:** `gh auth login`; for Claude either log in once with `claude`, or put `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on your laptop) into `/etc/sdlc.env` (`~/.sdlc/env` for the user unit). Never set `ANTHROPIC_API_KEY` there unless you want API billing.
 - **Access:** simplest is a VPN (Tailscale) with `server.host: 0.0.0.0` and no proxy. For a public host use `deploy/Caddyfile` (HTTPS + basic auth, long random password) plus `deploy/fail2ban/` (bans IPs after 5 × 401), and keep `token_in_url: false`: the sdlc token is then entered once per device in the login form and never travels in URLs or Telegram links.
-- **Blast radius to keep in mind:** whoever can open the UI can run code on this server as the sdlc user with its `gh` and Claude credentials. Claude phases run with full permissions (Bash, network, reads anywhere); only Write/Edit outside the task worktree and a short list of dangerous commands are blocked by hooks, secrets-looking env vars are not passed to phases, and PR comments are only ingested from repository collaborators by default.
+- **Blast radius to keep in mind:** whoever can open the UI can run code on this server as the sdlc user with its `gh` and Claude credentials. Claude phases run with full permissions (Bash, network, reads anywhere); only Write/Edit outside the task worktree and a short list of dangerous commands are blocked by hooks, phases get the server's environment except `SDLC_*`, and PR comments are only ingested from repository collaborators by default.

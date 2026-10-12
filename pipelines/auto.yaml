@@ -1,7 +1,7 @@
 name: auto
 description: "No human checkpoints (for tests and truly trivial tasks): implement -> self_check -> commit -> test(agent) -> review -> qa(best effort)"
 defaults:
-  setting_sources: [project]
+  setting_sources: [user, project, local]
   effort: high
 phases:
   - name: implement

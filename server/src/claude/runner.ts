@@ -78,16 +78,13 @@ export function userMessage(text: string): SDKUserMessage {
   return { type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null };
 }
 
-const SECRET_ENV = /(TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_KEY)/i;
-const SECRET_PREFIX = /^(AWS_|GH_|GITHUB_|SDLC_|NPM_TOKEN)/;
-const KEEP_ENV = /^(ANTHROPIC_|CLAUDE_)/;
+const SDLC_ENV = /^SDLC_/;
 
-/** Copy of process.env without obvious credentials. Claude Code's own vars are kept. */
+/** Copy of process.env for a phase. Everything is passed (API keys for MCP servers and skills included) except sdlc's own SDLC_* settings. */
 export function filteredEnv(extra?: Record<string, string | undefined>, allow: string[] = []): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (allow.includes(k) || KEEP_ENV.test(k)) { out[k] = v; continue; }
-    if (SECRET_ENV.test(k) || SECRET_PREFIX.test(k)) continue;
+    if (SDLC_ENV.test(k) && !allow.includes(k)) continue;
     out[k] = v;
   }
   return { ...out, ...(extra ?? {}) };
@@ -102,6 +99,34 @@ process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
   if (code === 'CLAUDE_SDK_CAN_USE_TOOL_SHADOWED' || msg.includes('CLAUDE_SDK_CAN_USE_TOOL_SHADOWED') || msg.includes('SQLite is an experimental feature')) return;
   (origEmitWarning as (...a: unknown[]) => void)(warning, ...rest);
 }) as typeof process.emitWarning;
+
+/** SDK options of a phase session. Full Claude Code setup: user, project and local settings, the repo's .mcp.json servers approved. */
+export function sdkOptions(spec: ClaudeRunSpec, abortController: AbortController): Options {
+  return {
+    cwd: spec.cwd,
+    permissionMode: spec.permissionMode,
+    allowDangerouslySkipPermissions: spec.permissionMode === 'bypassPermissions' ? true : undefined,
+    allowedTools: spec.allowedTools,
+    disallowedTools: spec.disallowedTools,
+    systemPrompt: spec.systemAppend
+      ? { type: 'preset', preset: 'claude_code', append: spec.systemAppend }
+      : undefined,
+    outputFormat: spec.outputSchema ? { type: 'json_schema', schema: spec.outputSchema } : undefined,
+    maxTurns: spec.maxTurns,
+    maxBudgetUsd: spec.maxBudgetUsd,
+    model: spec.model,
+    effort: spec.effort,
+    settingSources: spec.settingSources ?? ['user', 'project', 'local'],
+    settings: { enableAllProjectMcpServers: true },   // the repo's .mcp.json servers start without the interactive approval
+    resume: spec.resume,
+    canUseTool: spec.canUseTool,
+    hooks: buildHooks({ cwd: spec.cwd, writeScope: spec.writeScope, onToolUse: spec.onToolUse }),
+    env: filteredEnv(spec.env),
+    includePartialMessages: spec.includePartialMessages ?? false,
+    abortController,
+    stderr: spec.onStderr,
+  };
+}
 
 export class SdkClaudeRunner implements ClaudeRunner {
   private modelCache: { at: number; list: ModelChoice[] } | null = null;
@@ -152,30 +177,7 @@ export class SdkClaudeRunner implements ClaudeRunner {
     input.push(userMessage(spec.prompt));
     const abortController = new AbortController();
 
-    const options: Options = {
-      cwd: spec.cwd,
-      permissionMode: spec.permissionMode,
-      allowDangerouslySkipPermissions: spec.permissionMode === 'bypassPermissions' ? true : undefined,
-      allowedTools: spec.allowedTools,
-      disallowedTools: spec.disallowedTools,
-      systemPrompt: spec.systemAppend
-        ? { type: 'preset', preset: 'claude_code', append: spec.systemAppend }
-        : undefined,
-      outputFormat: spec.outputSchema ? { type: 'json_schema', schema: spec.outputSchema } : undefined,
-      maxTurns: spec.maxTurns,
-      maxBudgetUsd: spec.maxBudgetUsd,
-      model: spec.model,
-      effort: spec.effort,
-      settingSources: spec.settingSources ?? ['project'],
-      resume: spec.resume,
-      canUseTool: spec.canUseTool,
-      hooks: buildHooks({ cwd: spec.cwd, writeScope: spec.writeScope, onToolUse: spec.onToolUse }),
-      env: filteredEnv(spec.env),
-      includePartialMessages: spec.includePartialMessages ?? false,
-      abortController,
-      stderr: spec.onStderr,
-      strictMcpConfig: true,
-    };
+    const options = sdkOptions(spec, abortController);
 
     const q: Query = query({ prompt: input, options });
 

@@ -81,8 +81,8 @@ export const PipelineSchema = z.object({
     effort: EffortSchema.optional(),
     max_turns: z.number().int().positive().optional(),
     max_budget_usd: z.number().positive().optional(),
-    setting_sources: z.array(z.enum(['user', 'project', 'local'])).default(['project']),
-  }).strict().default({ setting_sources: ['project'] }),
+    setting_sources: z.array(z.enum(['user', 'project', 'local'])).default(['user', 'project', 'local']),
+  }).strict().default({ setting_sources: ['user', 'project', 'local'] }),
   /** Preset: take the phases (and defaults) of another pipeline in the same directory; see `segment`. */
   extends: z.string().optional(),
   /** Default slice of the phases a task runs (both ends inclusive); a task may override it. */

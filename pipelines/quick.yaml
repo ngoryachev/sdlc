@@ -1,7 +1,7 @@
 name: quick
 description: "clarify -> refine(HIL) -> implement (plan inline) -> self_check -> commit -> test(agent) -> PR -> review -> approve_result(HIL) -> publish -> qa(best effort)"
 defaults:
-  setting_sources: [project]
+  setting_sources: [user, project, local]
   effort: high
 
 phases:
