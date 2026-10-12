@@ -8,7 +8,7 @@ phases:
     type: claude
     prompt: prompts/implement_direct.md
     permission_mode: bypassPermissions
-    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch]
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)"]
     max_turns: 50
     max_budget_usd: 4
     on_fail: { retry: 1, then: fail }
@@ -18,7 +18,7 @@ phases:
     prompt: prompts/self_check.md
     session: { resume: implement }
     permission_mode: bypassPermissions
-    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch]
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)"]
     max_turns: 30
     max_budget_usd: 3
     on_fail: { then: continue }      # best effort: implement's own work stands if the check fails
@@ -32,7 +32,7 @@ phases:
     prompt: prompts/test.md
     session: fresh
     permission_mode: bypassPermissions
-    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch, WebFetch]
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)"]
     output_schema: schemas/test.json
     fail_if: "structured.verdict == 'fail'"
     max_turns: 40
@@ -55,7 +55,7 @@ phases:
     prompt: prompts/review.md
     mode: "{{task.review_mode}}"
     permission_mode: bypassPermissions
-    disallowed_tools: [Write, Edit, NotebookEdit, Agent, WebSearch, WebFetch]
+    write_scope: [".sdlc/**"]
     output_schema: schemas/review.json
     fail_if: "structured.verdict == 'request_changes'"
     max_turns: 20
@@ -71,7 +71,7 @@ phases:
     prompt: prompts/qa.md
     session: fresh
     permission_mode: bypassPermissions
-    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch, WebFetch]
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)"]
     write_scope: [".sdlc/**"]
     output_schema: schemas/qa.json
     max_turns: 40

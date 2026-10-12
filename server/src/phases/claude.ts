@@ -70,7 +70,6 @@ export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
       effort: chosen.effort,
       settingSources: spec.defaults.setting_sources,
       writeScope: phase.write_scope,
-      readAllow: repoConfig.read_allow.map((d) => path.resolve(task.repoPath, d)),
       canUseTool: ctx.canUseTool?.(pr),
       env: {},
       onToolUse: ({ toolName, toolInput }) => events.emit('phase.progress', { phaseRunId: pr.id, toolName, summary: toolSummary(toolName, (toolInput ?? {}) as Record<string, unknown>) }, { taskId: task.id, phaseRunId: pr.id }),

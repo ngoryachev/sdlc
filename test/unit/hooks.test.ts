@@ -57,18 +57,9 @@ describe('buildHooks write guard', () => {
   });
 });
 
-describe('buildHooks read guard', () => {
-  const hooks = buildHooks({ cwd: '/wt', readAllow: ['/shared'] });
-  const guard = hooks.PreToolUse![1]!.hooks[0]!;
-  const decision = async (tool: string, input: Record<string, unknown>) => ((await guard({ hook_event_name: 'PreToolUse', tool_name: tool, tool_input: input, tool_use_id: 't', session_id: 's', transcript_path: '', cwd: '/wt' } as never, 't', { signal: new AbortController().signal })) as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision;
-  it('allows inside worktree and read_allow dirs, denies elsewhere', async () => {
-    expect(await decision('Read', { file_path: '/wt/src/a.ts' })).toBeUndefined();
-    expect(await decision('Read', { file_path: 'src/a.ts' })).toBeUndefined();
-    expect(await decision('Grep', { pattern: 'x' })).toBeUndefined();
-    expect(await decision('Grep', { pattern: 'x', path: '/wt' })).toBeUndefined();
-    expect(await decision('Read', { file_path: '/shared/fixtures.json' })).toBeUndefined();
-    expect(await decision('Read', { file_path: '/home/u/.config/gh/hosts.yml' })).toBe('deny');
-    expect(await decision('Glob', { pattern: '*', path: '/etc' })).toBe('deny');
-    expect(await decision('Read', { file_path: '../other/secret' })).toBe('deny');
+describe('buildHooks reads', () => {
+  it('does not confine reads to the worktree: phases may look at other checkouts and copy what they need', () => {
+    const matchers = buildHooks({ cwd: '/wt' }).PreToolUse!.map((m) => m.matcher ?? '');
+    expect(matchers.some((m) => /\b(Read|Glob|Grep)\b/.test(m))).toBe(false);
   });
 });

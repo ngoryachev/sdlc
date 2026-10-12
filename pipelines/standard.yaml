@@ -8,9 +8,8 @@ phases:
   - name: clarify
     type: claude
     prompt: prompts/clarify.md
-    permission_mode: dontAsk
-    allowed_tools: [Read, Glob, Grep, "Bash(git log*)", "Bash(git status*)", "Bash(ls*)", "Bash(rg *)", "Bash(cat *)"]
-    disallowed_tools: [Write, Edit, NotebookEdit, Agent, WebSearch, WebFetch]
+    permission_mode: bypassPermissions
+    write_scope: [".sdlc/**"]
     output_schema: schemas/clarify.json
     max_turns: 15
     max_budget_usd: 0.5
@@ -23,9 +22,7 @@ phases:
   - name: plan
     type: claude
     prompt: prompts/plan.md
-    permission_mode: dontAsk
-    allowed_tools: [Read, Glob, Grep, WebFetch, "Bash(git log*)", "Bash(git diff*)", "Bash(git status*)", "Bash(ls*)", "Bash(rg *)", "Bash(find *)", "Bash(cat *)"]
-    disallowed_tools: [Edit, NotebookEdit, Agent]
+    permission_mode: bypassPermissions
     write_scope: [".sdlc/**"]
     artifacts: { plan_md: .sdlc/plan.md }
     max_turns: 40
@@ -41,7 +38,7 @@ phases:
     prompt: prompts/implement.md
     session: fresh
     permission_mode: bypassPermissions
-    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch]
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)"]
     max_turns: 80
     max_budget_usd: 8
     on_fail: { retry: 1, then: hil }
@@ -52,7 +49,7 @@ phases:
     prompt: prompts/self_check.md
     session: { resume: implement }
     permission_mode: bypassPermissions
-    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch]
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)"]
     max_turns: 30
     max_budget_usd: 3
     on_fail: { then: continue }      # best effort: implement's own work stands if the check fails
@@ -67,7 +64,7 @@ phases:
     prompt: prompts/test.md
     session: fresh
     permission_mode: bypassPermissions
-    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch, WebFetch]
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)"]
     output_schema: schemas/test.json
     fail_if: "structured.verdict == 'fail'"
     max_turns: 40
@@ -100,7 +97,7 @@ phases:
     mode: "{{task.review_mode}}"
     session: fresh
     permission_mode: bypassPermissions
-    disallowed_tools: [Write, Edit, NotebookEdit, Agent, WebSearch, WebFetch]
+    write_scope: [".sdlc/**"]
     output_schema: schemas/review.json
     fail_if: "structured.verdict == 'request_changes'"
     max_turns: 30
@@ -129,7 +126,7 @@ phases:
     prompt: prompts/qa.md
     session: fresh
     permission_mode: bypassPermissions
-    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)", WebSearch, WebFetch]
+    disallowed_tools: ["Bash(git push*)", "Bash(git commit*)", "Bash(git checkout*)", "Bash(git reset*)", "Bash(sudo *)"]
     write_scope: [".sdlc/**"]
     output_schema: schemas/qa.json
     max_turns: 40

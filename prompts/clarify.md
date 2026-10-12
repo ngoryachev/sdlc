@@ -6,7 +6,7 @@ A developer wants to make this change in the current repository:
 {{task.prompt}}
 ---
 
-Briefly explore the repository (read-only) to understand what the request touches. Then decide whether anything is genuinely ambiguous — something where two reasonable implementations would differ in a way the developer would care about. Do not ask about things you can decide yourself or find in the code.
+Briefly explore the repository to understand what the request touches (do not change source files). Then decide whether anything is genuinely ambiguous — something where two reasonable implementations would differ in a way the developer would care about. Do not ask about things you can decide yourself or find in the code.
 
 Return:
 - `title`: a short task title (≤ 60 chars, imperative, no trailing period), e.g. "Validate add() arguments".
