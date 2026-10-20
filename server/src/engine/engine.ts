@@ -751,6 +751,41 @@ export class Engine {
     return hil;
   }
 
+  /**
+   * On demand (button / HTTP): send a finished task back to its implementer with a text, without going through GitHub.
+   * The way out of a pull request is a comment, but sdlc never reads the comments of the account it works with;
+   * and a task that finished without a PR has no way back at all. This is that way: same route as `pr_feedback`, no `gh`.
+   */
+  async requestChanges(taskId: string, text: string): Promise<{ phase: string }> {
+    return this.withLock(taskId, async () => {
+      const { store, events } = this.d;
+      const task = store.getTask(taskId);
+      if (!task) throw new HttpError(404, 'task not found');
+      if (!['pr_open', 'succeeded'].includes(task.status)) throw new HttpError(409, `task is ${task.status}; changes can be requested only on a finished task (pr_open or succeeded)`);
+      if (this.roleOfTask(taskId) === 'reviewer') throw new HttpError(409, 'this task only reviews the pull request; it has no implementing phase to send changes to');
+      if (store.openHilForTask(taskId).length) throw new HttpError(409, 'a human request is already open for this task; answer it instead');
+      const message = text.trim();
+      if (!message) throw new HttpError(400, 'the change request is empty');
+      await this.ensureWorktree(task);   // the worktree may have been cleaned up after delivery
+
+      const run = store.latestRunForTask(taskId)!;
+      const { spec, seg } = snapshot(run);
+      const target = targetPhaseFor(spec, seg);
+      if (!target) throw new HttpError(409, 'no phase to send this task back to');
+
+      run.pendingResume = { phase: target, feedback: `The developer requested changes to this task (outside the pull request).\n\n${message}\n\nAddress this, keep the change minimal, then stop.` };
+      run.returnTo = null;
+      run.cursor = phaseIndex(spec, target);
+      run.status = 'running';
+      this.saveRun(run);
+      this.setTaskStatus(task, 'running');
+      task.updatedAt = nowIso(); store.updateTask(task);
+      events.emit('task.updated', { task, change: `changes requested → ${target}` }, { taskId });
+      void this.advance(taskId);
+      return { phase: target };
+    });
+  }
+
   /** On demand (button / CLI): read new PR comments via gh and open a pr_feedback HIL. */
   async pollPrFeedback(taskId: string): Promise<{ new: number; hilId?: string; state?: string }> {
     return this.withLock(taskId, () => this.pollPrFeedbackInner(taskId));
@@ -1002,6 +1037,14 @@ async function runSetup(repoConfig: RepoConfig, cwd: string): Promise<void> {
 }
 
 export class HttpError extends Error { constructor(public status: number, message: string, public extra: Record<string, unknown> = {}) { super(message); } }
+
+/** Where a change request goes: `implement` when the segment runs it, otherwise the last claude phase of the segment (same choice as the HIL `backTarget`). */
+function targetPhaseFor(spec: PipelineSpec, seg: { fromIdx: number; toIdx: number }): string | null {
+  const impl = spec.phases.findIndex((p) => p.name === 'implement');
+  if (impl >= seg.fromIdx && impl <= seg.toIdx) return spec.phases[impl]!.name;
+  for (let i = seg.toIdx; i >= seg.fromIdx; i--) if (spec.phases[i]!.type === 'claude') return spec.phases[i]!.name;
+  return null;
+}
 
 export function snapshot(run: PipelineRun): { spec: PipelineSpec; loaded: LoadedPipeline; seg: { fromIdx: number; toIdx: number } } {
   const s = run.pipelineSnapshot as { spec: unknown; baseDir: string; filePath: string; from?: string; to?: string };
