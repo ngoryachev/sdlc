@@ -132,4 +132,81 @@ describe('request changes by hand (fake runner + fake GitHub)', () => {
     expect(fs.existsSync(path.join(task.worktreePath, '.git'))).toBe(true);
     expect(app.store.getTask(task.id)!.status).toBe('succeeded');
   });
+  it('fix-pr: a task that never ran implement takes the text as a fresh brief and pushes into the pull request', async () => {
+    const dir = tmpDir('sdlc-rc-fixpr-');
+    const { repo, bare } = makeRemoteRepo(dir, { 'a.txt': 'x\n' });
+    const gh = new FakeGitHub(bare);
+    // a pull request for a branch that is already on the remote, as `sdlc new --pr n --pipeline fix-pr` expects
+    sh(repo, ['checkout', '-q', '-b', 'mine']);
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'y\n');
+    sh(repo, ['commit', '-q', '-am', 'mine: work']);
+    sh(repo, ['push', '-q', 'origin', 'mine']);
+    sh(repo, ['checkout', '-q', 'main']); sh(repo, ['branch', '-q', '-D', 'mine']);
+    const n = gh.openPr('mine', 'main', 'My change', 'body');
+    const prompts: string[] = [];
+    const app = testApp(dir, new FakeRunner((spec) => ({
+      act: () => {
+        prompts.push(spec.prompt);
+        if (spec.prompt.includes('Phase: test')) return { structured: PASS };
+        if (spec.prompt.includes('Phase: self_check')) return { text: 'checked' };
+        fs.appendFileSync(path.join(spec.cwd, 'a.txt'), 'handmade\n');
+        return { text: 'done' };
+      },
+    })), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'fix-pr', prNumber: n });
+    await app.engine.settled(task.id);                 // the first poll finds no comments; the task just waits
+    expect(app.store.getTask(task.id)!.status).toBe('pr_open');
+    expect(prompts).toEqual([]);
+
+    // a text that looks like a template and like a regexp replacement must reach the phase verbatim
+    const text = 'drop {{task.prompt}} and keep $& as it is';
+    expect(await app.engine.requestChanges(task.id, text)).toEqual({ phase: 'implement' });
+    await app.engine.advance(task.id);
+
+    const impl = app.store.phaseRunsForTask(task.id).filter((p) => p.phaseName === 'implement');
+    expect(impl).toHaveLength(1);
+    expect(impl[0]!.resumedFromSessionId).toBeNull();   // no session of this phase yet: the phase prompt plus the text
+    expect(prompts[0]).toContain('Phase: implement');
+    expect(prompts[0]).toContain(text);
+    // the segment ends at the push: no review, no checkpoint, and the pull request is the one that was already there
+    expect(app.store.phaseRunsForTask(task.id).filter((p) => p.status === 'succeeded').map((p) => p.phaseName)).toEqual(['implement', 'self_check', 'commit_impl', 'test', 'commit_tests', 'pr']);
+    expect(app.store.getTask(task.id)!.status).toBe('pr_open');
+    expect(gh.prs.size).toBe(1);
+    expect(gh.calls).toEqual([]);                      // nothing on GitHub: no second PR and no "addressed the review comments"
+    expect(sh(bare, ['show', 'mine:a.txt'])).toContain('handmade');
+  });
+
+  it('two rounds in a row continue the same implement session, and neither touches the task prompt', async () => {
+    const dir = tmpDir('sdlc-rc-twice-');
+    const repo = makeRepo(dir, { 'a.txt': 'x\n' });
+    const prompts: string[] = [];
+    const app = testApp(dir, new FakeRunner((spec) => ({
+      act: () => {
+        prompts.push(spec.prompt);
+        if (spec.prompt.includes('Phase: test')) return { structured: PASS };
+        if (spec.prompt.includes('Phase: review')) return { structured: APPROVE };
+        if (spec.prompt.includes('Phase: QA')) return { structured: QA_OK };
+        fs.appendFileSync(path.join(spec.cwd, 'a.txt'), `round ${prompts.length}\n`);
+        return { text: 'ok' };
+      },
+    })));
+    const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'auto', baseRemote: null });
+    await app.engine.advance(task.id);
+    const promptBefore = app.store.getTask(task.id)!.refinedPrompt;
+
+    // `{{nope}}` is a canary: were the text rendered as a template anywhere, the phase would fail on an unknown variable
+    for (const text of ['first {{nope}} round', 'second round']) {
+      expect(await app.engine.requestChanges(task.id, text)).toEqual({ phase: 'implement' });
+      await app.engine.advance(task.id);
+      expect(app.store.getTask(task.id)!.status).toBe('succeeded');
+      expect(prompts.filter((p) => p.includes(text))).toHaveLength(1);
+    }
+    const impl = app.store.phaseRunsForTask(task.id).filter((p) => p.phaseName === 'implement');
+    expect(impl).toHaveLength(3);
+    expect(impl[1]!.resumedFromSessionId).toBe(impl[0]!.sessionId);
+    expect(impl[2]!.resumedFromSessionId).toBe(impl[1]!.sessionId);
+    // the request is feedback for the implementer only: the prompt that test/review/qa read stays as the human wrote it
+    expect(app.store.getTask(task.id)!.refinedPrompt).toBe(promptBefore);
+  });
 });

@@ -8,6 +8,7 @@ import { makeRemoteRepo, makeRepo, sh, testApp, tmpDir } from '../helpers.js';
 import type { App } from '../../server/src/app.js';
 import { HttpError } from '../../server/src/engine/engine.js';
 import { tasksRoutes } from '../../server/src/http/routes/tasks.js';
+import { newHilRequest } from '../../server/src/phases/hil.js';
 
 const PASS = { verdict: 'pass', summary: 'ok', commands: [], tests_added: [], failures: [], notes: '' };
 const QA_OK = { verdict: 'pass', summary: 'works', checks: [], issues: [] };
@@ -92,5 +93,24 @@ describe('POST /tasks/:id/request-changes', () => {
     const res = await post(mount(app), reviewer.id, { text: 'fix it yourself' });
     expect(res.status).toBe(409);
     expect(await err(res)).toMatch(/only reviews/);
+  });
+  it('refuses a task with a question already waiting, and one that is already merged', async () => {
+    const { app, task } = await finishedTask('sdlc-rc-route-guards-');
+    const hono = mount(app);
+
+    // an open request first: a second instruction on top of it would be answered by nobody
+    const hil = newHilRequest({ taskId: task.id, phaseRunId: null, kind: 'question', title: 'q', summary: 'q', payload: { kind: 'question', questions: [] } });
+    app.store.insertHil(hil);
+    let res = await post(hono, task.id, { text: 'now' });
+    expect(res.status).toBe(409);
+    expect(await err(res)).toMatch(/already open/);
+    hil.status = 'answered'; app.store.updateHil(hil);
+
+    // merged (or closed): the task is delivered for good, there is nothing to send back
+    const t = app.store.getTask(task.id)!; t.status = 'merged'; app.store.updateTask(t);
+    res = await post(hono, task.id, { text: 'now' });
+    expect(res.status).toBe(409);
+    expect(await err(res)).toMatch(/task is merged/);
+    expect(app.store.getTask(task.id)!.status).toBe('merged');
   });
 });
