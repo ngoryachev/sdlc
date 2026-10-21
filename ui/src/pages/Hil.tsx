@@ -54,7 +54,7 @@ export function HilPage() {
   const [tr, setTr] = useState<Record<string, string> | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const [translating, setTranslating] = useState(false);
-  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? 'comment'); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => toast(e.message, 'error')); }, [id]);
+  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? defaultReviewEvent(r.payload)); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => toast(e.message, 'error')); }, [id]);
   useEffect(() => { if (h && h.status === 'open' && !openList.some((x) => x.id === h.id)) void api.hilOne(id).then(setH); }, [openList, h?.id]);
   useEffect(() => { setTr(null); setShowOriginal(false); setTranslating(false); }, [readingLang]);
   // j/k can move to the next checkpoint while a translation is in flight: that answer belongs to the old one
@@ -130,7 +130,14 @@ export function HilPage() {
         <span className="muted">for reading only: diff, logs, commands and editable fields stay in English, nothing is saved or sent</span>
       </div>
       {h.status !== 'open' && <div className="chip" style={{ marginBottom: 10 }}>{h.status}{h.response ? ` · ${h.response.decision} via ${h.answeredVia}` : ''}</div>}
-      <Payload p={p} edited={edited} setEdited={setEdited} answers={answers} setAnswers={setAnswers} actions={actions} setActions={setActions} commentActions={commentActions} setCommentActions={setCommentActions} reviewEvent={reviewEvent} setReviewEvent={setReviewEvent} readOnly={h.status !== 'open'} t={t} />
+      <Payload p={p} edited={edited} setEdited={setEdited} answers={answers} setAnswers={setAnswers} actions={actions} setActions={setActions} commentActions={commentActions} setCommentActions={setCommentActions} readOnly={h.status !== 'open'} t={t} />
+      {p.kind === 'approve_result' && p.role === 'reviewer' && p.canPost && (
+        <div className="row small" style={{ marginTop: 10, gap: 6, flexWrap: 'wrap' }}>
+          <span className="muted">Published on the pull request as</span>
+          <select style={{ width: 'auto' }} value={reviewEvent} disabled={h.status !== 'open'} onChange={(e) => setReviewEvent(e.target.value as ReviewEvent)}><option value="comment">comment</option><option value="approve">approve</option><option value="request_changes">request changes</option></select>
+          <span className="muted">— the GitHub review event; approve and request changes are published even with no findings and no text</span>
+        </div>
+      )}
       {h.status === 'open' && (
         <>
           {h.allowedDecisions.some((d) => ['request_changes', 'resume', 'deny', 'approve'].includes(d)) && h.kind !== 'question' && (
@@ -160,10 +167,10 @@ function ArmedAbort({ onClick, disabled }: { onClick: () => void; disabled: bool
   return <button className={`danger ${armed ? 'confirm' : ''}`} disabled={disabled} onClick={() => { if (armed) onClick(); else setArmed(true); }}>{armed ? 'Confirm abort?' : 'Abort task'}</button>;
 }
 
-function Payload({ p, edited, setEdited, answers, setAnswers, actions, setActions, commentActions, setCommentActions, reviewEvent, setReviewEvent, readOnly, t }: {
+function Payload({ p, edited, setEdited, answers, setAnswers, actions, setActions, commentActions, setCommentActions, readOnly, t }: {
   p: HilPayload; edited: { prompt?: string; planMd?: string; title?: string }; setEdited: (e: { prompt?: string; planMd?: string; title?: string }) => void; answers: Record<string, string>; setAnswers: (a: Record<string, string>) => void;
   actions: Record<string, FindingAction>; setActions: (a: Record<string, FindingAction>) => void; commentActions: Record<string, 'fix' | 'skip'>; setCommentActions: (a: Record<string, 'fix' | 'skip'>) => void;
-  reviewEvent: ReviewEvent; setReviewEvent: (e: ReviewEvent) => void; readOnly: boolean;
+  readOnly: boolean;
   /** Applied on display only: every value the human sends back is taken from the untranslated payload. */
   t: (s: string) => string;
 }) {
@@ -221,7 +228,7 @@ function Payload({ p, edited, setEdited, answers, setAnswers, actions, setAction
           {tab === 'qa' && p.qa && <div><Markdown text={t(p.qa.summary)} /><ul>{p.qa.checks.map((c, i) => <li key={i}><span className={`chip ${c.result === 'failed' ? 'failed' : ''}`}>{c.result}</span> {t(c.name)} <span className="small muted">{t(c.method)}</span></li>)}</ul>{p.qa.issues.length > 0 && <ul>{p.qa.issues.map((f, i) => <li key={i}><span className={`chip ${f.severity === 'blocking' ? 'failed' : ''}`}>{f.severity}</span> <b>{t(f.title)}</b>{p.focus === 'qa' && <Pick k={`qa:${i}`} canFix={p.canFix} canPost={false} />}<div className="small">{t(f.description)}</div></li>)}</ul>}</div>}
           {tab === 'findings' && (
             <div>
-              {p.focus === 'review' && (p.review?.findings.length ?? 0) > 0 && <div className="small muted" style={{ marginBottom: 6 }}>{p.canFix ? 'fix: goes back to the implementer · ' : ''}{p.canPost ? 'post: published on the pull request · ' : ''}skip: nothing happens{p.canPost && p.role === 'reviewer' && <> · published as <select style={{ width: 'auto', display: 'inline-block' }} value={reviewEvent} disabled={readOnly} onChange={(e) => setReviewEvent(e.target.value as ReviewEvent)}><option value="comment">comment</option><option value="approve">approve</option><option value="request_changes">request changes</option></select></>}</div>}
+              {p.focus === 'review' && (p.review?.findings.length ?? 0) > 0 && <div className="small muted" style={{ marginBottom: 6 }}>{p.canFix ? 'fix: goes back to the implementer · ' : ''}{p.canPost ? 'post: published on the pull request · ' : ''}skip: nothing happens</div>}
               <ul>{(p.review?.findings ?? []).map((f, i) => <li key={i}><span className={`chip ${f.severity === 'blocking' ? 'failed' : ''}`}>{f.severity}</span> <b>{t(f.title)}</b>{f.file ? <span className="mono small"> {f.file}{f.line ? `:${f.line}` : ''}</span> : null}{p.focus === 'review' && <Pick k={`review:${i}`} canFix={p.canFix} canPost={p.canPost} />}<div className="small">{t(f.description)}</div>{f.suggestion && <div className="small muted">→ {t(f.suggestion)}</div>}</li>)}{!p.review?.findings.length && <li className="muted">none</li>}</ul>
             </div>
           )}
@@ -241,6 +248,11 @@ function Payload({ p, edited, setEdited, answers, setAnswers, actions, setAction
     case 'escalation':
       return <div><div><b>{p.phaseName}</b> failed{p.resultSubtype ? ` (${p.resultSubtype})` : ''}:</div><pre className="log">{t(p.error)}</pre></div>;
   }
+}
+
+/** A clean review has nothing to argue about: approve it on GitHub unless the human picks otherwise. */
+function defaultReviewEvent(p: HilPayload): ReviewEvent {
+  return p.kind === 'approve_result' && p.focus === 'review' && !p.review?.findings.length ? 'approve' : 'comment';
 }
 
 /** What the checkpoint proposes before the human touches anything: the implementer fixes real defects, a reviewer posts everything. */

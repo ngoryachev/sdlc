@@ -109,6 +109,26 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     expect(app.store.getTask(task.id)!.status).toBe('pr_open');
   });
 
+  it('review-pr: a clean review is approved on GitHub with nothing marked to post', async () => {
+    const dir = tmpDir('sdlc-seg-approve-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: { verdict: 'approve', summary: 'looks good', findings: [] } }) })), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    expect(hil.payload.kind === 'approve_result' && [hil.payload.review?.findings.length, hil.payload.canPost, hil.payload.role]).toEqual([0, true, 'reviewer']);
+
+    // no findings, no review text: the event alone is enough to publish
+    await app.engine.respondHil(hil.id, { decision: 'approve', reviewEvent: 'approve' }, 'web');
+    await app.engine.advance(task.id);
+    expect(gh.reviews).toEqual([{ number: n, event: 'APPROVE', body: '', comments: [] }]);
+    expect(app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'publish')!.status).toBe('succeeded');
+    expect(app.store.getTask(task.id)!.status).toBe('pr_open');
+  });
+
   it('fix-pr: waits for review comments, the human picks which to fix, the fix is pushed; new comments are polled', async () => {
     const dir = tmpDir('sdlc-seg-author-');
     const { repo, bare } = makeRemoteRepo(dir);
