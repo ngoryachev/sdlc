@@ -142,4 +142,37 @@ describe('catchUpWithRemoteBranch', () => {
     expect(fs.readFileSync(path.join(s.repo, 'a.txt'), 'utf8')).toBe('work in progress\n');
     expect(fs.existsSync(path.join(s.repo, 'theirs.txt'))).toBe(false);
   });
+
+  // git refuses before it ever gets to a patch: there is nothing for a human to merge, so it must not read as a conflict
+  it('reports a plain failure, not a conflict, when an untracked file blocks the fast-forward', async () => {
+    const s = setup('sdlc-catchup-ff-blocked-');
+    commitOnRemote(s.bare, s.branch, 'theirs.txt');
+    fs.writeFileSync(path.join(s.repo, 'theirs.txt'), 'untracked leftover\n');
+    const e = await s.run().then(() => null, (err) => err);
+    expect(e).toBeInstanceOf(Error);
+    expect(e).not.toBeInstanceOf(CatchUpConflict);
+    expect((e as Error).message).toContain('could not be fast-forwarded to origin/' + s.branch);
+    expect((e as Error).message).toContain('1 commit(s) pushed from outside sdlc');
+    expect((e as Error).message).not.toContain('Resolve it by hand');
+    expect(sh(s.repo, ['rev-parse', 'HEAD'])).toBe(sh(s.repo, ['rev-parse', `origin/${s.branch}^`]));
+    expect(fs.readFileSync(path.join(s.repo, 'theirs.txt'), 'utf8')).toBe('untracked leftover\n');
+  });
+
+  it('reports a plain failure, not a conflict, when an untracked file blocks the rebase, and leaves no rebase in progress', async () => {
+    const s = setup('sdlc-catchup-rebase-blocked-');
+    const mine = s.commit('mine.txt', 'mine\n', 'sdlc: mine');
+    commitOnRemote(s.bare, s.branch, 'theirs.txt');
+    fs.writeFileSync(path.join(s.repo, 'theirs.txt'), 'untracked leftover\n');
+    const e = await s.run().then(() => null, (err) => err);
+    expect(e).toBeInstanceOf(Error);
+    expect(e).not.toBeInstanceOf(CatchUpConflict);
+    expect((e as Error).message).toContain('could not be rebased onto origin/' + s.branch);
+    expect((e as Error).message).not.toContain('files in conflict');
+    // the branch is still checked out at its own commit, no rebase left half-done, nothing lost
+    expect(sh(s.repo, ['rev-parse', 'HEAD'])).toBe(mine);
+    expect(sh(s.repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe(s.branch);
+    expect(sh(s.repo, ['status', '--porcelain', '--untracked-files=no'])).toBe('');
+    expect(fs.existsSync(path.join(s.repo, '.git', 'rebase-merge'))).toBe(false);
+    expect(fs.existsSync(path.join(s.repo, '.git', 'rebase-apply'))).toBe(false);
+  });
 });
