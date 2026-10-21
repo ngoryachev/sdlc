@@ -216,6 +216,39 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     expect([next.id !== gate.id, next.kind, supersedesOf(next)]).toEqual([true, 'approve_result', gate.id]);
   });
 
+  it('leaves the checkpoint open when the worktree cannot be brought to the PR head', async () => {
+    const dir = tmpDir('sdlc-stale-rename-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const prompts: string[] = [];
+    const app = testApp(dir, reviewRunner(prompts), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+
+    // the author renames the branch and pushes: GitHub moves the pull request to the new name, the old ref is gone,
+    // so `git fetch origin feature` finds nothing (it returns false instead of failing) and the worktree stays put
+    sh(bare, ['branch', '-m', 'feature', 'feature2']);
+    gh.prs.get(n)!.headRefName = 'feature2';
+    commitOnRemote(bare, 'feature2', 'feature.txt', 'one\n2\nthree\n');
+
+    // re-reviewing what the worktree still holds would again decide on code the PR does not have, so the
+    // checkpoint the human already has stays, and the reason is reported
+    const sync = await app.engine.syncTasks();
+    await app.engine.advance(task.id);
+    expect(sync.changes).toEqual([]);
+    expect(sync.errors.join()).toMatch(/did not reach the pull request head/);
+    expect([app.store.openHilForTask(task.id)[0]!.id, app.store.getHil(hil.id)!.status]).toEqual([hil.id, 'open']);
+
+    // and it stays that way tick after tick: no endless chain of review passes
+    for (let i = 0; i < 3; i++) { await app.engine.syncTasks(); await app.engine.advance(task.id); }
+    expect(app.store.openHilForTask(task.id)[0]!.id).toBe(hil.id);
+    expect(prompts.length).toBe(1);
+    expect(app.store.listHil({ taskId: task.id }).filter((h) => h.kind === 'approve_result').length).toBe(1);
+  });
+
   it('does not throw the checkpoint away when the re-review cannot be started', async () => {
     const dir = tmpDir('sdlc-stale-nofetch-');
     const { repo, bare } = makeRemoteRepo(dir);

@@ -351,7 +351,7 @@ export class Engine {
     if (store.getHil(open.id)?.status !== 'open') return null;   // aborted while we were asking GitHub (abort does not take the task lock)
     // the worktree moves to the new head first: when that fails, nothing is written and the next sync tries again
     // with the checkpoint still open, instead of leaving a task with no checkpoint and no running phase
-    await this.fetchPrHead(t, auth);
+    await this.fetchPrHead(t, pr.headRefOid, auth);
     const n = await this.commitsBetween(t.repoPath, base, pr.headRefOid);
     // re-read last, with no fallible step left before the write: meanwhile the human may have answered (respondHil
     // takes the same lock and then wins this comparison) or aborted the task
@@ -863,20 +863,26 @@ export class Engine {
 
   /** The pull request under review got new commits: bring the worktree to its head and run the task's segment again. */
   private async rereview(task: Task, headSha: string, auth: RepoAuth): Promise<void> {
-    await this.fetchPrHead(task, auth);
+    await this.fetchPrHead(task, headSha, auth);
     this.startRereview(task, headSha);
   }
 
   /**
    * Bring the worktree to the head of the pull request. This is the part that can fail (no remote access, bad git
-   * credentials), so callers that have to undo nothing on failure do it before they change any state.
+   * credentials, or the head branch renamed on GitHub, where `fetchBranch` simply finds nothing), so callers do it
+   * before they change any state: it either leaves the worktree holding that head, or throws having changed nothing.
    */
-  private async fetchPrHead(task: Task, auth: RepoAuth): Promise<void> {
+  private async fetchPrHead(task: Task, headSha: string, auth: RepoAuth): Promise<void> {
     await this.ensureWorktree(task);
     const remote = task.baseRemote ?? (await defaultRemote(task.repoPath));
     if (remote && (await fetchBranch(task.repoPath, remote, task.branch, auth))) {
       // a reviewer never commits, so the local branch simply follows the remote one (also after a force-push)
       await git(task.worktreePath, ['reset', '--hard', '--quiet', `refs/remotes/${remote}/${task.branch}`]);
+    }
+    // a pass on a worktree that never got there would review other code than the pull request has, and the head
+    // recorded as reviewed would be one nothing looked at: the next sync would see it move again, endlessly
+    if (!(await isAncestor(task.worktreePath, headSha, 'HEAD').catch(() => false))) {
+      throw new Error(`${task.branch} in the worktree did not reach the pull request head ${headSha.slice(0, 7)}: is it still the head branch of PR #${task.prNumber} on ${remote ?? 'the remote'}?`);
     }
   }
 
