@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { HilRequest, SdlcEvent } from '@sdlc/shared';
 import { FakeRunner } from '../fakes/fake-runner.js';
 import { FakeGitHub } from '../fakes/fake-github.js';
+import type { PrInfo, RepoAuth } from '../../server/src/git/gh.js';
 import { commitOnRemote, makeRemoteRepo, sh, testApp, tmpDir } from '../helpers.js';
 
 /** A branch with one commit pushed to the remote and a pull request for it, as if a colleague opened it. */
@@ -24,6 +25,15 @@ const reviewRunner = (prompts: string[]) => new FakeRunner((spec) => ({
 }));
 
 const supersedesOf = (h: HilRequest) => (h.payload.kind === 'approve_result' ? h.payload.supersedes : 'not-approve-result');
+
+/** FakeGitHub that can report a head commit older than the one the branch really is at (a push during the sync). */
+class LaggingGitHub extends FakeGitHub {
+  pinned: string | null = null;
+  override async prView(cwd: string, n: number, auth: RepoAuth): Promise<PrInfo> {
+    const pr = await super.prView(cwd, n, auth);
+    return this.pinned ? { ...pr, headRefOid: this.pinned } : pr;
+  }
+}
 
 describe('a reviewer checkpoint that goes stale when the PR gets new commits', () => {
   it('is left alone while the PR head has not moved, however often the sync runs', async () => {
@@ -391,5 +401,126 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     expect(answered.map((h) => [h.id, h.status, h.response, h.answeredVia])).toEqual([[hil.id, 'cancelled', null, null]]);
     expect(answered[0]!.summary).toContain('stale: the PR got');
     expect(seen.filter((e) => e.type === 'hil.requested').length).toBe(1);   // exactly one replacement card
+  });
+
+  it('keeps the checkpoint it preserved answerable: the human still decides, on the diff they were shown', async () => {
+    const dir = tmpDir('sdlc-stale-answerable-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const prompts: string[] = [];
+    const app = testApp(dir, reviewRunner(prompts), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+
+    // the head branch is renamed away under the pull request, so the re-review cannot be started at all
+    sh(bare, ['branch', '-m', 'feature', 'feature2']);
+    gh.prs.get(n)!.headRefName = 'feature2';
+    commitOnRemote(bare, 'feature2', 'feature.txt', 'one\n2\nthree\n');
+    expect((await app.engine.syncTasks()).errors.length).toBe(1);
+    expect(app.store.getTask(task.id)!.status).toBe('waiting_hil');
+
+    // keeping the checkpoint open is only worth anything if it still works: the answer goes through and publishes
+    await app.engine.respondHil(hil.id, { decision: 'approve', findings: { 'review:0': 'post' }, reviewEvent: 'request_changes' }, 'web');
+    await app.engine.advance(task.id);
+    expect([app.store.getHil(hil.id)!.status, app.store.getHil(hil.id)!.answeredVia]).toEqual(['answered', 'web']);
+    expect(gh.reviews.map((r) => r.event)).toEqual(['REQUEST_CHANGES']);
+    expect(app.store.getTask(task.id)!.status).toBe('pr_open');
+  });
+
+  it('is dropped after a rewinding force-push too, and settles on the commit the PR went back to', async () => {
+    const dir = tmpDir('sdlc-stale-rewind-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const prompts: string[] = [];
+    const app = testApp(dir, reviewRunner(prompts), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const first = sh(bare, ['rev-parse', 'refs/heads/feature']);
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\nthree\n');
+    expect((await app.engine.syncTasks()).changes.length).toBe(1);
+    await app.engine.advance(task.id);
+    const gate = app.store.openHilForTask(task.id)[0]!;
+
+    // the author drops that second commit again: the PR head moves backwards, to an ancestor of what was reviewed
+    const clone = path.join(dir, 'author');
+    sh(dir, ['clone', '-q', bare, clone]);
+    sh(clone, ['push', '-q', '--force', 'origin', `${first}:refs/heads/feature`]);
+
+    const sync = await app.engine.syncTasks();
+    await app.engine.advance(task.id);
+    expect(sync.errors).toEqual([]);
+    expect(sync.changes.length).toBe(1);
+    expect(app.store.getHil(gate.id)!.status).toBe('cancelled');
+    // the worktree really went back, so the pass that decides is the one on the code the PR now has
+    expect(fs.readFileSync(path.join(task.worktreePath, 'feature.txt'), 'utf8')).toBe('one\ntwo\nthree\n');
+    expect(app.store.getTask(task.id)!.prHeadSha).toBe(first);
+    expect(prompts.length).toBe(3);
+
+    // and it settles there: the head now matches again, nothing is dropped a second time
+    const fresh = app.store.openHilForTask(task.id)[0]!;
+    for (let i = 0; i < 3; i++) { await app.engine.syncTasks(); await app.engine.advance(task.id); }
+    expect([app.store.openHilForTask(task.id)[0]!.id, prompts.length]).toEqual([fresh.id, 3]);
+  });
+
+  it('settles after one pass when the worktree ends up past the head GitHub reported', async () => {
+    const dir = tmpDir('sdlc-stale-lag-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new LaggingGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const prompts: string[] = [];
+    const app = testApp(dir, reviewRunner(prompts), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const gate = app.store.openHilForTask(task.id)[0]!;
+
+    // one commit is what the PR reports, a second one lands before the sync gets to fetch: the worktree is then
+    // ahead of `headRefOid`, which the head check has to accept (it asks for the head to be contained, not to be HEAD)
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\nthree\n');
+    gh.pinned = sh(bare, ['rev-parse', 'refs/heads/feature']);
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\n3\n');
+
+    const sync = await app.engine.syncTasks();
+    await app.engine.advance(task.id);
+    expect(sync.errors).toEqual([]);
+    expect(app.store.getHil(gate.id)!.status).toBe('cancelled');
+    expect(fs.readFileSync(path.join(task.worktreePath, 'feature.txt'), 'utf8')).toBe('one\n2\n3\n');
+    expect(prompts.length).toBe(2);
+
+    // once the PR reports the commit the pass actually reviewed, the fresh checkpoint is left alone
+    gh.pinned = null;
+    const fresh = app.store.openHilForTask(task.id)[0]!;
+    for (let i = 0; i < 3; i++) { await app.engine.syncTasks(); await app.engine.advance(task.id); }
+    expect([app.store.openHilForTask(task.id)[0]!.id, prompts.length]).toEqual([fresh.id, 2]);
+    expect(app.store.listHil({ taskId: task.id }).filter((h) => h.kind === 'approve_result').length).toBe(2);
+  });
+
+  it('drops the checkpoint even when the worktree is gone from disk: it is recreated and brought to the head', async () => {
+    const dir = tmpDir('sdlc-stale-nowt-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const prompts: string[] = [];
+    const app = testApp(dir, reviewRunner(prompts), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const gate = app.store.openHilForTask(task.id)[0]!;
+
+    sh(repo, ['worktree', 'remove', '--force', task.worktreePath]);     // cleaned up while the checkpoint waited
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\nthree\n');
+
+    const sync = await app.engine.syncTasks();
+    await app.engine.advance(task.id);
+    expect(sync.errors).toEqual([]);
+    expect(sync.changes.length).toBe(1);
+    expect(app.store.getHil(gate.id)!.status).toBe('cancelled');
+    expect(fs.readFileSync(path.join(task.worktreePath, 'feature.txt'), 'utf8')).toBe('one\n2\nthree\n');
+    expect([prompts.length, app.store.openHilForTask(task.id)[0]!.id !== gate.id]).toEqual([2, true]);
   });
 });
