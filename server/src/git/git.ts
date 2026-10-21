@@ -29,6 +29,15 @@ export function netEnv(auth?: NetAuth): NodeJS.ProcessEnv {
   return { ...env, GH_TOKEN: auth.token, GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'credential.https://github.com.helper', GIT_CONFIG_VALUE_0: '', GIT_CONFIG_KEY_1: 'credential.https://github.com.helper', GIT_CONFIG_VALUE_1: '!gh auth git-credential' };
 }
 
+/**
+ * `GIT_AUTHOR_*` / `GIT_COMMITTER_*` for `Name <mail>`: every command of ours that writes a commit passes these, so
+ * the service never depends on a `user.email` being configured on the machine it runs on.
+ */
+export function authorEnv(author?: string | null): NodeJS.ProcessEnv {
+  const m = author ? /^(.*) <(.*)>$/.exec(author) : null;
+  return m ? { GIT_AUTHOR_NAME: m[1], GIT_AUTHOR_EMAIL: m[2], GIT_COMMITTER_NAME: m[1], GIT_COMMITTER_EMAIL: m[2] } : {};
+}
+
 export async function repoToplevel(p: string): Promise<string> { return git(p, ['rev-parse', '--show-toplevel']); }
 
 /** `git merge-base --is-ancestor a b`: true when a is reachable from b. */
@@ -128,7 +137,7 @@ async function commitLines(cwd: string, range: string): Promise<string[]> {
  * commits. A conflict is aborted (worktree left exactly as it was) and reported, so the task escalates to a human.
  * Nothing is ever force-pushed and no commit is ever dropped.
  */
-export async function catchUpWithRemoteBranch(o: { worktree: string; remote: string | null; branch: string; auth?: NetAuth }): Promise<CatchUp> {
+export async function catchUpWithRemoteBranch(o: { worktree: string; remote: string | null; branch: string; auth?: NetAuth; author?: string | null }): Promise<CatchUp> {
   const none = (kind: CatchUpKind): CatchUp => ({ kind, incoming: [], replayed: [], note: '' });
   const wt = o.worktree;
   if (!o.remote || !(await remotes(wt)).includes(o.remote)) return none('no-remote');
@@ -143,22 +152,28 @@ export async function catchUpWithRemoteBranch(o: { worktree: string; remote: str
   if (await git(wt, ['status', '--porcelain', '--untracked-files=no'], { allowFail: true })) return none('dirty');
   const incoming = await commitLines(wt, `HEAD..${ref}`);
   const label = `${o.remote}/${o.branch}`;
+  const trouble = (what: string, e: unknown) => new Error(`branch ${o.branch} could not ${what} ${label}, which has ${incoming.length} commit(s) pushed from outside sdlc: ${(e as Error).message}`);
   if (await isAncestor(wt, local, rem)) {
-    await git(wt, ['merge', '--ff-only', '--quiet', ref]);
+    try { await git(wt, ['merge', '--ff-only', '--quiet', ref], { env: authorEnv(o.author) }); }
+    catch (e) { throw trouble('be fast-forwarded to', e); }
     return { kind: 'fast-forwarded', incoming, replayed: [], note: `${o.branch}: fast-forwarded to ${label} (${incoming.length} commit(s) pushed from outside sdlc)` };
   }
   const replayed = await commitLines(wt, `${ref}..HEAD`);
   try {
-    await git(wt, ['-c', 'rebase.autoStash=false', 'rebase', '--quiet', ref]);
+    // the identity comes from the config, like every other commit sdlc writes: a rebase commits too
+    await git(wt, ['-c', 'rebase.autoStash=false', 'rebase', '--quiet', ref], { env: authorEnv(o.author) });
   } catch (e) {
-    const conflicts = await git(wt, ['diff', '--name-only', '--diff-filter=U'], { allowFail: true });
+    const unmerged = await git(wt, ['diff', '--name-only', '--diff-filter=U'], { allowFail: true });
+    const conflicts = unmerged ? unmerged.split('\n').filter(Boolean) : [];
     await git(wt, ['rebase', '--abort'], { allowFail: true });
+    // a rebase that never reached a patch (no identity, a file in the way) is not something to resolve by hand
+    if (!conflicts.length) throw trouble('be rebased onto', e);
     const list = (title: string, lines: string[]) => (lines.length ? `\n\n${title}\n${lines.map((l) => `  ${l}`).join('\n')}` : '');
     throw new CatchUpConflict(
       `branch ${o.branch} has commits that were pushed from outside sdlc, and replaying this task's own commits on top of them conflicts. The rebase was aborted: the worktree is unchanged and no commit was lost.`
       + list(`commits that came from outside (on ${label}):`, incoming)
       + list('commits of this task that could not be replayed:', replayed)
-      + list('files in conflict:', conflicts ? conflicts.split('\n').filter(Boolean) : [])
+      + list('files in conflict:', conflicts)
       + `\n\nResolve it by hand in ${wt} (\`git rebase ${label}\`), then retry the task. Original error: ${(e as Error).message}`,
     );
   }
@@ -250,8 +265,7 @@ export async function adoptWorktree(o: { repo: string; worktreesDir: string; tas
 /** Merge `head` into `base` without a PR, in a temporary worktree of the main checkout; pushes when the base has a remote. */
 export async function mergeLocally(o: { repo: string; base: string; baseRemote: string | null; head: string; method: 'merge' | 'squash' | 'rebase'; message: string; author: string; auth?: NetAuth }): Promise<string> {
   const tmp = path.join(os.tmpdir(), `sdlc-land-${Date.now()}`);
-  const m = /^(.*) <(.*)>$/.exec(o.author);
-  const env = m ? { GIT_AUTHOR_NAME: m[1], GIT_AUTHOR_EMAIL: m[2], GIT_COMMITTER_NAME: m[1], GIT_COMMITTER_EMAIL: m[2] } : {};
+  const env = authorEnv(o.author);
   if (o.baseRemote && !(await fetchBranch(o.repo, o.baseRemote, o.base, o.auth))) throw new Error(`base branch ${o.base} does not exist on ${o.baseRemote}`);
   const baseRef = o.baseRemote ? `refs/remotes/${o.baseRemote}/${o.base}` : `refs/heads/${o.base}`;
   // detached worktree at the base tip: no local branch is checked out twice
@@ -334,8 +348,7 @@ export async function commitAll(wt: string, message: string, author: string): Pr
   await git(wt, ['add', '-A']);
   const status = await git(wt, ['status', '--porcelain']);
   if (!status) return { sha: null, skipped: true };
-  const m = /^(.*) <(.*)>$/.exec(author);
-  const env = m ? { GIT_AUTHOR_NAME: m[1], GIT_AUTHOR_EMAIL: m[2], GIT_COMMITTER_NAME: m[1], GIT_COMMITTER_EMAIL: m[2] } : {};
+  const env = authorEnv(author);
   await git(wt, ['commit', '-q', '-m', message], { env });
   return { sha: await git(wt, ['rev-parse', 'HEAD']), skipped: false };
 }

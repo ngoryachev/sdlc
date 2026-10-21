@@ -36,8 +36,8 @@ function diverged(prefix: string, mine: { file: string; content: string }, their
     },
   }));
   const app = testApp(dir, runner, {}, gh);
-  const start = async () => {
-    const t = await app.engine.createTask({ prompt: 'carry on', repoPath: repo, pipeline: 'quick', baseRemote: 'origin', baseBranch: 'main', branch, startAt: 'implement', stopAfter: 'pr' });
+  const start = async (over: { pipeline?: string; stopAfter?: string } = {}) => {
+    const t = await app.engine.createTask({ prompt: 'carry on', repoPath: repo, pipeline: 'quick', baseRemote: 'origin', baseBranch: 'main', branch, startAt: 'implement', stopAfter: 'pr', ...over });
     await app.engine.advance(t.id);
     return app.store.getTask(t.id)!;
   };
@@ -97,5 +97,92 @@ describe('a task branch that got commits from outside sdlc', () => {
     expect(byName).toContain('implement:succeeded');                        // the agent worked, offline remote or not
     expect(warnings.join('\n')).toContain(`could not check ${d.branch} against its remote`);
     expect(task.status).toBe('waiting_hil');                                // only the push itself escalates
+  });
+});
+
+/** A minimal pipeline that ends in a `git: push` phase (the shipped ones all push through `git: pr`). */
+function pushOnlyPipeline(dir: string): string {
+  fs.mkdirSync(path.join(dir, 'prompts', 'system'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'pl'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'prompts', 'system', 'common.md'), 'be brief\n');
+  fs.writeFileSync(path.join(dir, 'prompts', 'impl.md'), 'Phase: implement\n\nDo the work.\n');
+  const file = path.join(dir, 'pl', 'push-only.yaml');
+  fs.writeFileSync(file, [
+    'name: push-only',
+    'phases:',
+    '  - name: implement',
+    '    type: claude',
+    '    prompt: prompts/impl.md',
+    '    permission_mode: bypassPermissions',
+    '  - name: commit_impl',
+    '    type: git',
+    '    git: commit',
+    '    message: "sdlc({{task.id}}): work"',
+    '  - name: push',
+    '    type: git',
+    '    git: push',
+    '',
+  ].join('\n'));
+  return file;
+}
+
+describe('a task branch that got commits from outside sdlc', () => {
+  it('catches up in a `git: push` phase: the commit arrives while the agent is working', async () => {
+    const dir = tmpDir('sdlc-catchup-e2e-push-');
+    const { repo, bare } = makeRemoteRepo(dir, { 'a.txt': 'one\ntwo\nthree\n' });
+    const branch = 'feature';
+    sh(repo, ['checkout', '-q', '-b', branch]);
+    sh(repo, ['push', '-q', '-u', 'origin', branch]);     // pushed and in sync: nothing to catch up at implement
+    sh(repo, ['checkout', '-q', 'main']);
+    const runner = new FakeRunner((spec) => ({
+      act: () => {
+        fs.writeFileSync(path.join(spec.cwd, 'implemented.txt'), 'work\n');
+        commitOnRemote(bare, branch, 'theirs.txt');       // someone pushes from another machine meanwhile
+        return { text: 'done' };
+      },
+    }));
+    const app = testApp(dir, runner, {}, new FakeGitHub(bare));
+    const t = await app.engine.createTask({ prompt: 'carry on', repoPath: repo, pipeline: pushOnlyPipeline(dir), baseRemote: 'origin', baseBranch: 'main', branch, startAt: 'implement', stopAfter: 'push' });
+    await app.engine.advance(t.id);
+    const task = app.store.getTask(t.id)!;
+
+    const phases = app.store.phaseRunsForTask(task.id).map((p) => `${p.phaseName}:${p.status}`);
+    expect(phases).toContain('push:succeeded');                                    // and not a non-fast-forward
+    const remoteLog = sh(bare, ['log', '--format=%s', `refs/heads/${branch}`]).split('\n');
+    expect(remoteLog[0]).toContain('work');                                        // the task's commit on top
+    expect(remoteLog[1]).toBe('remote theirs.txt');                                // the outside commit kept under it
+    expect(sh(bare, ['rev-parse', `refs/heads/${branch}`])).toBe(sh(task.worktreePath, ['rev-parse', 'HEAD']));
+    expect(sh(task.worktreePath, ['status', '--porcelain'])).toBe('');
+  });
+
+  it('escalates when the push phase cannot replay the task commit on the outside one', async () => {
+    const dir = tmpDir('sdlc-catchup-e2e-push-conflict-');
+    const { repo, bare } = makeRemoteRepo(dir, { 'a.txt': 'one\ntwo\nthree\n' });
+    const branch = 'feature';
+    sh(repo, ['checkout', '-q', '-b', branch]);
+    sh(repo, ['push', '-q', '-u', 'origin', branch]);
+    sh(repo, ['checkout', '-q', 'main']);
+    const runner = new FakeRunner((spec) => ({
+      act: () => {
+        fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'one\nMINE\nthree\n');
+        commitOnRemote(bare, branch, 'a.txt', 'one\nTHEIRS\nthree\n');   // the same line, from another machine
+        return { text: 'done' };
+      },
+    }));
+    const app = testApp(dir, runner, {}, new FakeGitHub(bare));
+    const t = await app.engine.createTask({ prompt: 'carry on', repoPath: repo, pipeline: pushOnlyPipeline(dir), baseRemote: 'origin', baseBranch: 'main', branch, startAt: 'implement', stopAfter: 'push' });
+    await app.engine.advance(t.id);
+    const task = app.store.getTask(t.id)!;
+
+    expect(task.status).toBe('waiting_hil');
+    const push = app.store.phaseRunsForTask(task.id).filter((p) => p.phaseName === 'push');
+    expect(push.at(-1)!.status).toBe('failed');
+    expect(push.at(-1)!.error).toContain('pushed from outside sdlc');
+    expect(push.at(-1)!.error).toContain('a.txt');
+    // the commit the agent made is still there, the worktree is usable and the remote was not touched
+    expect(sh(task.worktreePath, ['status', '--porcelain'])).toBe('');
+    expect(fs.readFileSync(path.join(task.worktreePath, 'a.txt'), 'utf8')).toBe('one\nMINE\nthree\n');
+    expect(sh(task.worktreePath, ['log', '--format=%s', '-1'])).toContain('work');
+    expect(sh(bare, ['log', '--format=%s', '-1', `refs/heads/${branch}`])).toBe('remote a.txt');
   });
 });

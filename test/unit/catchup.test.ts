@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { CatchUpConflict, catchUpWithRemoteBranch } from '../../server/src/git/git.js';
+import { CatchUpConflict, catchUpWithRemoteBranch, taskCommitCount } from '../../server/src/git/git.js';
 import { commitOnRemote, makeRemoteRepo, sh, tmpDir } from '../helpers.js';
 
 /** A real repository with a bare origin and a task branch that is pushed and then worked on locally. */
@@ -17,7 +17,8 @@ function setup(prefix: string, files: Record<string, string> = { 'a.txt': 'one\n
     return sh(repo, ['rev-parse', 'HEAD']);
   };
   const subjects = () => sh(repo, ['log', '--format=%s', 'origin/main..HEAD']).split('\n').filter(Boolean);
-  const run = () => catchUpWithRemoteBranch({ worktree: repo, remote: 'origin', branch });
+  // the author is what the phase passes from the config, like every other commit sdlc writes
+  const run = () => catchUpWithRemoteBranch({ worktree: repo, remote: 'origin', branch, author: 'SDLC <sdlc@local>' });
   return { dir, repo, bare, branch, commit, subjects, run };
 }
 
@@ -100,6 +101,36 @@ describe('catchUpWithRemoteBranch', () => {
     expect(e).toBeInstanceOf(Error);
     expect(e).not.toBeInstanceOf(CatchUpConflict);
     expect((e as Error).message).toContain('git fetch origin');
+  });
+
+  it('replays the task commits on a non-conflicting edit of the same file, trailers and all', async () => {
+    const s = setup('sdlc-catchup-same-file-');
+    s.commit('a.txt', 'one\ntwo\nMINE\n', 'sdlc: edit the end\n\nTask: t_x');   // sdlc touched the last line
+    commitOnRemote(s.bare, s.branch, 'a.txt', 'THEIRS\ntwo\nthree\n');            // someone else the first one
+    expect((await s.run()).kind).toBe('rebased');
+    expect(fs.readFileSync(path.join(s.repo, 'a.txt'), 'utf8')).toBe('THEIRS\ntwo\nMINE\n');
+    expect(sh(s.repo, ['status', '--porcelain'])).toBe('');
+    // the replayed commit keeps its `Task:` trailer, so land/close still see the task's own work
+    expect(await taskCommitCount(s.repo, s.branch, 't_x')).toBe(1);
+  });
+
+  it('rebases with no git identity configured: sdlc commits never need one', async () => {
+    const s = setup('sdlc-catchup-no-identity-');
+    s.commit('mine.txt', 'mine\n', 'sdlc: mine');
+    commitOnRemote(s.bare, s.branch, 'theirs.txt');
+    // the service may run without user.name/user.email anywhere: the catch-up passes config.git_author, like commitAll
+    const saved = { ...process.env };
+    process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+    process.env.GIT_CONFIG_SYSTEM = '/dev/null';
+    for (const k of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'EMAIL']) delete process.env[k];
+    try {
+      expect((await s.run()).kind).toBe('rebased');
+    } finally {
+      for (const k of Object.keys(process.env)) delete process.env[k];
+      Object.assign(process.env, saved);
+    }
+    expect(fs.existsSync(path.join(s.repo, 'theirs.txt'))).toBe(true);
+    expect(sh(s.repo, ['status', '--porcelain'])).toBe('');
   });
 
   it('leaves a worktree with uncommitted work alone', async () => {

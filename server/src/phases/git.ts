@@ -7,7 +7,7 @@ import { commitAll, diffRightLines, push, pushBranch, remoteHasBranch } from '..
 import type { ReviewEventName } from '../git/gh.js';
 import { nowIso } from '../store/ids.js';
 import type { PhaseContext, PhaseExecutor, PhaseOutcome } from './executor.js';
-import { catchUpTaskBranch } from './catchup.js';
+import { catchUpBeforePush } from './catchup.js';
 
 export class GitPhaseExecutor implements PhaseExecutor<GitPhaseSpec> {
   async run(phase: GitPhaseSpec, pr: PhaseRun, ctx: PhaseContext): Promise<PhaseOutcome> {
@@ -24,7 +24,7 @@ export class GitPhaseExecutor implements PhaseExecutor<GitPhaseSpec> {
       const auth = await ctx.accounts.forRepo(task.repoPath);
       if (phase.git === 'push') {
         const remote = task.baseRemote ?? 'origin';
-        await catchUpTaskBranch(ctx, pr);           // commits pushed to the branch from outside sdlc: no non-fast-forward
+        await catchUpBeforePush(ctx, pr);           // commits pushed to the branch from outside sdlc: no non-fast-forward
         await push(task.worktreePath, remote, task.branch, auth);
         pr.resultText = `pushed ${task.branch} to ${remote}${auth.user ? ` as ${auth.user}` : ''}`;
         events.emit('git.pushed', { taskId: task.id, branch: task.branch }, { taskId: task.id, phaseRunId: pr.id });
@@ -60,7 +60,7 @@ export class GitPhaseExecutor implements PhaseExecutor<GitPhaseSpec> {
           await pushBranch(task.worktreePath, remote, task.baseBranch, auth);
           events.emit('git.pushed', { taskId: task.id, branch: task.baseBranch }, { taskId: task.id, phaseRunId: pr.id });
         }
-        await catchUpTaskBranch(ctx, pr);           // commits pushed to the branch from outside sdlc: no non-fast-forward
+        await catchUpBeforePush(ctx, pr);           // commits pushed to the branch from outside sdlc: no non-fast-forward
         await push(task.worktreePath, remote, task.branch, auth);
         events.emit('git.pushed', { taskId: task.id, branch: task.branch }, { taskId: task.id, phaseRunId: pr.id });
         if (task.prNumber) {
