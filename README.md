@@ -102,6 +102,8 @@ Expressions: `repo.test_command`, `structured.verdict == 'request_changes'`, `!a
 
 Shipped: `standard` (all checkpoints), `quick` (no separate plan), `auto` (no checkpoints, no PR; for trivial tasks), and two presets that are segments of `standard`: `review-pr` (`extends: standard`, `segment: {from: review, to: publish}`: review someone's PR) and `fix-pr` (`segment: {from: implement, to: pr}`, `wait_for_feedback: true`: fix review comments on a PR). A pipeline's `segment` is the default slice a task runs; the task form can narrow or widen it.
 
+Language: phases write what they produce — titles, plans, summaries, findings, QA reports, pull request and comment bodies — in English, whatever language the task is written in and whatever `~/.claude/settings.json` says about the answer language (`prompts/system/common.md` plus a reminder in every prompt whose output is published). That is what goes on GitHub; a human reads a checkpoint in their own language with **Translate** in the UI.
+
 Branches are named `sdlc/<slug>-<id>` where the slug is a 2–5 word English summary of the task (a short haiku call at creation; clarify's `branch` field after refine), as long as the branch has not been pushed.
 
 Base ref: `--base origin/main` or a local branch such as `--base feature/x` (a name whose first segment is not a remote is a local branch). A local-only base is pushed before the PR is created, since GitHub needs it on the remote.

@@ -194,13 +194,14 @@ describe('naming and accounts', () => {
     const dir = tmpDir('sdlc-naming-');
     const repo = makeRepo(dir, { 'a.txt': 'x\n' });
     const runner = fileRunner();
-    runner.brief = async () => '{"title": "Поменять a.txt", "branch": "Flip A File"}';
+    // a Russian task: the title comes back in English, because it becomes the pull request title
+    runner.brief = async () => '{"title": "Change a.txt", "branch": "Flip A File"}';
     const app = testApp(dir, runner);
     const t = await app.engine.createTask({ prompt: 'поменяй a.txt пожалуйста очень длинный текст', repoPath: repo, pipeline: 'auto', baseRemote: null });
     await app.engine.settled(t.id);
     await app.engine.advance(t.id);
     const after = app.store.getTask(t.id)!;
-    expect(after.title).toBe('Поменять a.txt');
+    expect(after.title).toBe('Change a.txt');
     expect(after.branch).toBe(`sdlc/flip-a-file-${t.id}`);
     expect(execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: t.worktreePath }).toString().trim()).toBe(after.branch);
     expect(execFileSync('git', ['log', '--format=%B', after.branch], { cwd: repo }).toString()).toContain(`Task: ${t.id}`);
