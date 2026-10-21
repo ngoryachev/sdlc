@@ -111,6 +111,46 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     expect(app.store.openHilForTask(task.id)[0]!.id).not.toBe(hil.id);
   });
 
+  it('a reviewer that opened the pull request itself keeps its fresh checkpoint: nothing moved yet', async () => {
+    const dir = tmpDir('sdlc-stale-ownpr-');
+    const { repo, bare } = makeRemoteRepo(dir, { 'a.txt': 'x\n' });
+    const gh = new FakeGitHub(bare);
+    // work done by hand on a branch that is not on the remote yet: the task's own `pr` phase opens the pull request,
+    // so `prHeadSha` (set only when a task is created from a PR, and by a re-review) is still empty at the checkpoint
+    sh(repo, ['checkout', '-q', '-b', 'handmade']);
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'y\n');
+    sh(repo, ['commit', '-q', '-am', 'flip a to y']);
+    sh(repo, ['checkout', '-q', 'main']);
+    const prompts: string[] = [];
+    const app = testApp(dir, new FakeRunner((spec) => ({
+      act: () => {
+        prompts.push(spec.prompt);
+        return spec.prompt.includes('Phase: test')
+          ? { structured: { verdict: 'pass', summary: 'ok', commands: [], tests_added: [], failures: [], notes: '' } }
+          : { structured: { verdict: 'request_changes', summary: 'needs work', findings: [{ severity: 'blocking', title: 'Problem 1', description: 'x', file: 'a.txt', line: 1 }] } };
+      },
+    })), {}, gh);
+
+    const task = await app.engine.createTask({ prompt: 'check the branch', repoPath: repo, pipeline: 'standard', branch: 'handmade', startAt: 'test', stopAfter: 'publish' });
+    await app.engine.advance(task.id);
+    const fresh = app.store.getTask(task.id)!;
+    expect([app.engine.roleOfTask(task.id), fresh.status, fresh.prNumber, fresh.prHeadSha]).toEqual(['reviewer', 'waiting_hil', 1, null]);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    expect(hil.kind).toBe('approve_result');
+
+    expect((await app.engine.syncTasks()).changes).toEqual([]);          // the PR head is exactly what the review saw
+    expect(app.store.getHil(hil.id)!.status).toBe('open');
+    expect(prompts.length).toBe(2);                                      // test + review, no second pass burned
+
+    // and a real push is still noticed afterwards
+    commitOnRemote(bare, 'handmade', 'a.txt', 'z\n');
+    expect((await app.engine.syncTasks()).changes.length).toBe(1);
+    await app.engine.advance(task.id);
+    expect(app.store.getHil(hil.id)!.status).toBe('cancelled');
+    expect(app.store.getHil(hil.id)!.summary).toContain('stale: the PR got 1 new commit(s)');
+    expect(app.store.openHilForTask(task.id)[0]!.id).not.toBe(hil.id);
+  });
+
   it('does not touch a reviewer parked on a question from its still running review phase', async () => {
     const dir = tmpDir('sdlc-stale-question-');
     const { repo, bare } = makeRemoteRepo(dir);

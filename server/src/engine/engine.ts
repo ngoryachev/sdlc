@@ -346,12 +346,14 @@ export class Engine {
     const auth = await this.d.accounts.forRepo(t.repoPath);
     const pr = await this.d.github.prView(t.repoPath, t.prNumber, auth);
     if (pr.state !== 'OPEN' || !pr.headRefOid) return null;
-    // re-read after the network call: the human may have answered meanwhile (respondHil takes the same lock), and their answer wins
+    const base = this.checkpointHead(t, open);
+    if (!base || pr.headRefOid === base) return null;
+    const n = await this.commitsBetween(t, base, pr.headRefOid, auth);
+    // re-read last, with no await left before the write: meanwhile the human may have answered (respondHil takes the
+    // same lock and then wins this comparison) or aborted the task (abort does not take it)
     const task = store.getTask(t.id);
     const hil = store.getHil(open.id);
     if (!task || task.status !== 'waiting_hil' || !hil || hil.status !== 'open') return null;
-    if (pr.headRefOid === task.prHeadSha) return null;
-    const n = await this.commitsSinceReview(task, pr.headRefOid, auth);
     const note = `stale: the PR got ${n ? `${n} new commit(s)` : 'new commits'} (${pr.headRefOid.slice(0, 7)}) while this checkpoint was open`;
     hil.status = 'cancelled'; hil.summary = `${hil.summary} — ${note}`;
     store.updateHil(hil);
@@ -367,12 +369,25 @@ export class Engine {
     return `new commits (${pr.headRefOid.slice(0, 7)}) → review (stale checkpoint dropped)`;
   }
 
-  /** How far the PR head moved past what the last review pass saw; 0 when that cannot be told locally. */
-  private async commitsSinceReview(task: Task, head: string, auth: RepoAuth): Promise<number> {
-    if (!task.prHeadSha) return 0;
+  /**
+   * The commit an open checkpoint was built from, to tell a moved PR head from one that never moved: the HEAD recorded
+   * when the checkpoint opened, else the last pass that recorded one, else the PR head of the last re-review. A task
+   * that opened the pull request itself has no `prHeadSha` yet, so null here means "nothing to compare with".
+   */
+  private checkpointHead(task: Task, hil: HilRequest): string | null {
+    const { store } = this.d;
+    const own = hil.phaseRunId ? store.getPhaseRun(hil.phaseRunId)?.headSha : null;
+    if (own) return own;
+    const run = store.latestRunForTask(task.id);
+    const seen = run ? store.phaseRunsForRun(run.id).filter((p) => p.headSha && (p.status === 'succeeded' || p.status === 'failed')).at(-1)?.headSha : null;
+    return seen ?? task.prHeadSha;
+  }
+
+  /** How far the PR head moved past what the checkpoint saw; 0 when that cannot be counted locally. */
+  private async commitsBetween(task: Task, from: string, head: string, auth: RepoAuth): Promise<number> {
     const remote = task.baseRemote ?? (await defaultRemote(task.repoPath));
     if (remote) await fetchBranch(task.repoPath, remote, task.branch, auth).catch(() => false);
-    return Number(await git(task.repoPath, ['rev-list', '--count', `${task.prHeadSha}..${head}`], { allowFail: true })) || 0;
+    return Number(await git(task.repoPath, ['rev-list', '--count', `${from}..${head}`], { allowFail: true })) || 0;
   }
 
   /** The task's work reached its base outside sdlc: restack children, clean up, status merged. */
@@ -565,10 +580,9 @@ export class Engine {
 
       const pr = this.newPhaseRun(run, task, phase);
       pr.status = 'running'; pr.startedAt = nowIso();
-      if (phase.type === 'claude') {
-        pr.headSha = (await git(task.worktreePath, ['rev-parse', 'HEAD'], { allowFail: true })) || null;
-        tpl.recheck = { note: this.recheckNote(run, phase.name, pr.headSha) };
-      }
+      // a hil phase records it too: that is the commit the human is shown and decides on
+      if (phase.type === 'claude' || phase.type === 'hil') pr.headSha = (await git(task.worktreePath, ['rev-parse', 'HEAD'], { allowFail: true })) || null;
+      if (phase.type === 'claude') tpl.recheck = { note: this.recheckNote(run, phase.name, pr.headSha) };
       store.insertPhaseRun(pr);
       events.emit('phase.started', { phaseRun: pr }, { taskId, phaseRunId: pr.id });
       let injected = this.pendingInject.get(taskId)?.splice(0).join('\n\n') ?? '';
