@@ -54,7 +54,7 @@ export function HilPage() {
   const [tr, setTr] = useState<Record<string, string> | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const [translating, setTranslating] = useState(false);
-  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? defaultReviewEvent(r.payload)); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => toast(e.message, 'error')); }, [id]);
+  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? (r.status === 'open' ? defaultReviewEvent(r.payload) : 'comment')); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => toast(e.message, 'error')); }, [id]);
   useEffect(() => { if (h && h.status === 'open' && !openList.some((x) => x.id === h.id)) void api.hilOne(id).then(setH); }, [openList, h?.id]);
   useEffect(() => { setTr(null); setShowOriginal(false); setTranslating(false); }, [readingLang]);
   // j/k can move to the next checkpoint while a translation is in flight: that answer belongs to the old one
@@ -250,9 +250,12 @@ function Payload({ p, edited, setEdited, answers, setAnswers, actions, setAction
   }
 }
 
-/** A clean review has nothing to argue about: approve it on GitHub unless the human picks otherwise. */
+/**
+ * What an open checkpoint proposes: a clean review has nothing to argue about, so approve it on GitHub.
+ * An answered one shows `comment`, which is what publish uses when the response carried no event (Telegram, CLI).
+ */
 function defaultReviewEvent(p: HilPayload): ReviewEvent {
-  return p.kind === 'approve_result' && p.focus === 'review' && !p.review?.findings.length ? 'approve' : 'comment';
+  return p.kind === 'approve_result' && p.focus === 'review' && p.review?.verdict === 'approve' && !p.review.findings.length ? 'approve' : 'comment';
 }
 
 /** What the checkpoint proposes before the human touches anything: the implementer fixes real defects, a reviewer posts everything. */

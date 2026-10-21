@@ -129,6 +129,64 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     expect(app.store.getTask(task.id)!.status).toBe('pr_open');
   });
 
+  it('review-pr: request changes with nothing to post is published; a plain comment with nothing to say is not', async () => {
+    const dir = tmpDir('sdlc-seg-event-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const first = someonesPr(repo, bare, gh);
+    const second = someonesPr(repo, bare, gh, 'feature2', { 'feature2.txt': 'a\nb\n' });
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: { verdict: 'approve', summary: 'nothing to say', findings: [] } }) })), {}, gh);
+
+    // request_changes is the human's own call: it is published even though the agent found nothing to report
+    const t1 = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: first });
+    await app.engine.advance(t1.id);
+    await app.engine.respondHil(app.store.openHilForTask(t1.id)[0]!.id, { decision: 'approve', reviewEvent: 'request_changes' }, 'web');
+    await app.engine.advance(t1.id);
+    expect(gh.reviews).toEqual([{ number: first, event: 'REQUEST_CHANGES', body: '', comments: [] }]);
+    expect(app.store.phaseRunsForTask(t1.id).find((p) => p.phaseName === 'publish')!.status).toBe('succeeded');
+
+    // a comment event with no findings and no text would be an empty review: still skipped
+    const t2 = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: second });
+    await app.engine.advance(t2.id);
+    await app.engine.respondHil(app.store.openHilForTask(t2.id)[0]!.id, { decision: 'approve', reviewEvent: 'comment' }, 'web');
+    await app.engine.advance(t2.id);
+    expect(gh.reviews.length).toBe(1);
+    const publish = app.store.phaseRunsForTask(t2.id).find((p) => p.phaseName === 'publish')!;
+    expect([publish.status, publish.resultText]).toEqual(['skipped', 'nothing marked to publish']);
+  });
+
+  it('author: an approve event is never published on the task\u2019s own pull request', async () => {
+    const dir = tmpDir('sdlc-seg-own-pr-');
+    const { repo, bare } = makeRemoteRepo(dir, { 'a.txt': 'x\n' });
+    const gh = new FakeGitHub(bare);
+    const app = testApp(dir, new FakeRunner((spec) => ({
+      act: () => {
+        const p = spec.prompt;
+        if (p.includes('Phase: clarify')) return { structured: { questions: [], suggestedPrompt: 'Change a.txt to y', assumptions: [] } };
+        if (p.includes('Phase: test')) return { structured: PASS };
+        if (p.includes('Phase: review')) return { structured: { verdict: 'approve', summary: 'good', findings: [] } };
+        if (p.includes('Phase: QA')) return { structured: QA_OK };
+        if (p.includes('Phase: self_check')) return { text: 'checked' };
+        fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'y\n');
+        return { text: 'implemented' };
+      },
+    })), {}, gh);
+
+    const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'quick' });
+    await app.engine.advance(task.id);
+    await app.engine.respondHil(app.store.openHilForTask(task.id)[0]!.id, { decision: 'approve' }, 'web');   // refine
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    expect(hil.payload.kind === 'approve_result' && [hil.payload.review?.findings.length, hil.payload.canPost, hil.payload.role]).toEqual([0, true, 'author']);
+
+    // the UI hides the event selector for an author, but a stale or hand-made body must not approve the author's own PR
+    await app.engine.respondHil(hil.id, { decision: 'approve', reviewEvent: 'approve' }, 'web');
+    await app.engine.advance(task.id);
+    expect(gh.reviews).toEqual([]);
+    const publish = app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'publish')!;
+    expect([publish.status, publish.resultText]).toEqual(['skipped', 'nothing marked to publish']);
+  });
+
   it('fix-pr: waits for review comments, the human picks which to fix, the fix is pushed; new comments are polled', async () => {
     const dir = tmpDir('sdlc-seg-author-');
     const { repo, bare } = makeRemoteRepo(dir);
