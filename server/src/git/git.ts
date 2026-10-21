@@ -99,6 +99,72 @@ export async function syncBranchWithRemote(o: { repo: string; remote: string | n
   throw new Error(`branch ${o.branch} and ${o.remote}/${o.branch} have diverged (both have commits the other lacks); reconcile them by hand and try again`);
 }
 
+export type CatchUpKind =
+  | 'no-remote'          // the task has no remote, or it is not configured in this repository
+  | 'not-pushed'         // the branch does not exist on the remote yet: the first push creates it
+  | 'not-checked-out'    // the worktree is not on this branch (nothing safe to move)
+  | 'dirty'              // uncommitted changes in the worktree: a phase is mid-work, leave it alone
+  | 'up-to-date'
+  | 'remote-behind'      // the remote copy is an ancestor: a plain push will fast-forward it
+  | 'fast-forwarded'     // the branch had no own commits: moved to the remote tip
+  | 'rebased';           // the two had diverged: sdlc's unpushed commits were replayed on the remote tip
+
+export interface CatchUp { kind: CatchUpKind; incoming: string[]; replayed: string[]; note: string }
+
+/** The task's own commits cannot be replayed on what was pushed from outside: only a human can resolve this. */
+export class CatchUpConflict extends Error {}
+
+/** `git log --oneline` of a range, oldest first, as `<short sha> <author>: <subject>`. */
+async function commitLines(cwd: string, range: string): Promise<string[]> {
+  const out = await git(cwd, ['log', '--reverse', '--format=%h %an: %s', range], { allowFail: true });
+  return out ? out.split('\n').filter(Boolean) : [];
+}
+
+/**
+ * Bring the task branch in a worktree in line with commits pushed to it from outside sdlc (another machine, a
+ * colleague, a merge on GitHub), so that the following push is a fast-forward and an agent sees those commits.
+ *
+ * Behind the remote copy → fast-forward; diverged → `git rebase` onto it, which rewrites only sdlc's own unpushed
+ * commits. A conflict is aborted (worktree left exactly as it was) and reported, so the task escalates to a human.
+ * Nothing is ever force-pushed and no commit is ever dropped.
+ */
+export async function catchUpWithRemoteBranch(o: { worktree: string; remote: string | null; branch: string; auth?: NetAuth }): Promise<CatchUp> {
+  const none = (kind: CatchUpKind): CatchUp => ({ kind, incoming: [], replayed: [], note: '' });
+  const wt = o.worktree;
+  if (!o.remote || !(await remotes(wt)).includes(o.remote)) return none('no-remote');
+  if ((await git(wt, ['rev-parse', '--abbrev-ref', 'HEAD'], { allowFail: true })) !== o.branch) return none('not-checked-out');
+  if (!(await fetchBranch(wt, o.remote, o.branch, o.auth))) return none('not-pushed');
+  const ref = `refs/remotes/${o.remote}/${o.branch}`;
+  const rem = await git(wt, ['rev-parse', ref]);
+  const local = await git(wt, ['rev-parse', 'HEAD']);
+  if (rem === local) return none('up-to-date');
+  if (await isAncestor(wt, rem, local)) return none('remote-behind');
+  // a merge or a rebase would fail (or stash) on uncommitted work; the phase that made it is still running
+  if (await git(wt, ['status', '--porcelain', '--untracked-files=no'], { allowFail: true })) return none('dirty');
+  const incoming = await commitLines(wt, `HEAD..${ref}`);
+  const label = `${o.remote}/${o.branch}`;
+  if (await isAncestor(wt, local, rem)) {
+    await git(wt, ['merge', '--ff-only', '--quiet', ref]);
+    return { kind: 'fast-forwarded', incoming, replayed: [], note: `${o.branch}: fast-forwarded to ${label} (${incoming.length} commit(s) pushed from outside sdlc)` };
+  }
+  const replayed = await commitLines(wt, `${ref}..HEAD`);
+  try {
+    await git(wt, ['-c', 'rebase.autoStash=false', 'rebase', '--quiet', ref]);
+  } catch (e) {
+    const conflicts = await git(wt, ['diff', '--name-only', '--diff-filter=U'], { allowFail: true });
+    await git(wt, ['rebase', '--abort'], { allowFail: true });
+    const list = (title: string, lines: string[]) => (lines.length ? `\n\n${title}\n${lines.map((l) => `  ${l}`).join('\n')}` : '');
+    throw new CatchUpConflict(
+      `branch ${o.branch} has commits that were pushed from outside sdlc, and replaying this task's own commits on top of them conflicts. The rebase was aborted: the worktree is unchanged and no commit was lost.`
+      + list(`commits that came from outside (on ${label}):`, incoming)
+      + list('commits of this task that could not be replayed:', replayed)
+      + list('files in conflict:', conflicts ? conflicts.split('\n').filter(Boolean) : [])
+      + `\n\nResolve it by hand in ${wt} (\`git rebase ${label}\`), then retry the task. Original error: ${(e as Error).message}`,
+    );
+  }
+  return { kind: 'rebased', incoming, replayed, note: `${o.branch}: rebased ${replayed.length} unpushed commit(s) onto ${label} (${incoming.length} commit(s) pushed from outside sdlc)` };
+}
+
 /** Number of commits on a branch that sdlc made for this task (commit trailer `Task: <id>`). */
 export async function taskCommitCount(repo: string, branch: string, taskId: string): Promise<number> {
   const out = await git(repo, ['log', '--format=%H', '-F', `--grep=Task: ${taskId}`, `refs/heads/${branch}`], { allowFail: true });
