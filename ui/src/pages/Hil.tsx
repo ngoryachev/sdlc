@@ -130,6 +130,7 @@ export function HilPage() {
         <span className="muted">for reading only: diff, logs, commands and editable fields stay in English, nothing is saved or sent</span>
       </div>
       {h.status !== 'open' && <div className="chip" style={{ marginBottom: 10 }}>{h.status}{h.response ? ` · ${h.response.decision} via ${h.answeredVia}` : ''}</div>}
+      {p.kind === 'approve_result' && p.supersedes && <div className="small muted" style={{ marginBottom: 10 }}>Replaces <Link href={`/hil/${p.supersedes}`}>an earlier checkpoint</Link> that went stale when the PR got new commits.</div>}
       <Payload p={p} edited={edited} setEdited={setEdited} answers={answers} setAnswers={setAnswers} actions={actions} setActions={setActions} commentActions={commentActions} setCommentActions={setCommentActions} reviewEvent={reviewEvent} setReviewEvent={setReviewEvent} readOnly={h.status !== 'open'} t={t} />
       {h.status === 'open' && (
         <>

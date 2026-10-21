@@ -263,10 +263,11 @@ export class Engine {
 
   /**
    * Background reconciliation with GitHub (every `pr_sync_interval`, and on demand): merged PRs → merged (with cleanup),
-   * closed PRs → closed, base changed on GitHub → followed; tasks without a PR whose commits reached the base → merged.
+   * closed PRs → closed, base changed on GitHub → followed; tasks without a PR whose commits reached the base → merged;
+   * a reviewer waiting at a result checkpoint whose PR moved on → checkpoint dropped as stale and reviewed again.
    */
   async syncTasks(): Promise<{ checked: number; changes: { taskId: string; title: string; change: string }[]; errors: string[] }> {
-    const tasks = this.d.store.listTasks(['pr_open', 'succeeded']);
+    const tasks = this.d.store.listTasks(['pr_open', 'succeeded', 'waiting_hil']);
     const changes: { taskId: string; title: string; change: string }[] = [];
     const errors: string[] = [];
     for (const t of tasks) {
@@ -296,7 +297,9 @@ export class Engine {
 
   private async syncOne(taskId: string): Promise<string | null> {
     const t = this.d.store.getTask(taskId);
-    if (!t || !['pr_open', 'succeeded'].includes(t.status)) return null;
+    if (!t) return null;
+    if (t.status === 'waiting_hil') return this.syncStaleCheckpoint(t);
+    if (!['pr_open', 'succeeded'].includes(t.status)) return null;
     const auth = await this.d.accounts.forRepo(t.repoPath);
     if (t.prNumber) {
       if (t.status !== 'pr_open') return null;
@@ -327,6 +330,49 @@ export class Engine {
     if (!(await refExists(t.repoPath, baseRef)) || !(await isAncestor(t.repoPath, `refs/heads/${t.branch}`, baseRef))) return null;
     await this.markMerged(t, auth);
     return 'merged (branch found in its base)';
+  }
+
+  /**
+   * A reviewer waiting at its result checkpoint decides on the diff its review pass saw. When the author pushes
+   * meanwhile, that decision would be made on a stale diff: the checkpoint is dropped (never counted as an answer,
+   * so `answeredVia` stays empty) and the review runs again on the new head.
+   */
+  private async syncStaleCheckpoint(t: Task): Promise<string | null> {
+    const { store, events } = this.d;
+    // only the reviewer side follows new commits; an author waiting at a checkpoint is left alone
+    if (!t.prNumber || this.roleOfTask(t.id) !== 'reviewer') return null;
+    const open = store.openHilForTask(t.id).find((h) => h.kind === 'approve_result');
+    if (!open) return null;
+    const auth = await this.d.accounts.forRepo(t.repoPath);
+    const pr = await this.d.github.prView(t.repoPath, t.prNumber, auth);
+    if (pr.state !== 'OPEN' || !pr.headRefOid) return null;
+    // re-read after the network call: the human may have answered meanwhile (respondHil takes the same lock), and their answer wins
+    const task = store.getTask(t.id);
+    const hil = store.getHil(open.id);
+    if (!task || task.status !== 'waiting_hil' || !hil || hil.status !== 'open') return null;
+    if (pr.headRefOid === task.prHeadSha) return null;
+    const n = await this.commitsSinceReview(task, pr.headRefOid, auth);
+    const note = `stale: the PR got ${n ? `${n} new commit(s)` : 'new commits'} (${pr.headRefOid.slice(0, 7)}) while this checkpoint was open`;
+    hil.status = 'cancelled'; hil.summary = `${hil.summary} — ${note}`;
+    store.updateHil(hil);
+    this.broker.cancel(hil.id, note);
+    events.emit('hil.answered', { hil }, { taskId: task.id, phaseRunId: hil.phaseRunId });   // notifiers rewrite the card they sent
+    const phaseRun = hil.phaseRunId ? store.getPhaseRun(hil.phaseRunId) : null;
+    if (phaseRun) {
+      phaseRun.status = 'skipped'; phaseRun.resultText = note; phaseRun.endedAt = nowIso();
+      store.updatePhaseRun(phaseRun);
+      events.emit('phase.finished', { phaseRun }, { taskId: task.id, phaseRunId: phaseRun.id });
+    }
+    await this.rereview(task, pr.headRefOid, auth);
+    return `new commits (${pr.headRefOid.slice(0, 7)}) → review (stale checkpoint dropped)`;
+  }
+
+  /** How far the PR head moved past what the last review pass saw; 0 when that cannot be told locally. */
+  private async commitsSinceReview(task: Task, head: string, auth: RepoAuth): Promise<number> {
+    if (!task.prHeadSha) return 0;
+    const remote = task.baseRemote ?? (await defaultRemote(task.repoPath));
+    if (remote) await fetchBranch(task.repoPath, remote, task.branch, auth).catch(() => false);
+    return Number(await git(task.repoPath, ['rev-list', '--count', `${task.prHeadSha}..${head}`], { allowFail: true })) || 0;
   }
 
   /** The task's work reached its base outside sdlc: restack children, clean up, status merged. */
@@ -627,6 +673,13 @@ export class Engine {
 
   // ------------------------------------------------------------------ HIL
   async respondHil(hilId: string, response: HilResponse, via: HilRequest['answeredVia'] = 'web'): Promise<HilRequest> {
+    const hil = this.d.store.getHil(hilId);
+    if (!hil) throw new HttpError(404, 'hil not found');
+    // serialized with the GitHub sync: an answer racing a checkpoint being dropped as stale is not lost
+    return this.withLock(hil.taskId, () => this.respondHilInner(hilId, response, via));
+  }
+
+  private async respondHilInner(hilId: string, response: HilResponse, via: HilRequest['answeredVia']): Promise<HilRequest> {
     const { store, events } = this.d;
     const hil = store.getHil(hilId);
     if (!hil) throw new HttpError(404, 'hil not found');
