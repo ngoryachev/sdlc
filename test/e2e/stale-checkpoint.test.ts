@@ -151,6 +151,102 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     expect(app.store.openHilForTask(task.id)[0]!.id).not.toBe(hil.id);
   });
 
+  it('falls back to the commit the review pass saw when the checkpoint recorded none', async () => {
+    const dir = tmpDir('sdlc-stale-fallback-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const prompts: string[] = [];
+    const app = testApp(dir, reviewRunner(prompts), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    const shown = app.store.getPhaseRun(hil.phaseRunId!)!;
+    expect(shown.headSha).toBe(app.store.getTask(task.id)!.prHeadSha);   // the checkpoint records what the human is shown
+
+    // a checkpoint opened before hil phases recorded their head, on a task whose `prHeadSha` lags behind the pass
+    shown.headSha = null; app.store.updatePhaseRun(shown);
+    const stale = app.store.getTask(task.id)!;
+    stale.prHeadSha = sh(repo, ['rev-parse', 'main']); app.store.updateTask(stale);
+
+    expect((await app.engine.syncTasks()).changes).toEqual([]);          // the review pass itself saw the current head
+    expect([app.store.getHil(hil.id)!.status, prompts.length]).toEqual(['open', 1]);
+
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\nthree\n');
+    expect((await app.engine.syncTasks()).changes.length).toBe(1);       // and a real push is still caught
+    await app.engine.advance(task.id);
+    expect([app.store.getHil(hil.id)!.status, prompts.length]).toEqual(['cancelled', 2]);
+  });
+
+  it('drops a QA gate of a reviewer segment too and starts the whole segment again', async () => {
+    const dir = tmpDir('sdlc-stale-qagate-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const calls: string[] = [];
+    const app = testApp(dir, new FakeRunner((spec) => ({
+      act: () => {
+        const qa = spec.prompt.includes('Phase: QA');
+        calls.push(qa ? 'qa' : 'review');
+        return qa
+          ? { structured: { verdict: 'issues', summary: 'one problem', checks: [], issues: [{ severity: 'blocking', title: 'Crashes on empty input', description: 'boom' }] } }
+          : { structured: { verdict: 'approve', summary: 'fine', findings: [] } };
+      },
+    })), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'standard', prNumber: n, startAt: 'review', stopAfter: 'qa_gate' });
+    expect(app.engine.roleOfTask(task.id)).toBe('reviewer');
+    await app.engine.advance(task.id);
+    await app.engine.respondHil(app.store.openHilForTask(task.id)[0]!.id, { decision: 'approve' }, 'web');
+    await app.engine.advance(task.id);
+
+    const gate = app.store.openHilForTask(task.id)[0]!;
+    expect([gate.kind, calls]).toEqual(['approve_result', ['review', 'qa']]);
+    expect(app.store.phaseRunsForTask(task.id).find((p) => p.id === gate.phaseRunId)!.phaseName).toBe('qa_gate');
+
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\nthree\n');
+    expect((await app.engine.syncTasks()).changes.length).toBe(1);
+    await app.engine.advance(task.id);
+
+    expect(app.store.getHil(gate.id)!.status).toBe('cancelled');
+    expect(app.store.getHil(gate.id)!.summary).toContain('stale: the PR got 1 new commit(s)');
+    expect(calls).toEqual(['review', 'qa', 'review']);                   // the segment runs again from its first phase
+    const next = app.store.openHilForTask(task.id)[0]!;
+    expect([next.id !== gate.id, next.kind, supersedesOf(next)]).toEqual([true, 'approve_result', gate.id]);
+  });
+
+  it('does not throw the checkpoint away when the re-review cannot be started', async () => {
+    const dir = tmpDir('sdlc-stale-nofetch-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const prompts: string[] = [];
+    const app = testApp(dir, reviewRunner(prompts), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\nthree\n');
+    // the pull request is still readable (gh has its own token) but git cannot fetch: expired credentials, network, …
+    sh(repo, ['remote', 'set-url', 'origin', path.join(dir, 'unreachable.git')]);
+
+    const sync = await app.engine.syncTasks();
+    await app.engine.advance(task.id);
+
+    // the re-review could not start, so the decision the human still owes must survive
+    expect([app.store.openHilForTask(task.id).length, app.store.getHil(hil.id)!.status]).toEqual([1, 'open']);
+    expect(sync.errors.length ? 'reported' : 'silent').toBe('reported');
+
+    // and once git works again the task moves on by itself
+    sh(repo, ['remote', 'set-url', 'origin', bare]);
+    expect((await app.engine.syncTasks()).changes.length).toBe(1);
+    await app.engine.advance(task.id);
+    expect([prompts.length, app.store.getHil(hil.id)!.status]).toEqual([2, 'cancelled']);
+    expect(app.store.openHilForTask(task.id)[0]!.id).not.toBe(hil.id);
+  });
+
   it('does not touch a reviewer parked on a question from its still running review phase', async () => {
     const dir = tmpDir('sdlc-stale-question-');
     const { repo, bare } = makeRemoteRepo(dir);

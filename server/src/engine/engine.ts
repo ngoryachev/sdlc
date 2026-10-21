@@ -348,9 +348,13 @@ export class Engine {
     if (pr.state !== 'OPEN' || !pr.headRefOid) return null;
     const base = this.checkpointHead(t, open);
     if (!base || pr.headRefOid === base) return null;
-    const n = await this.commitsBetween(t, base, pr.headRefOid, auth);
-    // re-read last, with no await left before the write: meanwhile the human may have answered (respondHil takes the
-    // same lock and then wins this comparison) or aborted the task (abort does not take it)
+    if (store.getHil(open.id)?.status !== 'open') return null;   // aborted while we were asking GitHub (abort does not take the task lock)
+    // the worktree moves to the new head first: when that fails, nothing is written and the next sync tries again
+    // with the checkpoint still open, instead of leaving a task with no checkpoint and no running phase
+    await this.fetchPrHead(t, auth);
+    const n = await this.commitsBetween(t.repoPath, base, pr.headRefOid);
+    // re-read last, with no fallible step left before the write: meanwhile the human may have answered (respondHil
+    // takes the same lock and then wins this comparison) or aborted the task
     const task = store.getTask(t.id);
     const hil = store.getHil(open.id);
     if (!task || task.status !== 'waiting_hil' || !hil || hil.status !== 'open') return null;
@@ -365,7 +369,7 @@ export class Engine {
       store.updatePhaseRun(phaseRun);
       events.emit('phase.finished', { phaseRun }, { taskId: task.id, phaseRunId: phaseRun.id });
     }
-    await this.rereview(task, pr.headRefOid, auth);
+    this.startRereview(task, pr.headRefOid);
     return `new commits (${pr.headRefOid.slice(0, 7)}) → review (stale checkpoint dropped)`;
   }
 
@@ -384,10 +388,8 @@ export class Engine {
   }
 
   /** How far the PR head moved past what the checkpoint saw; 0 when that cannot be counted locally. */
-  private async commitsBetween(task: Task, from: string, head: string, auth: RepoAuth): Promise<number> {
-    const remote = task.baseRemote ?? (await defaultRemote(task.repoPath));
-    if (remote) await fetchBranch(task.repoPath, remote, task.branch, auth).catch(() => false);
-    return Number(await git(task.repoPath, ['rev-list', '--count', `${from}..${head}`], { allowFail: true })) || 0;
+  private async commitsBetween(repo: string, from: string, head: string): Promise<number> {
+    return Number(await git(repo, ['rev-list', '--count', `${from}..${head}`], { allowFail: true })) || 0;
   }
 
   /** The task's work reached its base outside sdlc: restack children, clean up, status merged. */
@@ -861,15 +863,28 @@ export class Engine {
 
   /** The pull request under review got new commits: bring the worktree to its head and run the task's segment again. */
   private async rereview(task: Task, headSha: string, auth: RepoAuth): Promise<void> {
-    const { store } = this.d;
-    const run = store.latestRunForTask(task.id)!;
-    const { seg } = snapshot(run);
+    await this.fetchPrHead(task, auth);
+    this.startRereview(task, headSha);
+  }
+
+  /**
+   * Bring the worktree to the head of the pull request. This is the part that can fail (no remote access, bad git
+   * credentials), so callers that have to undo nothing on failure do it before they change any state.
+   */
+  private async fetchPrHead(task: Task, auth: RepoAuth): Promise<void> {
     await this.ensureWorktree(task);
     const remote = task.baseRemote ?? (await defaultRemote(task.repoPath));
     if (remote && (await fetchBranch(task.repoPath, remote, task.branch, auth))) {
       // a reviewer never commits, so the local branch simply follows the remote one (also after a force-push)
       await git(task.worktreePath, ['reset', '--hard', '--quiet', `refs/remotes/${remote}/${task.branch}`]);
     }
+  }
+
+  /** Run the task's segment again on the head the worktree is now at. Nothing here awaits: callers rely on that. */
+  private startRereview(task: Task, headSha: string): void {
+    const { store } = this.d;
+    const run = store.latestRunForTask(task.id)!;
+    const { seg } = snapshot(run);
     const fresh = store.getTask(task.id)!;
     fresh.prHeadSha = headSha; fresh.updatedAt = nowIso(); store.updateTask(fresh);
     run.cursor = seg.fromIdx; run.pendingResume = null; run.returnTo = null; run.status = 'running'; this.saveRun(run);
