@@ -118,6 +118,17 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     expect(fs.existsSync(task.worktreePath)).toBe(false);
     expect((await app.engine.syncTasks()).changes).toEqual([]);
     expect(app.store.getTask(task.id)!.status).toBe('closed');
+
+    // and new commits of the colleague no longer start a review: the task is out of the sync for good
+    const phaseRuns = app.store.phaseRunsForTask(task.id).length;
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\nthree\nfour\n');
+    expect((await app.engine.syncTasks()).changes).toEqual([]);
+    expect(app.store.getTask(task.id)!.status).toBe('closed');
+    expect(app.store.phaseRunsForTask(task.id).length).toBe(phaseRuns);
+    expect(app.store.openHilForTask(task.id)).toEqual([]);
+    expect(fs.existsSync(task.worktreePath)).toBe(false);
+    expect(prompts.length).toBe(2);
+    expect(gh.prs.get(n)!.state).toBe('OPEN');
   });
 
   it('fix-pr: waits for review comments, the human picks which to fix, the fix is pushed; new comments are polled', async () => {
