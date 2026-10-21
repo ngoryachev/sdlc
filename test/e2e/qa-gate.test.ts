@@ -60,4 +60,19 @@ describe('qa_gate opens on the severity of the QA issues, not on the verdict the
     expect(verdict).toBe('issues');
     expect(gate!.status).toBe('waiting_hil');
   });
+
+  it('verdict pass with nit-only issues does not open the gate either', async () => {
+    const { task, gate, hil, verdict } = await runQaTail('passnit', qaOutput('pass', ['nit']));
+    expect(verdict).toBe('pass');
+    expect(gate!.status).toBe('skipped');
+    expect(task.status).toBe('succeeded');
+    expect(hil).toBe(null);
+  });
+
+  it('the checkpoint the human sees carries the normalized verdict, and QA issues are never published', async () => {
+    const { hil } = await runQaTail('summary', qaOutput('pass', ['blocking', 'nit']));
+    expect(hil!.summary).toContain('qa: issues (2 issue(s))');            // not the `pass` the model wrote
+    // canFix is false only because this harness starts the task at `qa`, so `implement` is outside its segment
+    expect(hil!.payload).toMatchObject({ kind: 'approve_result', focus: 'qa', canPost: false });
+  });
 });
