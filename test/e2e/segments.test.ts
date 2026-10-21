@@ -155,6 +155,32 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     expect([publish.status, publish.resultText]).toEqual(['skipped', 'nothing marked to publish']);
   });
 
+  it('review-pr: an approve event rides along with the findings the human still wants posted', async () => {
+    const dir = tmpDir('sdlc-seg-approve-nits-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const findings = [
+      { severity: 'nit', title: 'Naming', description: 'two could be clearer', file: 'feature.txt', line: 2 },
+      { severity: 'nit', title: 'Changelog', description: 'worth a line', file: 'CHANGELOG.md', line: 1 },   // outside the PR diff
+    ];
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: { verdict: 'approve', summary: 'good with nits', findings } }) })), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+
+    // the event selector no longer hangs off the findings: approving while posting nits is one answer
+    await app.engine.respondHil(hil.id, { decision: 'approve', comment: 'Nice, two nits.', findings: { 'review:0': 'post', 'review:1': 'post' }, reviewEvent: 'approve' }, 'web');
+    await app.engine.advance(task.id);
+    expect(gh.reviews.length).toBe(1);
+    expect(gh.reviews[0]!.event).toBe('APPROVE');
+    expect(gh.reviews[0]!.comments).toEqual([{ path: 'feature.txt', line: 2, body: expect.stringContaining('Naming') }]);
+    expect(gh.reviews[0]!.body).toContain('Nice, two nits.');
+    expect(gh.reviews[0]!.body).toContain('Changelog');
+    expect(app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'publish')!.status).toBe('succeeded');
+  });
+
   it('author: an approve event is never published on the task\u2019s own pull request', async () => {
     const dir = tmpDir('sdlc-seg-own-pr-');
     const { repo, bare } = makeRemoteRepo(dir, { 'a.txt': 'x\n' });
