@@ -71,6 +71,13 @@ export function tasksRoutes(app: App) {
   r.post('/tasks/:id/inject', async (c) => { const b = z.object({ text: z.string().min(1) }).parse(await c.req.json()); mustTask(c.req.param('id')); return c.json({ accepted: true, ...engine.inject(c.req.param('id'), b.text) }); });
   r.post('/tasks/:id/worktree/remove', async (c) => { mustTask(c.req.param('id')); return c.json(await engine.removeTaskWorktree(c.req.param('id'))); });
   r.post('/tasks/:id/pr/poll', async (c) => { mustTask(c.req.param('id')); return c.json(await engine.pollPrFeedback(c.req.param('id'))); });
+  // a finished task sent back to its implementer with a text, without a pull request comment
+  r.post('/tasks/:id/request-changes', async (c) => {
+    const b = z.object({ text: z.string().trim().min(1) }).safeParse(await c.req.json().catch(() => ({})));
+    if (!b.success) throw new HttpError(400, 'request-changes needs a non-empty text');
+    mustTask(c.req.param('id'));
+    return c.json(await engine.requestChanges(c.req.param('id'), b.data.text));
+  });
 
   r.get('/tasks/:id/diff', async (c) => {
     const t = mustTask(c.req.param('id'));

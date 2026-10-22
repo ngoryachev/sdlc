@@ -751,6 +751,40 @@ export class Engine {
     return hil;
   }
 
+  /**
+   * On demand (button / HTTP): send a finished task back to its implementer with a text, without going through GitHub.
+   * The way out of a pull request is a comment, but sdlc never reads the comments of the account it works with;
+   * and a task that finished without a PR has no way back at all. This is that way: same route as `pr_feedback`, no `gh`.
+   */
+  async requestChanges(taskId: string, text: string): Promise<{ phase: string }> {
+    return this.withLock(taskId, async () => {
+      const { store, events } = this.d;
+      const task = store.getTask(taskId);
+      if (!task) throw new HttpError(404, 'task not found');
+      if (!['pr_open', 'succeeded'].includes(task.status)) throw new HttpError(409, `task is ${task.status}; changes can be requested only on a finished task (pr_open or succeeded)`);
+      if (this.roleOfTask(taskId) === 'reviewer') throw new HttpError(409, 'this task has no implementing phase in its segment: it only reviews the pull request and has nobody to send changes to');
+      if (store.openHilForTask(taskId).length) throw new HttpError(409, 'a human request is already open for this task; answer it instead');
+      const message = text.trim();
+      if (!message) throw new HttpError(400, 'the change request is empty');
+      await this.ensureWorktree(task);   // the worktree may have been cleaned up after delivery
+
+      const run = store.latestRunForTask(taskId)!;
+      const { spec } = snapshot(run);
+      const target = 'implement';   // the role check above is exactly "the segment runs implement" (roleOf), so it is there
+
+      run.pendingResume = { phase: target, feedback: `The developer requested changes to this task (outside the pull request).\n\n${message}\n\nAddress this, keep the change minimal, then stop.` };
+      run.returnTo = null;
+      run.cursor = phaseIndex(spec, target);
+      run.status = 'running';
+      this.saveRun(run);
+      this.setTaskStatus(task, 'running');
+      task.updatedAt = nowIso(); store.updateTask(task);
+      events.emit('task.updated', { task, change: `changes requested → ${target}` }, { taskId });
+      void this.advance(taskId);
+      return { phase: target };
+    });
+  }
+
   /** On demand (button / CLI): read new PR comments via gh and open a pr_feedback HIL. */
   async pollPrFeedback(taskId: string): Promise<{ new: number; hilId?: string; state?: string }> {
     return this.withLock(taskId, () => this.pollPrFeedbackInner(taskId));
