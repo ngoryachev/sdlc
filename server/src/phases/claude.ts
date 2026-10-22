@@ -9,12 +9,25 @@ import { resolvePipelineFile } from '../pipeline/loader.js';
 import { TranscriptWriter } from '../claude/transcript.js';
 import { toolSummary } from '../claude/render.js';
 import type { ClaudeRunSpec } from '../claude/runner.js';
+import { CatchUpConflict } from '../git/git.js';
 import { nowIso } from '../store/ids.js';
 import type { PhaseContext, PhaseExecutor, PhaseOutcome } from './executor.js';
+import { catchUpTaskBranch } from './catchup.js';
 
 export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
   async run(phase: ClaudePhaseSpec, pr: PhaseRun, ctx: PhaseContext): Promise<PhaseOutcome> {
     const { task, run, spec, loaded, repoConfig, config, store, events } = ctx;
+
+    // a phase that writes code works on top of whatever was pushed to the branch, including from outside sdlc;
+    // checking phases (write_scope) only read, so they are not worth a fetch
+    if (!phase.write_scope?.length) {
+      try { await catchUpTaskBranch(ctx, pr); }
+      catch (e) {
+        if (e instanceof CatchUpConflict) { pr.error = e.message; pr.endedAt = nowIso(); return { kind: 'failed', error: pr.error }; }
+        // the fetch itself failed (network, auth): the phase can still do its work, and the push will report the trouble
+        events.emit('engine.warning', { taskId: task.id, message: `could not check ${task.branch} against its remote: ${e instanceof Error ? e.message : String(e)}` }, { taskId: task.id, phaseRunId: pr.id });
+      }
+    }
 
     // prompt: file, templated; review mode picks a variant file if present
     let promptFile = phase.prompt;
