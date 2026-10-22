@@ -170,7 +170,7 @@ export class Engine {
     const fallback = `No task description was given. Judge the change on this branch by its diff against ${baseRef}.\n\n${facts}`;
     if (!this.d.runner.brief) return fallback;
     try {
-      const text = (await this.d.runner.brief(`Describe, in 3 to 6 sentences, what the change on this git branch does, written as the task statement a developer would have been given. Use only the facts below, do not invent details.\n\n${facts}`)).trim();
+      const text = (await this.d.runner.brief(`Describe, in 3 to 6 sentences, what the change on this git branch does, written as the task statement a developer would have been given. Answer in English, whatever language the commit messages are in: this text is published in the pull request body. Use only the facts below, do not invent details.\n\n${facts}`)).trim();
       return text ? `${text}\n\n(This description was generated from the branch itself; the diff against ${baseRef} is the source of truth.)` : fallback;
     } catch { return fallback; }
   }
@@ -1055,10 +1055,9 @@ const taskLabel = (t: Task) => `"${t.title}" (${t.id})`;
 async function defaultRemote(repo: string): Promise<string | null> { const rs = await remotes(repo).catch(() => [] as string[]); return rs.includes('origin') ? 'origin' : rs[0] ?? null; }
 
 export function namingPrompt(text: string): string {
-  // small models drift to English; name the language explicitly when the script tells it
-  const lang = /[\u0400-\u04FF]/.test(text) ? 'Russian (the task is written in Russian)' : 'the same language as the task text';
+  // the title is the pull request title too, so it is English whatever language the task is written in
   return `Name this development task. Reply with one line of JSON and nothing else: {"title": "...", "branch": "..."}
-- title: at most 60 characters, imperative mood, written in ${lang}, no trailing period.
+- title: at most 60 characters, imperative mood, written in English whatever language the task text is in, no trailing period.
 - branch: 2 to 5 English words, lowercase, hyphen-separated, no ids or punctuation.
 
 Task:
