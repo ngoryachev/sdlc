@@ -23,3 +23,5 @@ Test output (empty if tests were not run):
 Do a thorough code review. For every issue produce a finding with `file` and `line` (the line in the new version of the file), a one-line `title`, a `description`, and where useful a concrete `suggestion`. Severity: `blocking` (defect or mismatch with the request), `should_fix` (real but not blocking), `nit` (style/naming).
 
 Also return `summary`: a short markdown assessment of whether the change does what was asked and what to check by hand. `verdict = "request_changes"` only when at least one finding is `blocking`.
+
+Language: write `summary` and every finding in English, whatever language the developer's request is in and whatever language your own settings tell you to answer in — the findings the human marks `post` are published as inline comments on the pull request. A human who wants them in another language presses Translate in the sdlc UI.

@@ -33,3 +33,5 @@ Return:
 - `summary`: what you checked and how, a few lines, written for the developer.
 - `checks`: each check with `name`, `method` (how you exercised it) and `result` (`ok`, `failed`, `not_run`).
 - `issues`: concrete problems with `title`, `description` (expected vs actual, steps), `severity` (`blocking`, `should_fix`, `nit`).
+
+Language: write `summary`, `checks` and `issues` in English, whatever language the developer's request is in and whatever language your own settings tell you to answer in — the whole QA report is published as a comment on the pull request.

@@ -46,6 +46,8 @@ export const api = {
   inject: (id: string, t: string) => req<{ deliveredTo: string }>('POST', `/tasks/${id}/inject`, { text: t }),
   worktreeRemove: (id: string) => req<{ removed: boolean }>('POST', `/tasks/${id}/worktree/remove`),
   prPoll: (id: string) => req<{ new: number; hilId?: string; state?: string }>('POST', `/tasks/${id}/pr/poll`),
+  /** Send a finished task back to its implementer with a text, without going through the pull request. */
+  requestChanges: (id: string, text: string) => req<{ phase: string }>('POST', `/tasks/${id}/request-changes`, { text }),
   diff: (id: string) => req<{ stat: string; patch: string; commits: string[]; missing?: boolean }>('GET', `/tasks/${id}/diff`),
   artifacts: (id: string) => req<{ artifacts: { name: string; size: number }[] }>('GET', `/tasks/${id}/artifacts`),
   artifact: (id: string, name: string) => text(`/tasks/${id}/artifacts/${encodeURIComponent(name)}`),

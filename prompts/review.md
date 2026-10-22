@@ -25,3 +25,5 @@ Evaluate the result against the intent, not against style preferences:
 - What would you check by hand before merging?
 
 Return `summary` as markdown for a human (a few short paragraphs or bullets). Put concrete defects into `findings` with severity `blocking` (a real defect or a clear mismatch with the request), `should_fix` (wrong or fragile enough that it should not ship as is), or `nit` (style, naming, optional polish); include `file` and `line` when you can point at them. The verdict follows the findings: `request_changes` when there is at least one `blocking` or `should_fix` finding, `approve` when findings are empty or `nit` only. Do not invent findings to have something to say.
+
+Language: write `summary` and every finding in English, whatever language the developer's request is in and whatever language your own settings tell you to answer in — the findings the human marks `post` are published on the pull request. A human who wants them in another language presses Translate in the sdlc UI.

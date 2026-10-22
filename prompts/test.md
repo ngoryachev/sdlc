@@ -35,3 +35,5 @@ Return:
 - `tests_added`: files you created or changed.
 - `failures`: concrete defects, each with `title`, `description` (expected vs actual, how to reproduce) and `file`/`line` when you can point at them.
 - `notes`: anything else (pre-existing failures, gaps you could not cover).
+
+Language: write `summary`, `failures` and `notes` in English, whatever language the task is in and whatever language your own settings tell you to answer in — the summary is published in the pull request body.

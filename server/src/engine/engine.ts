@@ -170,7 +170,7 @@ export class Engine {
     const fallback = `No task description was given. Judge the change on this branch by its diff against ${baseRef}.\n\n${facts}`;
     if (!this.d.runner.brief) return fallback;
     try {
-      const text = (await this.d.runner.brief(`Describe, in 3 to 6 sentences, what the change on this git branch does, written as the task statement a developer would have been given. Use only the facts below, do not invent details.\n\n${facts}`)).trim();
+      const text = (await this.d.runner.brief(`Describe, in 3 to 6 sentences, what the change on this git branch does, written as the task statement a developer would have been given. Answer in English, whatever language the commit messages are in: this text is published in the pull request body. Use only the facts below, do not invent details.\n\n${facts}`)).trim();
       return text ? `${text}\n\n(This description was generated from the branch itself; the diff against ${baseRef} is the source of truth.)` : fallback;
     } catch { return fallback; }
   }
@@ -751,6 +751,40 @@ export class Engine {
     return hil;
   }
 
+  /**
+   * On demand (button / HTTP): send a finished task back to its implementer with a text, without going through GitHub.
+   * The way out of a pull request is a comment, but sdlc never reads the comments of the account it works with;
+   * and a task that finished without a PR has no way back at all. This is that way: same route as `pr_feedback`, no `gh`.
+   */
+  async requestChanges(taskId: string, text: string): Promise<{ phase: string }> {
+    return this.withLock(taskId, async () => {
+      const { store, events } = this.d;
+      const task = store.getTask(taskId);
+      if (!task) throw new HttpError(404, 'task not found');
+      if (!['pr_open', 'succeeded'].includes(task.status)) throw new HttpError(409, `task is ${task.status}; changes can be requested only on a finished task (pr_open or succeeded)`);
+      if (this.roleOfTask(taskId) === 'reviewer') throw new HttpError(409, 'this task has no implementing phase in its segment: it only reviews the pull request and has nobody to send changes to');
+      if (store.openHilForTask(taskId).length) throw new HttpError(409, 'a human request is already open for this task; answer it instead');
+      const message = text.trim();
+      if (!message) throw new HttpError(400, 'the change request is empty');
+      await this.ensureWorktree(task);   // the worktree may have been cleaned up after delivery
+
+      const run = store.latestRunForTask(taskId)!;
+      const { spec } = snapshot(run);
+      const target = 'implement';   // the role check above is exactly "the segment runs implement" (roleOf), so it is there
+
+      run.pendingResume = { phase: target, feedback: `The developer requested changes to this task (outside the pull request).\n\n${message}\n\nAddress this, keep the change minimal, then stop.` };
+      run.returnTo = null;
+      run.cursor = phaseIndex(spec, target);
+      run.status = 'running';
+      this.saveRun(run);
+      this.setTaskStatus(task, 'running');
+      task.updatedAt = nowIso(); store.updateTask(task);
+      events.emit('task.updated', { task, change: `changes requested → ${target}` }, { taskId });
+      void this.advance(taskId);
+      return { phase: target };
+    });
+  }
+
   /** On demand (button / CLI): read new PR comments via gh and open a pr_feedback HIL. */
   async pollPrFeedback(taskId: string): Promise<{ new: number; hilId?: string; state?: string }> {
     return this.withLock(taskId, () => this.pollPrFeedbackInner(taskId));
@@ -1021,10 +1055,9 @@ const taskLabel = (t: Task) => `"${t.title}" (${t.id})`;
 async function defaultRemote(repo: string): Promise<string | null> { const rs = await remotes(repo).catch(() => [] as string[]); return rs.includes('origin') ? 'origin' : rs[0] ?? null; }
 
 export function namingPrompt(text: string): string {
-  // small models drift to English; name the language explicitly when the script tells it
-  const lang = /[\u0400-\u04FF]/.test(text) ? 'Russian (the task is written in Russian)' : 'the same language as the task text';
+  // the title is the pull request title too, so it is English whatever language the task is written in
   return `Name this development task. Reply with one line of JSON and nothing else: {"title": "...", "branch": "..."}
-- title: at most 60 characters, imperative mood, written in ${lang}, no trailing period.
+- title: at most 60 characters, imperative mood, written in English whatever language the task text is in, no trailing period.
 - branch: 2 to 5 English words, lowercase, hyphen-separated, no ids or punctuation.
 
 Task:
