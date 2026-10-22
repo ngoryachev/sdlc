@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FakeRunner } from '../fakes/fake-runner.js';
 import { FakeGitHub } from '../fakes/fake-github.js';
-import { commitOnRemote, makeRemoteRepo, makeRepo, sh, testApp, tmpDir } from '../helpers.js';
+import { commitOnRemote, localHas, makeRemoteRepo, makeRepo, remoteHas, sh, testApp, tmpDir } from '../helpers.js';
 
 const PASS = { verdict: 'pass', summary: 'ok', commands: [], tests_added: [], failures: [], notes: '' };
 const QA_OK = { verdict: 'pass', summary: 'works', checks: [], issues: [] };
@@ -107,6 +107,132 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     await app.engine.advance(task.id);
     expect(gh.reviews[1]).toEqual({ number: n, event: 'APPROVE', body: '', comments: [] });
     expect(app.store.getTask(task.id)!.status).toBe('pr_open');
+
+    // closing a reviewer task only stops tracking: the colleague's PR and branch are left alone, whatever is asked for
+    const closed = await app.engine.closeTask(task.id, { closePr: true, deleteBranch: true });
+    expect(closed.status).toBe('closed');
+    expect(gh.calls.filter((c) => c.startsWith('close'))).toEqual([]);
+    expect(gh.prs.get(n)!.state).toBe('OPEN');
+    expect(localHas(repo, 'feature')).toBe(true);
+    expect(remoteHas(bare, 'feature')).toBe(true);
+    expect(fs.existsSync(task.worktreePath)).toBe(false);
+    expect((await app.engine.syncTasks()).changes).toEqual([]);
+    expect(app.store.getTask(task.id)!.status).toBe('closed');
+
+    // and new commits of the colleague no longer start a review: the task is out of the sync for good
+    const phaseRuns = app.store.phaseRunsForTask(task.id).length;
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\nthree\nfour\n');
+    expect((await app.engine.syncTasks()).changes).toEqual([]);
+    expect(app.store.getTask(task.id)!.status).toBe('closed');
+    expect(app.store.phaseRunsForTask(task.id).length).toBe(phaseRuns);
+    expect(app.store.openHilForTask(task.id)).toEqual([]);
+    expect(fs.existsSync(task.worktreePath)).toBe(false);
+    expect(prompts.length).toBe(2);
+    expect(gh.prs.get(n)!.state).toBe('OPEN');
+  });
+
+  it('review-pr: a clean review is approved on GitHub with nothing marked to post', async () => {
+    const dir = tmpDir('sdlc-seg-approve-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: { verdict: 'approve', summary: 'looks good', findings: [] } }) })), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    expect(hil.payload.kind === 'approve_result' && [hil.payload.review?.findings.length, hil.payload.canPost, hil.payload.role]).toEqual([0, true, 'reviewer']);
+
+    // no findings, no review text: the event alone is enough to publish
+    await app.engine.respondHil(hil.id, { decision: 'approve', reviewEvent: 'approve' }, 'web');
+    await app.engine.advance(task.id);
+    expect(gh.reviews).toEqual([{ number: n, event: 'APPROVE', body: '', comments: [] }]);
+    expect(app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'publish')!.status).toBe('succeeded');
+    expect(app.store.getTask(task.id)!.status).toBe('pr_open');
+  });
+
+  it('review-pr: request changes with nothing to post is published; a plain comment with nothing to say is not', async () => {
+    const dir = tmpDir('sdlc-seg-event-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const first = someonesPr(repo, bare, gh);
+    const second = someonesPr(repo, bare, gh, 'feature2', { 'feature2.txt': 'a\nb\n' });
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: { verdict: 'approve', summary: 'nothing to say', findings: [] } }) })), {}, gh);
+
+    // request_changes is the human's own call: it is published even though the agent found nothing to report
+    const t1 = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: first });
+    await app.engine.advance(t1.id);
+    await app.engine.respondHil(app.store.openHilForTask(t1.id)[0]!.id, { decision: 'approve', reviewEvent: 'request_changes' }, 'web');
+    await app.engine.advance(t1.id);
+    expect(gh.reviews).toEqual([{ number: first, event: 'REQUEST_CHANGES', body: '', comments: [] }]);
+    expect(app.store.phaseRunsForTask(t1.id).find((p) => p.phaseName === 'publish')!.status).toBe('succeeded');
+
+    // a comment event with no findings and no text would be an empty review: still skipped
+    const t2 = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: second });
+    await app.engine.advance(t2.id);
+    await app.engine.respondHil(app.store.openHilForTask(t2.id)[0]!.id, { decision: 'approve', reviewEvent: 'comment' }, 'web');
+    await app.engine.advance(t2.id);
+    expect(gh.reviews.length).toBe(1);
+    const publish = app.store.phaseRunsForTask(t2.id).find((p) => p.phaseName === 'publish')!;
+    expect([publish.status, publish.resultText]).toEqual(['skipped', 'nothing marked to publish']);
+  });
+
+  it('review-pr: an approve event rides along with the findings the human still wants posted', async () => {
+    const dir = tmpDir('sdlc-seg-approve-nits-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const findings = [
+      { severity: 'nit', title: 'Naming', description: 'two could be clearer', file: 'feature.txt', line: 2 },
+      { severity: 'nit', title: 'Changelog', description: 'worth a line', file: 'CHANGELOG.md', line: 1 },   // outside the PR diff
+    ];
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: { verdict: 'approve', summary: 'good with nits', findings } }) })), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+
+    // the event selector no longer hangs off the findings: approving while posting nits is one answer
+    await app.engine.respondHil(hil.id, { decision: 'approve', comment: 'Nice, two nits.', findings: { 'review:0': 'post', 'review:1': 'post' }, reviewEvent: 'approve' }, 'web');
+    await app.engine.advance(task.id);
+    expect(gh.reviews.length).toBe(1);
+    expect(gh.reviews[0]!.event).toBe('APPROVE');
+    expect(gh.reviews[0]!.comments).toEqual([{ path: 'feature.txt', line: 2, body: expect.stringContaining('Naming') }]);
+    expect(gh.reviews[0]!.body).toContain('Nice, two nits.');
+    expect(gh.reviews[0]!.body).toContain('Changelog');
+    expect(app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'publish')!.status).toBe('succeeded');
+  });
+
+  it('author: an approve event is never published on the task\u2019s own pull request', async () => {
+    const dir = tmpDir('sdlc-seg-own-pr-');
+    const { repo, bare } = makeRemoteRepo(dir, { 'a.txt': 'x\n' });
+    const gh = new FakeGitHub(bare);
+    const app = testApp(dir, new FakeRunner((spec) => ({
+      act: () => {
+        const p = spec.prompt;
+        if (p.includes('Phase: clarify')) return { structured: { questions: [], suggestedPrompt: 'Change a.txt to y', assumptions: [] } };
+        if (p.includes('Phase: test')) return { structured: PASS };
+        if (p.includes('Phase: review')) return { structured: { verdict: 'approve', summary: 'good', findings: [] } };
+        if (p.includes('Phase: QA')) return { structured: QA_OK };
+        if (p.includes('Phase: self_check')) return { text: 'checked' };
+        fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'y\n');
+        return { text: 'implemented' };
+      },
+    })), {}, gh);
+
+    const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'quick' });
+    await app.engine.advance(task.id);
+    await app.engine.respondHil(app.store.openHilForTask(task.id)[0]!.id, { decision: 'approve' }, 'web');   // refine
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    expect(hil.payload.kind === 'approve_result' && [hil.payload.review?.findings.length, hil.payload.canPost, hil.payload.role]).toEqual([0, true, 'author']);
+
+    // the UI hides the event selector for an author, but a stale or hand-made body must not approve the author's own PR
+    await app.engine.respondHil(hil.id, { decision: 'approve', reviewEvent: 'approve' }, 'web');
+    await app.engine.advance(task.id);
+    expect(gh.reviews).toEqual([]);
+    const publish = app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'publish')!;
+    expect([publish.status, publish.resultText]).toEqual(['skipped', 'nothing marked to publish']);
   });
 
   it('review-pr: commits pushed while the reviewer waits at its checkpoint drop it as stale and review again', async () => {

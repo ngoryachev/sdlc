@@ -30,3 +30,5 @@ Bullet list; write "none" if empty.
 ```
 
 Keep it as short as the task allows. After writing the file, reply with a 2–3 sentence summary of the plan.
+
+Language: write the plan in English, whatever language the task is in and whatever language your own settings tell you to answer in — `.sdlc/plan.md` is published in the pull request body. A human reads it in their language with Translate in the sdlc UI.

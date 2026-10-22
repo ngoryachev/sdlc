@@ -116,6 +116,6 @@ phases:
   - name: qa_gate
     type: hil
     hil: approve_result
-    when: "phases.qa.structured.verdict == 'issues'"
+    when: "phases.qa.structured.verdict == 'issues'"   # the QA verdict is normalized to follow its issues: blocking/should_fix open the gate, nit-only never does
     back_to: implement
     then_goto: qa                    # after the fix: commit, push, then QA again; test and review are not repeated
