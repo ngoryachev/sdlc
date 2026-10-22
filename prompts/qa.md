@@ -29,7 +29,9 @@ Rules:
 - Do not fix anything; report it. Stop servers and background processes you started before you finish.
 
 Return:
-- `verdict`: `pass` (behaves as requested), `issues` (something is wrong or missing; list in `issues`), or `skipped` (could not exercise; say why).
+- `verdict`: `pass` (behaves as requested), `issues` (something is wrong or missing; list in `issues`), or `skipped` (could not exercise; say why). The verdict follows the issues: `issues` when at least one of them is `blocking` or `should_fix`, `pass` when they are `nit` only or there are none. A `blocking` or `should_fix` issue opens a checkpoint for the human whatever verdict you write, so do not invent issues to have something to say.
 - `summary`: what you checked and how, a few lines, written for the developer.
 - `checks`: each check with `name`, `method` (how you exercised it) and `result` (`ok`, `failed`, `not_run`).
 - `issues`: concrete problems with `title`, `description` (expected vs actual, steps), `severity` (`blocking`, `should_fix`, `nit`).
+
+Language: write `summary`, `checks` and `issues` in English, whatever language the developer's request is in and whatever language your own settings tell you to answer in — the whole QA report is published as a comment on the pull request.

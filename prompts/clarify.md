@@ -14,3 +14,5 @@ Return:
 - `questions`: 0–4 questions, each with a short `header` (≤ 12 chars), the `question` text, and optionally 2–4 concrete `options`. Empty if nothing is ambiguous.
 - `suggestedPrompt`: the request rewritten as a precise task statement for an implementer: what to change, where (files/modules you found), how to verify. Keep the developer's intent; do not invent scope. If there are questions, write the prompt so the developer can answer them inline by editing it.
 - `assumptions`: assumptions you made that the developer should be able to veto.
+
+Language: write every field in English — `title` becomes the pull request title and `suggestedPrompt` is published in its body. Write them in English whatever language the developer's request is in and whatever language your own settings tell you to answer in; the developer reads the questions in their language with Translate in the sdlc UI.

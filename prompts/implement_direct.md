@@ -12,3 +12,5 @@ Steps:
 3. Run the project's tests{{repo.test_command?}} and fix failures caused by your change.
 4. Do not commit; the orchestrator commits after this phase.
 5. Finish with a short summary: what changed, how it was verified, anything the reviewer should look at.
+
+Language: write your final summary in English, whatever language the task is in and whatever language your own settings tell you to answer in — it is published in the pull request body and in the comment that answers review feedback.

@@ -52,6 +52,7 @@ export function TaskPage() {
           {landable && <LandButton taskId={task.id} hasPr={!!task.prNumber} stacked={openChildren.length} base={task.baseBranch} onDone={reload} />}
           {['succeeded', 'failed', 'pr_open'].includes(task.status) && <CloseButton task={task} role={role} stacked={openChildren.length} onDone={reload} />}
           {task.status === 'pr_open' && role !== 'reviewer' && <button title="also polled in the background every pr_sync_interval" onClick={async () => { try { const r = await api.prPoll(task.id); toast(r.new ? `${r.new} new comment(s) → HIL` : `no new comments (PR ${r.state})`); void reload(); } catch (e) { toast((e as Error).message, 'error'); } }}>Poll PR comments</button>}
+          {['pr_open', 'succeeded'].includes(task.status) && role !== 'reviewer' && <RequestChanges taskId={task.id} onDone={reload} />}
           <Inject taskId={task.id} disabled={done} />
           {idle && worktreeExists && <ConfirmButton label="Remove worktree" className="" onClick={async () => { try { await api.worktreeRemove(task.id); toast('worktree removed'); void reload(); } catch (e) { toast((e as Error).message, 'error'); } }} />}
           {idle && !worktreeExists && <span className="small muted">worktree removed</span>}
@@ -140,6 +141,24 @@ function Inject({ taskId, disabled }: { taskId: string; disabled: boolean }) {
       <button className="primary" disabled={!text.trim()}>Send</button><button type="button" onClick={() => setOpen(false)}>✕</button>
     </form>
   ) : <button onClick={() => setOpen(true)}>Inject message…</button>;
+}
+
+/** A finished task back to its implementer, without a pull request comment: the text becomes the feedback of the next implement round. */
+function RequestChanges({ taskId, onDone }: { taskId: string; onDone: () => void }) {
+  const toast = useStore((s) => s.toast);
+  const [open, setOpen] = useState(false); const [text, setText] = useState(''); const [busy, setBusy] = useState(false);
+  const go = async () => {
+    setBusy(true);
+    try { const r = await api.requestChanges(taskId, text); toast(`changes requested → ${r.phase}`); setText(''); setOpen(false); onDone(); }
+    catch (e) { toast((e as Error).message, 'error'); } finally { setBusy(false); }
+  };
+  return open ? (
+    <form className="row grow" onSubmit={(e) => { e.preventDefault(); void go(); }}>
+      <input className="grow" autoFocus placeholder="what to change (goes straight to the implementer, no GitHub)" value={text} onChange={(e) => setText(e.target.value)} />
+      <button className="primary" disabled={busy || !text.trim()}>{busy ? 'sending…' : 'Send'}</button>
+      <button type="button" disabled={busy} onClick={() => setOpen(false)}>✕</button>
+    </form>
+  ) : <button title="send this task back to the implementer with a text, without going through the pull request" onClick={() => setOpen(true)}>Request changes…</button>;
 }
 
 function ResumeButton({ onResume }: { onResume: (guidance?: string) => void }) {

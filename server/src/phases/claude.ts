@@ -100,7 +100,7 @@ export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
     pr.endedAt = nowIso();
     if (result.subtype === 'success') {
       pr.resultText = result.result;
-      pr.structuredOutput = normalizeStrings(result.structured_output ?? null);
+      pr.structuredOutput = normalizeVerdict(normalizeStrings(result.structured_output ?? null));
       if (result.terminal_reason === 'aborted_streaming' || result.terminal_reason === 'aborted_tools') {
         return ctx.abortRequested ? { kind: 'aborted' } : { kind: 'paused', reason: 'interrupted' };
       }
@@ -130,6 +130,26 @@ export function resolveModel(phaseName: string, pipeline: { phaseModel?: string;
     model: o.model ?? oAll.model ?? c.model ?? cfg.default ?? pipeline.phaseModel,
     effort: o.effort ?? oAll.effort ?? c.effort ?? cfg.effort ?? pipeline.phaseEffort,
   };
+}
+
+const QA_VERDICTS = ['pass', 'issues', 'skipped'];
+const GATING_SEVERITIES = ['blocking', 'should_fix'];
+
+/**
+ * The QA verdict follows its issues, the way the review verdict follows its findings: one `blocking` or
+ * `should_fix` issue means `issues` whatever the model wrote, and `nit`-only issues never gate. A verdict of
+ * `issues` with no issues listed is kept as is — the model reported a problem without naming it, and a human
+ * should still see it. Done here rather than in the `when` of the gate, so pipeline snapshots taken before
+ * this rule existed get it too.
+ */
+export function normalizeVerdict<T>(v: T): T {
+  if (!v || typeof v !== 'object') return v;
+  const o = v as { verdict?: unknown; issues?: unknown };
+  if (typeof o.verdict !== 'string' || !QA_VERDICTS.includes(o.verdict) || !Array.isArray(o.issues)) return v;
+  const severities = o.issues.map((i) => (i && typeof i === 'object' ? (i as { severity?: unknown }).severity : undefined));
+  if (severities.some((s) => typeof s === 'string' && GATING_SEVERITIES.includes(s))) return (o.verdict === 'issues' ? v : { ...o, verdict: 'issues' }) as T;
+  if (o.verdict === 'issues' && severities.length) return { ...o, verdict: 'pass' } as T;
+  return v;
 }
 
 /** Models sometimes emit literal "\\n" inside JSON strings; turn them into real newlines when the string has none. */
