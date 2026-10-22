@@ -129,7 +129,9 @@ export type HilPayload =
       /** Which list the human decides on: review findings, or QA issues at a gate placed after the QA phase. */
       focus: 'review' | 'qa';
       /** `fix` is offered only when the implementing phase is inside the task's segment; `post` only when there is a PR. */
-      canFix: boolean; canPost: boolean; role: TaskRole }
+      canFix: boolean; canPost: boolean; role: TaskRole;
+      /** Id of the checkpoint this one replaces: that one was dropped because the PR got new commits while it was open. */
+      supersedes?: string | null }
   | { kind: 'pr_feedback'; prUrl: string; comments: { id: string; author: string; body: string; path?: string; line?: number; url: string; reviewState?: string }[] }
   | { kind: 'question'; questions: AskUserQuestionItem[] }
   | { kind: 'escalation'; phaseName: string; error: string; resultSubtype: string | null };

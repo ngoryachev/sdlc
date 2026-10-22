@@ -75,7 +75,7 @@ export class Store {
     this.exec(`INSERT INTO hil_requests VALUES (@id,@task_id,@phase_run_id,@kind,@title,@summary,@payload,@allowed_decisions,@next,@status,@response,@answered_via,@expires_at,@created_at,@answered_at)`, hilToRow(h));
   }
   updateHil(h: HilRequest) {
-    this.exec(`UPDATE hil_requests SET status=@status, response=@response, answered_via=@answered_via, answered_at=@answered_at, payload=@payload WHERE id=@id`, hilToRow(h));
+    this.exec(`UPDATE hil_requests SET status=@status, response=@response, answered_via=@answered_via, answered_at=@answered_at, payload=@payload, summary=@summary WHERE id=@id`, hilToRow(h));
   }
   getHil(id: string): HilRequest | null { const r = this.db.prepare('SELECT * FROM hil_requests WHERE id=?').get(id) as Row | undefined; return r ? rowToHil(r) : null; }
   listHil(opts: { status?: string; taskId?: string } = {}): HilRequest[] {

@@ -235,6 +235,108 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     expect([publish.status, publish.resultText]).toEqual(['skipped', 'nothing marked to publish']);
   });
 
+  it('review-pr: commits pushed while the reviewer waits at its checkpoint drop it as stale and review again', async () => {
+    const dir = tmpDir('sdlc-seg-stale-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const prompts: string[] = [];
+    const app = testApp(dir, new FakeRunner((spec) => ({
+      act: () => {
+        prompts.push(spec.prompt);
+        return { structured: { verdict: 'request_changes', summary: `pass ${prompts.length}`, findings: [{ severity: 'blocking', title: `Problem ${prompts.length}`, description: 'x', file: 'feature.txt', line: 2 }] } };
+      },
+    })), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const stale = app.store.openHilForTask(task.id)[0]!;
+    expect([stale.kind, app.store.getTask(task.id)!.status]).toEqual(['approve_result', 'waiting_hil']);
+    expect(stale.payload.kind === 'approve_result' && stale.payload.supersedes).toBe(null);
+    const firstSha = app.store.getTask(task.id)!.prHeadSha!;
+
+    // the author pushes two commits while the checkpoint is still waiting for an answer
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\nthree\n');
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\n3\n');
+    const sync = await app.engine.syncTasks();
+    expect(sync.changes.map((c) => c.change)).toEqual([expect.stringMatching(/^new commits \(.+\) → review \(stale checkpoint dropped\)$/)]);
+    await app.engine.advance(task.id);
+
+    const dropped = app.store.getHil(stale.id)!;
+    expect([dropped.status, dropped.answeredVia, dropped.response]).toEqual(['cancelled', null, null]);   // not an answer from a human
+    expect(dropped.summary).toContain('stale: the PR got 2 new commit(s)');
+    expect(app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'approve_result')!.status).toBe('skipped');
+    // the review ran again, narrowed to what the two commits changed
+    expect(prompts.length).toBe(2);
+    expect(prompts[1]).toContain('Repeat pass: check only what changed');
+    expect(prompts[1]).toContain(`git diff ${firstSha}..HEAD`);
+    expect(fs.readFileSync(path.join(task.worktreePath, 'feature.txt'), 'utf8')).toBe('one\n2\n3\n');
+    expect(app.store.getTask(task.id)!.prHeadSha).not.toBe(firstSha);
+    // a fresh checkpoint is open and points at the one it replaces
+    const fresh = app.store.openHilForTask(task.id)[0]!;
+    expect([fresh.kind, fresh.status, fresh.id !== stale.id]).toEqual(['approve_result', 'open', true]);
+    expect(fresh.payload.kind === 'approve_result' && fresh.payload.supersedes).toBe(stale.id);
+    // an answer that arrives for the dropped checkpoint is refused, not applied to the new pass
+    await expect(app.engine.respondHil(stale.id, { decision: 'approve', reviewEvent: 'approve' }, 'web')).rejects.toThrow(/already cancelled/);
+    expect(gh.reviews).toEqual([]);
+  });
+
+  it('an answer racing the sync waits for it: the answer to a dropped checkpoint is refused, never published', async () => {
+    const dir = tmpDir('sdlc-seg-race-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    let gate: Promise<void> | null = null;
+    class GatedGitHub extends FakeGitHub {
+      async prView(cwd: string, n: number) { await gate; return super.prView(cwd, n); }
+    }
+    const gh = new GatedGitHub(bare);
+    const n = someonesPr(repo, bare, gh);
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: { verdict: 'request_changes', summary: 'needs work', findings: [{ severity: 'blocking', title: 'Wrong second line', description: 'two should be 2', file: 'feature.txt', line: 2 }] } }) })), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\nthree\n');
+
+    let openGate!: () => void;
+    gate = new Promise<void>((r) => { openGate = r; });
+    const sync = app.engine.syncTasks();                                            // parked inside prView, holding the task lock
+    const answer = app.engine.respondHil(hil.id, { decision: 'approve', reviewEvent: 'approve' }, 'web').then(() => 'applied', (e: Error) => e.message);
+    openGate();
+    await sync;
+    expect(await answer).toMatch(/already cancelled/);
+    await app.engine.advance(task.id);
+    expect(gh.reviews).toEqual([]);                                                 // the approval was never turned into a GitHub review
+    expect(app.store.openHilForTask(task.id)[0]!.id).not.toBe(hil.id);              // the human decides again, on the new head
+  });
+
+  it('an author waiting at its own checkpoint is left alone when the PR branch gets new commits', async () => {
+    const dir = tmpDir('sdlc-seg-author-stale-');
+    const { repo, bare } = makeRemoteRepo(dir, { 'a.txt': 'x\n' });
+    const gh = new FakeGitHub(bare);
+    const app = testApp(dir, new FakeRunner((spec) => ({
+      act: () => {
+        const p = spec.prompt;
+        if (p.includes('Phase: clarify')) return { structured: { questions: [], suggestedPrompt: 'change a', assumptions: [] } };
+        if (p.includes('Phase: test')) return { structured: PASS };
+        if (p.includes('Phase: review')) return { structured: { verdict: 'request_changes', summary: 'one thing', findings: [{ severity: 'blocking', title: 'Fix a', description: 'do it', file: 'a.txt', line: 1 }] } };
+        if (p.includes('Phase: implement')) { fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'y\n'); return { text: 'implemented' }; }
+        return { text: 'checked' };
+      },
+    })), { max_loops: 0 }, gh);
+
+    const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'quick' });
+    await app.engine.advance(task.id);
+    await app.engine.respondHil(app.store.openHilForTask(task.id)[0]!.id, { decision: 'approve' }, 'web');   // refine
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    expect([hil.kind, app.engine.roleOfTask(task.id), app.store.getTask(task.id)!.prNumber]).toEqual(['approve_result', 'author', 1]);
+
+    commitOnRemote(bare, app.store.getTask(task.id)!.branch, 'a.txt', 'someone else\n');
+    expect((await app.engine.syncTasks()).changes).toEqual([]);            // the author side never re-reviews on new commits
+    expect(app.store.getHil(hil.id)!.status).toBe('open');
+    expect(app.store.getTask(task.id)!.status).toBe('waiting_hil');
+  });
+
   it('fix-pr: waits for review comments, the human picks which to fix, the fix is pushed; new comments are polled', async () => {
     const dir = tmpDir('sdlc-seg-author-');
     const { repo, bare } = makeRemoteRepo(dir);

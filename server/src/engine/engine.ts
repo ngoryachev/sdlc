@@ -270,10 +270,11 @@ export class Engine {
 
   /**
    * Background reconciliation with GitHub (every `pr_sync_interval`, and on demand): merged PRs → merged (with cleanup),
-   * closed PRs → closed, base changed on GitHub → followed; tasks without a PR whose commits reached the base → merged.
+   * closed PRs → closed, base changed on GitHub → followed; tasks without a PR whose commits reached the base → merged;
+   * a reviewer waiting at a result checkpoint whose PR moved on → checkpoint dropped as stale and reviewed again.
    */
   async syncTasks(): Promise<{ checked: number; changes: { taskId: string; title: string; change: string }[]; errors: string[] }> {
-    const tasks = this.d.store.listTasks(['pr_open', 'succeeded']);
+    const tasks = this.d.store.listTasks(['pr_open', 'succeeded', 'waiting_hil']);
     const changes: { taskId: string; title: string; change: string }[] = [];
     const errors: string[] = [];
     for (const t of tasks) {
@@ -303,7 +304,9 @@ export class Engine {
 
   private async syncOne(taskId: string): Promise<string | null> {
     const t = this.d.store.getTask(taskId);
-    if (!t || !['pr_open', 'succeeded'].includes(t.status)) return null;
+    if (!t) return null;
+    if (t.status === 'waiting_hil') return this.syncStaleCheckpoint(t);
+    if (!['pr_open', 'succeeded'].includes(t.status)) return null;
     const auth = await this.d.accounts.forRepo(t.repoPath);
     if (t.prNumber) {
       if (t.status !== 'pr_open') return null;
@@ -334,6 +337,66 @@ export class Engine {
     if (!(await refExists(t.repoPath, baseRef)) || !(await isAncestor(t.repoPath, `refs/heads/${t.branch}`, baseRef))) return null;
     await this.markMerged(t, auth);
     return 'merged (branch found in its base)';
+  }
+
+  /**
+   * A reviewer waiting at its result checkpoint decides on the diff its review pass saw. When the author pushes
+   * meanwhile, that decision would be made on a stale diff: the checkpoint is dropped (never counted as an answer,
+   * so `answeredVia` stays empty) and the review runs again on the new head.
+   */
+  private async syncStaleCheckpoint(t: Task): Promise<string | null> {
+    const { store, events } = this.d;
+    // only the reviewer side follows new commits; an author waiting at a checkpoint is left alone
+    if (!t.prNumber || this.roleOfTask(t.id) !== 'reviewer') return null;
+    const open = store.openHilForTask(t.id).find((h) => h.kind === 'approve_result');
+    if (!open) return null;
+    const auth = await this.d.accounts.forRepo(t.repoPath);
+    const pr = await this.d.github.prView(t.repoPath, t.prNumber, auth);
+    if (pr.state !== 'OPEN' || !pr.headRefOid) return null;
+    const base = this.checkpointHead(t, open);
+    if (!base || pr.headRefOid === base) return null;
+    if (store.getHil(open.id)?.status !== 'open') return null;   // aborted while we were asking GitHub (abort does not take the task lock)
+    // the worktree moves to the new head first: when that fails, nothing is written and the next sync tries again
+    // with the checkpoint still open, instead of leaving a task with no checkpoint and no running phase
+    await this.fetchPrHead(t, pr.headRefOid, auth);
+    const n = await this.commitsBetween(t.repoPath, base, pr.headRefOid);
+    // re-read last, with no fallible step left before the write: meanwhile the human may have answered (respondHil
+    // takes the same lock and then wins this comparison) or aborted the task
+    const task = store.getTask(t.id);
+    const hil = store.getHil(open.id);
+    if (!task || task.status !== 'waiting_hil' || !hil || hil.status !== 'open') return null;
+    const note = `stale: the PR got ${n ? `${n} new commit(s)` : 'new commits'} (${pr.headRefOid.slice(0, 7)}) while this checkpoint was open`;
+    hil.status = 'cancelled'; hil.summary = `${hil.summary} — ${note}`;
+    store.updateHil(hil);
+    this.broker.cancel(hil.id, note);
+    events.emit('hil.answered', { hil }, { taskId: task.id, phaseRunId: hil.phaseRunId });   // notifiers rewrite the card they sent
+    const phaseRun = hil.phaseRunId ? store.getPhaseRun(hil.phaseRunId) : null;
+    if (phaseRun) {
+      phaseRun.status = 'skipped'; phaseRun.resultText = note; phaseRun.endedAt = nowIso();
+      store.updatePhaseRun(phaseRun);
+      events.emit('phase.finished', { phaseRun }, { taskId: task.id, phaseRunId: phaseRun.id });
+    }
+    this.startRereview(task, pr.headRefOid);
+    return `new commits (${pr.headRefOid.slice(0, 7)}) → review (stale checkpoint dropped)`;
+  }
+
+  /**
+   * The commit an open checkpoint was built from, to tell a moved PR head from one that never moved: the HEAD recorded
+   * when the checkpoint opened, else the last pass that recorded one, else the PR head of the last re-review. A task
+   * that opened the pull request itself has no `prHeadSha` yet, so null here means "nothing to compare with".
+   */
+  private checkpointHead(task: Task, hil: HilRequest): string | null {
+    const { store } = this.d;
+    const own = hil.phaseRunId ? store.getPhaseRun(hil.phaseRunId)?.headSha : null;
+    if (own) return own;
+    const run = store.latestRunForTask(task.id);
+    const seen = run ? store.phaseRunsForRun(run.id).filter((p) => p.headSha && (p.status === 'succeeded' || p.status === 'failed')).at(-1)?.headSha : null;
+    return seen ?? task.prHeadSha;
+  }
+
+  /** How far the PR head moved past what the checkpoint saw; 0 when that cannot be counted locally. */
+  private async commitsBetween(repo: string, from: string, head: string): Promise<number> {
+    return Number(await git(repo, ['rev-list', '--count', `${from}..${head}`], { allowFail: true })) || 0;
   }
 
   /** The task's work reached its base outside sdlc: restack children, clean up, status merged. */
@@ -526,10 +589,9 @@ export class Engine {
 
       const pr = this.newPhaseRun(run, task, phase);
       pr.status = 'running'; pr.startedAt = nowIso();
-      if (phase.type === 'claude') {
-        pr.headSha = (await git(task.worktreePath, ['rev-parse', 'HEAD'], { allowFail: true })) || null;
-        tpl.recheck = { note: this.recheckNote(run, phase.name, pr.headSha) };
-      }
+      // a hil phase records it too: that is the commit the human is shown and decides on
+      if (phase.type === 'claude' || phase.type === 'hil') pr.headSha = (await git(task.worktreePath, ['rev-parse', 'HEAD'], { allowFail: true })) || null;
+      if (phase.type === 'claude') tpl.recheck = { note: this.recheckNote(run, phase.name, pr.headSha) };
       store.insertPhaseRun(pr);
       events.emit('phase.started', { phaseRun: pr }, { taskId, phaseRunId: pr.id });
       let injected = this.pendingInject.get(taskId)?.splice(0).join('\n\n') ?? '';
@@ -634,6 +696,13 @@ export class Engine {
 
   // ------------------------------------------------------------------ HIL
   async respondHil(hilId: string, response: HilResponse, via: HilRequest['answeredVia'] = 'web'): Promise<HilRequest> {
+    const hil = this.d.store.getHil(hilId);
+    if (!hil) throw new HttpError(404, 'hil not found');
+    // serialized with the GitHub sync: an answer racing a checkpoint being dropped as stale is not lost
+    return this.withLock(hil.taskId, () => this.respondHilInner(hilId, response, via));
+  }
+
+  private async respondHilInner(hilId: string, response: HilResponse, via: HilRequest['answeredVia']): Promise<HilRequest> {
     const { store, events } = this.d;
     const hil = store.getHil(hilId);
     if (!hil) throw new HttpError(404, 'hil not found');
@@ -835,15 +904,34 @@ export class Engine {
 
   /** The pull request under review got new commits: bring the worktree to its head and run the task's segment again. */
   private async rereview(task: Task, headSha: string, auth: RepoAuth): Promise<void> {
-    const { store } = this.d;
-    const run = store.latestRunForTask(task.id)!;
-    const { seg } = snapshot(run);
+    await this.fetchPrHead(task, headSha, auth);
+    this.startRereview(task, headSha);
+  }
+
+  /**
+   * Bring the worktree to the head of the pull request. This is the part that can fail (no remote access, bad git
+   * credentials, or the head branch renamed on GitHub, where `fetchBranch` simply finds nothing), so callers do it
+   * before they change any state: it either leaves the worktree holding that head, or throws having changed nothing.
+   */
+  private async fetchPrHead(task: Task, headSha: string, auth: RepoAuth): Promise<void> {
     await this.ensureWorktree(task);
     const remote = task.baseRemote ?? (await defaultRemote(task.repoPath));
     if (remote && (await fetchBranch(task.repoPath, remote, task.branch, auth))) {
       // a reviewer never commits, so the local branch simply follows the remote one (also after a force-push)
       await git(task.worktreePath, ['reset', '--hard', '--quiet', `refs/remotes/${remote}/${task.branch}`]);
     }
+    // a pass on a worktree that never got there would review other code than the pull request has, and the head
+    // recorded as reviewed would be one nothing looked at: the next sync would see it move again, endlessly
+    if (!(await isAncestor(task.worktreePath, headSha, 'HEAD').catch(() => false))) {
+      throw new Error(`${task.branch} in the worktree did not reach the pull request head ${headSha.slice(0, 7)}: is it still the head branch of PR #${task.prNumber} on ${remote ?? 'the remote'}?`);
+    }
+  }
+
+  /** Run the task's segment again on the head the worktree is now at. Nothing here awaits: callers rely on that. */
+  private startRereview(task: Task, headSha: string): void {
+    const { store } = this.d;
+    const run = store.latestRunForTask(task.id)!;
+    const { seg } = snapshot(run);
     const fresh = store.getTask(task.id)!;
     fresh.prHeadSha = headSha; fresh.updatedAt = nowIso(); store.updateTask(fresh);
     run.cursor = seg.fromIdx; run.pendingResume = null; run.returnTo = null; run.status = 'running'; this.saveRun(run);

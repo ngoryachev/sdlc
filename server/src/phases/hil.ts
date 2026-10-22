@@ -63,8 +63,11 @@ async function buildPayload(kind: HilPhaseSpec['hil'], ctx: PhaseContext): Promi
       const focus = qa?.verdict === 'issues' && qaIdx >= 0 && qaIdx < ctx.run.cursor ? 'qa' : 'review';
       const hilPhase = ctx.spec.phases[ctx.run.cursor];
       const backIdx = ctx.spec.phases.findIndex((p) => p.name === (hilPhase?.type === 'hil' && hilPhase.back_to ? hilPhase.back_to : 'implement'));
+      // a previous checkpoint dropped as stale (the PR moved while it was open) is linked from the one that replaces it
+      const prev = ctx.store.listHil({ taskId: task.id }).find((h) => h.kind === 'approve_result');
       return { kind, diffStat: d.stat, diff: d.patch, testOutput, test, review, qa, commits: d.commits, branch: task.branch,
-        focus, canFix: backIdx >= ctx.segment.fromIdx && backIdx >= 0, canPost: !!task.prNumber && focus === 'review', role: ctx.role };
+        focus, canFix: backIdx >= ctx.segment.fromIdx && backIdx >= 0, canPost: !!task.prNumber && focus === 'review', role: ctx.role,
+        supersedes: prev?.status === 'cancelled' ? prev.id : null };
     }
   }
 }
