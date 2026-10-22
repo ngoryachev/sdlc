@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'wouter';
 import type { ModelOverrides, PhaseRun } from '@sdlc/shared';
-import type { Task } from '@sdlc/shared';
+import type { Task, TaskRole } from '@sdlc/shared';
 import { api, type ModelChoice, type TaskDetail } from '../lib/api.js';
 import { StatusChip } from './Dashboard.js';
 import { ModelPicker } from '../components/ModelPicker.js';
@@ -50,7 +50,7 @@ export function TaskPage() {
           {!done && task.status !== 'pr_open' && <ConfirmButton label="Abort" onClick={() => act('abort')} />}
           {task.status === 'succeeded' && !task.prNumber && <CreatePrButton task={task} onDone={reload} />}
           {landable && <LandButton taskId={task.id} hasPr={!!task.prNumber} stacked={openChildren.length} base={task.baseBranch} onDone={reload} />}
-          {['succeeded', 'failed', 'pr_open'].includes(task.status) && <CloseButton task={task} stacked={openChildren.length} onDone={reload} />}
+          {['succeeded', 'failed', 'pr_open'].includes(task.status) && <CloseButton task={task} role={role} stacked={openChildren.length} onDone={reload} />}
           {task.status === 'pr_open' && role !== 'reviewer' && <button title="also polled in the background every pr_sync_interval" onClick={async () => { try { const r = await api.prPoll(task.id); toast(r.new ? `${r.new} new comment(s) → HIL` : `no new comments (PR ${r.state})`); void reload(); } catch (e) { toast((e as Error).message, 'error'); } }}>Poll PR comments</button>}
           {['pr_open', 'succeeded'].includes(task.status) && role !== 'reviewer' && <RequestChanges taskId={task.id} onDone={reload} />}
           <Inject taskId={task.id} disabled={done} />
@@ -211,18 +211,28 @@ function CreatePrButton({ task, onDone }: { task: Task; onDone: () => void }) {
   );
 }
 
-function CloseButton({ task, stacked, onDone }: { task: Task; stacked: number; onDone: () => void }) {
+/** A reviewer task works on somebody else's pull request and branch: closing it only stops tracking them. */
+function CloseButton({ task, role, stacked, onDone }: { task: Task; role: TaskRole | null; stacked: number; onDone: () => void }) {
   const toast = useStore((s) => s.toast);
+  const reviewer = role === 'reviewer';
   const [armed, setArmed] = useState(false);
   const [deleteBranch, setDeleteBranch] = useState(false);
   const [closePr, setClosePr] = useState(true);
   const [busy, setBusy] = useState(false);
+  const hint = 'the pull request stays open on GitHub; new commits are no longer re-reviewed';
   const go = async () => {
     setBusy(true);
-    try { await api.closeTask(task.id, { deleteBranch, closePr }); toast('task closed'); setArmed(false); onDone(); }
+    try { await api.closeTask(task.id, reviewer ? {} : { deleteBranch, closePr }); toast(reviewer ? 'no longer tracked' : 'task closed'); setArmed(false); onDone(); }
     catch (e) { toast((e as Error).message, 'error'); } finally { setBusy(false); }
   };
-  if (!armed) return <button onClick={() => setArmed(true)} title="drop the task without merging">Close</button>;
+  if (!armed) return <button onClick={() => setArmed(true)} title={reviewer ? hint : 'drop the task without merging'}>{reviewer ? 'Stop tracking' : 'Close'}</button>;
+  if (reviewer) return (
+    <span className="row" style={{ gap: 6 }}>
+      <span className="small muted">{hint}</span>
+      <button className="danger confirm" disabled={busy} onClick={() => void go()}>Stop tracking</button>
+      <button disabled={busy} onClick={() => setArmed(false)}>cancel</button>
+    </span>
+  );
   return (
     <span className="row" style={{ gap: 6 }}>
       {task.prNumber && task.status === 'pr_open' && <label className="small"><input type="checkbox" style={{ width: 'auto' }} checked={closePr} onChange={(e) => setClosePr(e.target.checked)} /> close PR #{task.prNumber}</label>}

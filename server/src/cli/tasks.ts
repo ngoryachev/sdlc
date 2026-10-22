@@ -96,7 +96,7 @@ export function registerTaskCommands(program: Command) {
     const t = remote ? await remote.call<Task>('POST', `/tasks/${id}/pr`, { title: o.title, draft: !!o.draft }) : await createApp().engine.createPrForTask(id, { title: o.title, draft: !!o.draft });
     console.log(`PR #${t.prNumber} ${t.prUrl}`);
   });
-  program.command('close <taskId>').description('Close a task without merging (worktree removed; PR closed unless --keep-pr)').option('--delete-branch', 'also delete the branch (local, and remote for sdlc branches)').option('--keep-pr', 'leave the PR open').action(async (id, o) => {
+  program.command('close <taskId>').description('Close a task without merging (worktree removed; PR closed unless --keep-pr; a reviewer task never touches the PR or the branch)').option('--delete-branch', 'also delete the branch (local, and remote for sdlc branches)').option('--keep-pr', 'leave the PR open').action(async (id, o) => {
     const remote = await ServerClient.detect();
     const body = { deleteBranch: !!o.deleteBranch, closePr: !o.keepPr };
     const t = remote ? await remote.call<Task>('POST', `/tasks/${id}/close`, body) : await createApp().engine.closeTask(id, body);

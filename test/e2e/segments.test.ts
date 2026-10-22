@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FakeRunner } from '../fakes/fake-runner.js';
 import { FakeGitHub } from '../fakes/fake-github.js';
-import { commitOnRemote, makeRemoteRepo, makeRepo, sh, testApp, tmpDir } from '../helpers.js';
+import { commitOnRemote, localHas, makeRemoteRepo, makeRepo, remoteHas, sh, testApp, tmpDir } from '../helpers.js';
 
 const PASS = { verdict: 'pass', summary: 'ok', commands: [], tests_added: [], failures: [], notes: '' };
 const QA_OK = { verdict: 'pass', summary: 'works', checks: [], issues: [] };
@@ -107,6 +107,28 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     await app.engine.advance(task.id);
     expect(gh.reviews[1]).toEqual({ number: n, event: 'APPROVE', body: '', comments: [] });
     expect(app.store.getTask(task.id)!.status).toBe('pr_open');
+
+    // closing a reviewer task only stops tracking: the colleague's PR and branch are left alone, whatever is asked for
+    const closed = await app.engine.closeTask(task.id, { closePr: true, deleteBranch: true });
+    expect(closed.status).toBe('closed');
+    expect(gh.calls.filter((c) => c.startsWith('close'))).toEqual([]);
+    expect(gh.prs.get(n)!.state).toBe('OPEN');
+    expect(localHas(repo, 'feature')).toBe(true);
+    expect(remoteHas(bare, 'feature')).toBe(true);
+    expect(fs.existsSync(task.worktreePath)).toBe(false);
+    expect((await app.engine.syncTasks()).changes).toEqual([]);
+    expect(app.store.getTask(task.id)!.status).toBe('closed');
+
+    // and new commits of the colleague no longer start a review: the task is out of the sync for good
+    const phaseRuns = app.store.phaseRunsForTask(task.id).length;
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\nthree\nfour\n');
+    expect((await app.engine.syncTasks()).changes).toEqual([]);
+    expect(app.store.getTask(task.id)!.status).toBe('closed');
+    expect(app.store.phaseRunsForTask(task.id).length).toBe(phaseRuns);
+    expect(app.store.openHilForTask(task.id)).toEqual([]);
+    expect(fs.existsSync(task.worktreePath)).toBe(false);
+    expect(prompts.length).toBe(2);
+    expect(gh.prs.get(n)!.state).toBe('OPEN');
   });
 
   it('fix-pr: waits for review comments, the human picks which to fix, the fix is pushed; new comments are polled', async () => {

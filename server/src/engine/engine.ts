@@ -240,18 +240,25 @@ export class Engine {
     });
   }
 
-  /** Drop a task without merging: worktree removed, PR closed (optional), branch deleted (optional). */
+  /**
+   * Drop a task without merging: worktree removed, PR closed (optional), branch deleted (optional).
+   * On a reviewer task the pull request and the branch belong to somebody else: closing only stops tracking them,
+   * whatever the caller asked for.
+   */
   async closeTask(taskId: string, o: { deleteBranch?: boolean; closePr?: boolean } = {}): Promise<Task> {
     return this.withLock(taskId, async () => {
       const task = this.mustTask(taskId);
       if (!['succeeded', 'failed', 'pr_open'].includes(task.status)) throw new HttpError(409, `task is ${task.status}; only finished tasks (succeeded, failed, pr_open) can be closed; use Abort for a running one`);
+      const reviewer = this.roleOfTask(taskId) === 'reviewer';
+      const deleteBranch = !reviewer && !!o.deleteBranch;
+      const closePr = !reviewer && o.closePr !== false;
       const children = this.childTasks(task);
-      if (o.deleteBranch && children.length) throw new HttpError(409, `tasks are stacked on ${task.branch}: ${children.map(taskLabel).join(', ')}. Close without deleting the branch, or deal with them first.`);
+      if (deleteBranch && children.length) throw new HttpError(409, `tasks are stacked on ${task.branch}: ${children.map(taskLabel).join(', ')}. Close without deleting the branch, or deal with them first.`);
       const auth = await this.d.accounts.forRepo(task.repoPath);
-      if (task.prNumber && task.status === 'pr_open' && o.closePr !== false) await this.d.github.prClose(task.repoPath, task.prNumber, auth);
+      if (task.prNumber && task.status === 'pr_open' && closePr) await this.d.github.prClose(task.repoPath, task.prNumber, auth);
       const wt = await removeWorktree(task.repoPath, task.worktreePath, task.branch).catch(() => ({ removed: false }));
       let branchDeleted = false;
-      if (o.deleteBranch) {
+      if (deleteBranch) {
         branchDeleted = await deleteLocalBranch(task.repoPath, task.branch);
         if (isSdlcBranch(task.branch, task.id)) branchDeleted = (await deleteRemoteBranch(task.repoPath, task.baseRemote ?? (await defaultRemote(task.repoPath)), task.branch, auth)) || branchDeleted;
       }
