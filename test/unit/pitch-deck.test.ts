@@ -140,3 +140,54 @@ describe('pitch deck: navigation matches the way it is documented', () => {
     for (const sel of ['<button', '<a ', 'class="mock', '<pre']) expect(html).toContain(sel);
   });
 });
+
+describe('pitch deck: a viewer-driven slide opens in its demo state', () => {
+  // Entering slide 4, 5 or 7 resets it, so a presenter who steps the pipeline, backs up and
+  // comes again gets the demo rather than the state they left behind. The reset has to restore
+  // everything the slide's key handler can change, or the slide comes back half-edited.
+  const showBody = () => part(/function show\(i, push\) \{([\s\S]*?)\n  \}/, 'the show() function');
+  const objBody = (name: string) =>
+    part(new RegExp(`var ${name} = \\{([\\s\\S]*?)\\n  \\};`), `the ${name} object`);
+  const perSlide = (name: string): Record<string, string> => {
+    const parts = objBody(name).split(/'(s-[\w-]+)':/).slice(1);
+    return Object.fromEntries(parts.flatMap((p, i) => (i % 2 ? [] : [[p, parts[i + 1]!]])));
+  };
+  /** The state a block writes to, by field name: `pcur`, `GATES[i].on` and `g.on` each count once. */
+  const written = (body: string): string[] => {
+    const locals = new Set([...body.matchAll(/\bvar\s+([A-Za-z_]\w*)/g)].map((m) => m[1]));
+    const slots = [...body.matchAll(/(?:\.|\b)([A-Za-z_]\w*)\s*(?:=(?!=)|\+\+|--)/g)].map((m) => m[1]!);
+    return [...new Set(slots.filter((s) => !locals.has(s)))].sort();
+  };
+
+  it('resets the slide on entry, and not on a re-render of the slide already on screen', () => {
+    expect(showBody()).toMatch(/cur !== shown/);
+    expect(showBody()).toMatch(/resets\[/);
+  });
+
+  it('restores every piece of state the slide lets the viewer change', () => {
+    const handlers = perSlide('handlers');
+    const resets = perSlide('resets');
+    expect(Object.keys(resets)).toEqual(Object.keys(handlers));
+    for (const [slide, handler] of Object.entries(handlers)) {
+      expect(written(resets[slide]!), `#${slide} must reset what its keys change`)
+        .toEqual(expect.arrayContaining(written(handler)));
+    }
+  });
+
+  it('snapshots the demo values before the viewer can touch them', () => {
+    // `g.on0` / `f.a0` are the baselines the reset restores. Taken late they would snapshot an edit.
+    for (const [live, base] of [['on', 'on0'], ['a', 'a0']]) {
+      const at = script.indexOf(`.${base} = `);
+      expect(at, `the ${base} baseline`).toBeGreaterThan(-1);
+      expect(script.slice(at, at + 40), `${base} must copy the live ${live}`).toContain(`.${live};`);
+      expect(at, `${base} must be captured before the resets run`).toBeLessThan(script.indexOf('var resets = {'));
+    }
+  });
+
+  it('keeps navigating when the browser refuses to update the hash', () => {
+    // Opened from disk the document can be an opaque origin, where replaceState throws.
+    expect(showBody()).toMatch(/try \{[^}]*history\.replaceState[\s\S]*?\} catch/);
+    // The slide must already be painted by then, so a throw cannot leave the deck mid-transition.
+    expect(showBody().indexOf('classList.toggle')).toBeLessThan(showBody().indexOf('history.replaceState'));
+  });
+});
