@@ -97,3 +97,36 @@ describe('pitch deck: the slides', () => {
     expect(html).toContain('https://github.com/ngoryachev/sdlc');
   });
 });
+
+describe('pitch deck: navigation matches the way it is documented', () => {
+  // The head comment is the only documentation the deck has; it already drifted from the
+  // click handler once ("right or left half" vs a 32% split), so both halves are pinned here.
+  const header = /<!--([\s\S]*?)-->/.exec(html)![1];
+  const clickHandler = /getElementById\('deck'\)\.addEventListener\('click',([\s\S]*?)\n  \}\);/.exec(script)?.[1] ?? '';
+
+  it('handles every key the head comment advertises', () => {
+    const advertised = [
+      'ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown', // "arrows"
+      'PageUp', 'PageDown', 'Home', 'End', 'Escape',     // "PageUp / PageDown / Home / End", "Esc for the overview"
+    ];
+    for (const k of advertised) expect(script, `the comment promises ${k}`).toContain(`'${k}'`);
+    expect(script).toMatch(/k === ' '/);                 // space
+    expect(script).toMatch(/k === 'n' \|\| k === 'N'/);  // notes
+    expect(script).toMatch(/k === 't' \|\| k === 'T'/);  // theme
+  });
+
+  it('splits the click target where the comment says it does', () => {
+    const ratio = Number(/innerWidth \* ([\d.]+)/.exec(clickHandler)![1]);
+    expect(ratio).toBeGreaterThan(0.25);                 // the comment says "left third goes back"
+    expect(ratio).toBeLessThan(0.4);
+    expect(header).toMatch(/left third goes back/);
+  });
+
+  it('never steals a click meant for a control, a link or selectable text', () => {
+    // Everything interactive or worth copying must be exempt, or the deck jumps while you use it.
+    for (const tag of ['button', 'a', '.mock', 'pre']) expect(clickHandler).toContain(tag);
+    expect(clickHandler, 'a drag-selection must not advance the slide').toMatch(/getSelection\(\)/);
+    // Each exempt selector has to correspond to something really on a slide.
+    for (const sel of ['<button', '<a ', 'class="mock', '<pre']) expect(html).toContain(sel);
+  });
+});
