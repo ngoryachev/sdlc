@@ -488,7 +488,7 @@ body.overview #overview { display: block; }
     b.className = 'toggle'; b.type = 'button';
     b.addEventListener('click', function () { g.on = !g.on; drawGates(); });
     gatesEl.appendChild(b);
-    g.el = b;
+    g.el = b; g.on0 = g.on;
   });
   function drawGates() {
     GATES.forEach(function (g) {
@@ -541,7 +541,7 @@ body.overview #overview { display: block; }
     });
     d.appendChild(seg);
     fEl.appendChild(d);
-    f.el = d;
+    f.el = d; f.a0 = f.a;
   });
   function drawTriage() {
     FINDINGS.forEach(function (f, i) {
@@ -583,8 +583,20 @@ body.overview #overview { display: block; }
   };
 
   /* ---------- navigation ---------- */
+  var BACK_ZONE = 0.32;   // a click in the left third of the screen goes back, the rest advances
+  var shown = -1;
+
+  /* An interactive slide opens in its demo state every time it is entered: a presenter who steps
+     through the pipeline, backs up and comes again gets the demo, not the state they left behind. */
+  var resets = {
+    's-pipeline': function () { pcur = 0; drawPhases(); },
+    's-autonomy': function () { GATES.forEach(function (g) { g.on = g.on0; }); drawGates(); },
+    's-triage': function () { frow = 0; FINDINGS.forEach(function (f) { f.a = f.a0; }); drawTriage(); }
+  };
+
   function show(i, push) {
     cur = Math.max(0, Math.min(N - 1, i));
+    if (cur !== shown) { shown = cur; var reset = resets[slides[cur].id]; if (reset) reset(); }
     slides.forEach(function (s, j) { s.classList.toggle('on', j === cur); });
     bar.style.width = ((cur + 1) / N * 100) + '%';
     count.textContent = (cur + 1) + ' / ' + N;
@@ -594,7 +606,8 @@ body.overview #overview { display: block; }
     for (var j = 0; j < ovGrid.children.length; j++) ovGrid.children[j].classList.toggle('cur', j === cur);
     if (push !== false) {
       var h = '#' + (cur + 1);
-      if (location.hash !== h) history.replaceState(null, '', h);
+      // opening the file from disk is an opaque origin in some browsers, where this throws
+      try { if (location.hash !== h) history.replaceState(null, '', h); } catch (err) { /* no hash for this slide */ }
     }
   }
   function go(d) { show(cur + d); }
@@ -632,7 +645,7 @@ body.overview #overview { display: block; }
   document.getElementById('deck').addEventListener('click', function (e) {
     if (e.target.closest('button, a, .mock, pre')) return;
     if (String(getSelection())) return;              // selecting text is not a click-through
-    go(e.clientX < window.innerWidth * 0.32 ? -1 : 1);
+    go(e.clientX < window.innerWidth * BACK_ZONE ? -1 : 1);
   });
 
   window.addEventListener('hashchange', function () {

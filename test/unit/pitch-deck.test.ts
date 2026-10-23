@@ -14,6 +14,13 @@ const readme = readFileSync(join(root, 'README.md'), 'utf8');
 const slides = html.match(/<section class="slide[^>]*>/g) ?? [];
 const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? '';
 
+/** One piece of the inline script, with a failure that names what went missing instead of a null deref. */
+function part(re: RegExp, what: string): string {
+  const m = re.exec(script);
+  if (!m?.[1]) throw new Error(`${what} not found in the script of docs/index.html — was it renamed or reformatted?`);
+  return m[1];
+}
+
 describe('pitch deck: self-contained', () => {
   it('loads nothing from the network', () => {
     // Anything that fetches: an element with src, a stylesheet link, a CSS import, a remote font/image, XHR.
@@ -54,8 +61,9 @@ describe('pitch deck: the script that drives it', () => {
     for (const sel of [...script.matchAll(/querySelector\('#([\w-]+)/g)].map((m) => m[1])) expect(ids).toContain(sel);
   });
 
-  it('attaches its per-slide key handlers to slides that are really there', () => {
-    const keys = [...script.matchAll(/^\s{4}'(s-[\w-]+)': function/gm)].map((m) => m[1]);
+  it('attaches its per-slide behaviour to slides that are really there', () => {
+    // keyed by slide id in two places: the key handlers and the state reset done on slide entry
+    const keys = [...new Set([...script.matchAll(/'(s-[\w-]+)':\s*function/g)].map((m) => m[1]))];
     expect(keys).toEqual(['s-pipeline', 's-autonomy', 's-triage']);   // the three viewer-driven slides
     for (const k of keys) expect(html).toContain(`id="${k}"`);
   });
@@ -101,8 +109,9 @@ describe('pitch deck: the slides', () => {
 describe('pitch deck: navigation matches the way it is documented', () => {
   // The head comment is the only documentation the deck has; it already drifted from the
   // click handler once ("right or left half" vs a 32% split), so both halves are pinned here.
-  const header = /<!--([\s\S]*?)-->/.exec(html)![1];
-  const clickHandler = /getElementById\('deck'\)\.addEventListener\('click',([\s\S]*?)\n  \}\);/.exec(script)?.[1] ?? '';
+  const header = /<!--([\s\S]*?)-->/.exec(html)?.[1] ?? '';
+  const clickHandler = () =>
+    part(/getElementById\('deck'\)\.addEventListener\('click',([\s\S]*?\bgo\([^)]*\);)/, 'the slide-navigation click handler');
 
   it('handles every key the head comment advertises', () => {
     const advertised = [
@@ -116,7 +125,7 @@ describe('pitch deck: navigation matches the way it is documented', () => {
   });
 
   it('splits the click target where the comment says it does', () => {
-    const ratio = Number(/innerWidth \* ([\d.]+)/.exec(clickHandler)![1]);
+    const ratio = Number(part(/BACK_ZONE = ([\d.]+)/, 'the BACK_ZONE constant'));
     expect(ratio).toBeGreaterThan(0.25);                 // the comment says "left third goes back"
     expect(ratio).toBeLessThan(0.4);
     expect(header).toMatch(/left third goes back/);
@@ -124,8 +133,9 @@ describe('pitch deck: navigation matches the way it is documented', () => {
 
   it('never steals a click meant for a control, a link or selectable text', () => {
     // Everything interactive or worth copying must be exempt, or the deck jumps while you use it.
-    for (const tag of ['button', 'a', '.mock', 'pre']) expect(clickHandler).toContain(tag);
-    expect(clickHandler, 'a drag-selection must not advance the slide').toMatch(/getSelection\(\)/);
+    const handler = clickHandler();
+    for (const tag of ['button', 'a', '.mock', 'pre']) expect(handler).toContain(tag);
+    expect(handler, 'a drag-selection must not advance the slide').toMatch(/getSelection\(\)/);
     // Each exempt selector has to correspond to something really on a slide.
     for (const sel of ['<button', '<a ', 'class="mock', '<pre']) expect(html).toContain(sel);
   });
