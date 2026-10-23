@@ -9,7 +9,7 @@
   sdlc pitch deck — one self-contained file. No build step, no CDN, no network requests; opens offline.
   Palette is lifted from ui/src/styles.css so it reads as the same product. Dark by default, press T for light.
 
-  Navigation: arrows / space / PageUp / PageDown / Home / End, click the right or left half of the screen,
+  Navigation: arrows / space / PageUp / PageDown / Home / End, click the screen (left third goes back),
   Esc for the overview, N for speaker notes, T for the theme. The URL hash keeps the slide (#7).
 
   Three slides are driven by the viewer: 4 (phase stepper, up/down), 5 (checkpoint toggles, 1-3),
@@ -347,7 +347,7 @@ body.overview #overview { display: block; }
       <div class="card hil"><div class="who">decide</div><h3>fix / post / skip</h3><p>Per review finding and per QA issue. No blanket accept.</p></div>
       <div class="card hil"><div class="who">inject</div><h3>a message mid-run</h3><p>&ldquo;Use the existing helper.&rdquo; It lands in the running session.</p></div>
       <div class="card hil"><div class="who">pause</div><h3>and resume</h3><p>Stop it mid-phase, look at the diff, let it continue.</p></div>
-      <div class="card hil"><div class="who">abort</div><h3>any time</h3><p>The worktree and the branch stay; nothing is pushed behind your back.</p></div>
+      <div class="card hil"><div class="who">abort</div><h3>any time</h3><p>The worktree and the branch stay; any pull request it opened is yours to land or close.</p></div>
       <div class="card hil"><div class="who">watch</div><h3>live</h3><p>Every tool call, every file, every cost — streamed. Or from Telegram.</p></div>
     </div>
   </section>
@@ -630,7 +630,8 @@ body.overview #overview { display: block; }
   });
 
   document.getElementById('deck').addEventListener('click', function (e) {
-    if (e.target.closest('button, a, .mock')) return;
+    if (e.target.closest('button, a, .mock, pre')) return;
+    if (String(getSelection())) return;              // selecting text is not a click-through
     go(e.clientX < window.innerWidth * 0.32 ? -1 : 1);
   });
 
