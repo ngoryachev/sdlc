@@ -17,7 +17,10 @@ const Body = z.object({
 const MODEL = 'sonnet';
 /** The human waits in front of a spinner with the English text still on screen; finishing matters, speed does not. */
 const TIMEOUT_MS = 900_000;
-/** A checkpoint larger than this is read in English: nothing in the UI comes anywhere near it. */
+/**
+ * A checkpoint larger than this is read in English: nothing in the UI comes anywhere near it. It bounds one answer,
+ * so it counts what a request itself sends: two presses that overlap can have more than this in flight between them.
+ */
 const MAX_CHARS = 60_000;
 /** Translations live in process memory only: nothing is written to the database or sent to GitHub. */
 const CACHE_MAX = 2000;
