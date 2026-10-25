@@ -20,6 +20,10 @@ describe('POST /translate', () => {
   const post = (hono: Hono, body: unknown) => hono.request('/api/translate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   /** The JSON array the prompt handed to the model. */
   const asked = (p: string) => JSON.parse(p.slice(p.indexOf('\n["') + 1)) as string[];
+  /** Lets the pending requests run on: a few turns of the event loop, each one draining everything they queued. */
+  const settle = async (turns = 5) => { for (let i = 0; i < turns; i++) await new Promise((r) => setTimeout(r, 0)); };
+  /** The same, but only until the condition holds. */
+  const waitFor = async (ok: () => boolean) => { for (let i = 0; i < 200 && !ok(); i++) await settle(1); expect(ok()).toBe(true); };
   /** Echo translator: answers with "ru:<text>" for every element of the array it was given. */
   const echo = (seen: string[][]) => async (p: string) => { const a = asked(p); seen.push(a); return JSON.stringify(a.map((x) => `ru:${x}`)); };
 
@@ -110,6 +114,167 @@ describe('POST /translate', () => {
     await post(hono, { texts: ['a'], lang: 'ru' });
     expect(await (await post(hono, { texts: ['b', 'a', 'c'], lang: 'ru' })).json()).toEqual({ texts: ['ru:b', 'ru:a', 'ru:c'] });
     expect(seen).toEqual([['a'], ['b', 'c']]);
+  });
+
+  /**
+   * The UI does not abort a running translation when the human leaves the checkpoint with j/k, so pressing Translate
+   * again lands on the server while the first call is still out: the second request waits for it, it does not pay.
+   */
+  it('two requests for the same texts while the first call runs share one model call', async () => {
+    const seen: string[][] = [];
+    let release!: (answer: string) => void;
+    const hono = mount(async (p) => { seen.push(asked(p)); return new Promise<string>((res) => { release = res; }); });
+    const texts = ['first', 'second'];
+    const first = post(hono, { texts, lang: 'ru' });
+    await waitFor(() => seen.length > 0);                            // the call is out and nothing is cached yet
+    const second = post(hono, { texts, lang: 'ru' });
+    await settle();
+    expect(seen).toEqual([texts]);                                   // the second press waited instead of asking again
+    release(JSON.stringify(seen[0]!.map((x) => `ru:${x}`)));
+    for (const res of [await first, await second]) expect(await res.json()).toEqual({ texts: ['ru:first', 'ru:second'] });
+    expect(seen).toEqual([texts]);                                   // one call, both answered from it
+  });
+
+  it('asks only for the fragments nobody is translating yet', async () => {
+    const seen: string[][] = [];
+    const release: ((answer: string) => void)[] = [];
+    const hono = mount(async (p) => { seen.push(asked(p)); return new Promise<string>((res) => { release.push(res); }); });
+    const first = post(hono, { texts: ['a', 'b'], lang: 'ru' });
+    await waitFor(() => seen.length > 0);
+    const second = post(hono, { texts: ['b', 'c'], lang: 'ru' });     // 'b' is already out with the first call
+    await waitFor(() => seen.length > 1);
+    expect(seen).toEqual([['a', 'b'], ['c']]);
+    release.forEach((r, i) => r(JSON.stringify(seen[i]!.map((x) => `ru:${x}`))));
+    expect(await (await first).json()).toEqual({ texts: ['ru:a', 'ru:b'] });
+    expect(await (await second).json()).toEqual({ texts: ['ru:b', 'ru:c'] });
+  });
+
+  /** A shared call that fails must fail everyone waiting on it and leave nothing behind: the next press asks again. */
+  it('fails every request waiting on a failed call and keeps asking afterwards', async () => {
+    const seen: string[][] = [];
+    let fail!: (e: Error) => void;
+    let n = 0;
+    const hono = mount(async (p) => {
+      seen.push(asked(p));
+      if (++n > 1) return JSON.stringify(asked(p).map((x) => `ru:${x}`));
+      return new Promise<string>((_, rej) => { fail = rej; });
+    });
+    const texts = ['first', 'second'];
+    const first = post(hono, { texts, lang: 'ru' });
+    await waitFor(() => seen.length > 0);
+    const second = post(hono, { texts, lang: 'ru' });
+    await settle();
+    expect(seen).toEqual([texts]);                                   // both are now riding on the same call
+    fail(new Error('Claude Code process aborted by user'));
+    for (const res of [await first, await second]) {
+      expect(res.status).toBe(502);
+      expect((await res.json() as { error: string }).error).toMatch(/original text is still available/);
+    }
+    // nothing was poisoned: the fragments are neither cached nor still marked as in flight
+    expect(await (await post(hono, { texts, lang: 'ru' })).json()).toEqual({ texts: ['ru:first', 'ru:second'] });
+    expect(seen).toEqual([texts, texts]);
+  });
+
+  /** The maps are module singletons: a call left running by one test must not be waited on by the next one. */
+  it('forgets what is in flight when the cache is cleared', async () => {
+    const seen: string[][] = [];
+    const release: ((answer: string) => void)[] = [];
+    const hono = mount(async (p) => { seen.push(asked(p)); return new Promise<string>((res) => { release.push(res); }); });
+    const first = post(hono, { texts: ['a'], lang: 'ru' });
+    await waitFor(() => seen.length > 0);
+    clearTranslationCache();
+    const second = post(hono, { texts: ['a'], lang: 'ru' });
+    await waitFor(() => seen.length > 1);                            // nothing left to wait on, so the model is asked again
+    release.forEach((r) => r('["ru:a"]'));
+    for (const res of [await first, await second]) expect(await res.json()).toEqual({ texts: ['ru:a'] });
+  });
+
+  /** The key carries the language: a Ukrainian press must not be handed the Russian call that is already out. */
+  it('does not wait on a call made for another language', async () => {
+    const seen: string[][] = [];
+    const release: ((answer: string) => void)[] = [];
+    const hono = mount(async (p) => { seen.push(asked(p)); return new Promise<string>((res) => { release.push(res); }); });
+    const first = post(hono, { texts: ['a'], lang: 'ru' });
+    await waitFor(() => seen.length > 0);
+    const second = post(hono, { texts: ['a'], lang: 'uk' });
+    await waitFor(() => seen.length > 1);                            // two languages, two calls
+    expect(seen).toEqual([['a'], ['a']]);
+    release.forEach((r) => r('["перевод"]'));
+    for (const res of [await first, await second]) expect(await res.json()).toEqual({ texts: ['перевод'] });
+  });
+
+  /** A fragment the shared call handed back in English answers both requests and is cached for neither. */
+  it('shares a fragment returned word for word without caching it for either request', async () => {
+    const seen: string[][] = [];
+    let release!: (answer: string) => void;
+    let n = 0;
+    const hono = mount(async (p) => {
+      const a = asked(p);
+      seen.push(a);
+      // the first answer leaves 'b' in English, the next one translates it
+      if (++n > 1) return JSON.stringify(a.map((x) => `ru:${x}`));
+      return new Promise<string>((res) => { release = res; });
+    });
+    const texts = ['a', 'b'];
+    const first = post(hono, { texts, lang: 'ru' });
+    await waitFor(() => seen.length > 0);
+    const second = post(hono, { texts, lang: 'ru' });
+    await settle();
+    release('["ru:a","b"]');
+    for (const res of [await first, await second]) expect(await res.json()).toEqual({ texts: ['ru:a', 'b'] });
+    await settle();
+    // only 'b' is still missing: its in-flight entry is gone and nothing was cached for it
+    expect(await (await post(hono, { texts, lang: 'ru' })).json()).toEqual({ texts: ['ru:a', 'ru:b'] });
+    expect(seen).toEqual([texts, ['b']]);
+  });
+
+  /** The overlap fails, the rest does not: the request reports the failure but keeps what it paid for itself. */
+  it('keeps what a request translated itself when the call it was waiting on failed', async () => {
+    const seen: string[][] = [];
+    const settled: { res: (a: string) => void; rej: (e: Error) => void }[] = [];
+    const hono = mount(async (p) => { seen.push(asked(p)); return new Promise<string>((res, rej) => { settled.push({ res, rej }); }); });
+    const first = post(hono, { texts: ['a', 'b'], lang: 'ru' });
+    await waitFor(() => seen.length > 0);
+    const second = post(hono, { texts: ['b', 'c', 'b', ''], lang: 'ru' });   // 'b' rides on the first call, twice over
+    await waitFor(() => seen.length > 1);
+    expect(seen).toEqual([['a', 'b'], ['c']]);
+    settled[1]!.res('["ru:c"]');
+    settled[0]!.rej(new Error('Claude Code process aborted by user'));
+    expect((await first).status).toBe(502);
+    expect((await second).status).toBe(502);                         // 'b' never came, so the second press failed too
+    await settle();
+    // 'c' was translated and cached; only the fragments of the failed call are asked for again
+    const third = post(hono, { texts: ['a', 'b', 'c'], lang: 'ru' });
+    await waitFor(() => seen.length > 2);
+    settled[2]!.res(JSON.stringify(seen[2]!.map((x) => `ru:${x}`)));
+    expect(await (await third).json()).toEqual({ texts: ['ru:a', 'ru:b', 'ru:c'] });
+    expect(seen).toEqual([['a', 'b'], ['c'], ['a', 'b']]);
+  });
+
+  /** The size limit counts what this request itself sends; refusing it must leave the running call alone. */
+  it('refuses an oversized press without disturbing the call already running', async () => {
+    const seen: string[][] = [];
+    let release!: (answer: string) => void;
+    const hono = mount(async (p) => { seen.push(asked(p)); return new Promise<string>((res) => { release = res; }); });
+    const first = post(hono, { texts: ['a'], lang: 'ru' });
+    await waitFor(() => seen.length > 0);
+    expect((await post(hono, { texts: ['a', 'x'.repeat(61_000)], lang: 'ru' })).status).toBe(413);
+    release('["ru:a"]');
+    expect(await (await first).json()).toEqual({ texts: ['ru:a'] });
+    expect(seen).toEqual([['a']]);                                   // the oversized press cost no call
+  });
+
+  /** A failed call leaves a rejection per fragment, waited on or not: none of them may reach the process. */
+  it('does not leak an unhandled rejection when a call nobody is waiting on fails', async () => {
+    const leaked: unknown[] = [];
+    const onLeak = (e: unknown) => { leaked.push(e); };
+    process.on('unhandledRejection', onLeak);
+    try {
+      const hono = mount(async () => { throw new Error('Claude Code process aborted by user'); });
+      expect((await post(hono, { texts: ['a', 'b', 'c'], lang: 'ru' })).status).toBe(502);
+      await settle(20);
+      expect(leaked).toEqual([]);
+    } finally { process.off('unhandledRejection', onLeak); }
   });
 
   it('an empty list costs no call, even without a cheap runner', async () => {

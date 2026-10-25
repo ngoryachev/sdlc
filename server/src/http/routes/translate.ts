@@ -17,11 +17,20 @@ const Body = z.object({
 const MODEL = 'sonnet';
 /** The human waits in front of a spinner with the English text still on screen; finishing matters, speed does not. */
 const TIMEOUT_MS = 900_000;
-/** A checkpoint larger than this is read in English: nothing in the UI comes anywhere near it. */
+/**
+ * A checkpoint larger than this is read in English: nothing in the UI comes anywhere near it. It bounds one answer,
+ * so it counts what a request itself sends: two presses that overlap can have more than this in flight between them.
+ */
 const MAX_CHARS = 60_000;
 /** Translations live in process memory only: nothing is written to the database or sent to GitHub. */
 const CACHE_MAX = 2000;
 const cache = new Map<string, string>();
+/**
+ * The fragments a call that is still running was asked for, keyed like the cache. The UI does not abort a translation
+ * when the human walks off a checkpoint with j/k and comes back to press Translate again, so the same text can be
+ * asked for twice while the model is still thinking: the second request waits here instead of paying for it again.
+ */
+const inflight = new Map<string, Promise<string>>();
 
 const keyOf = (lang: TranslateLang, text: string) => `${lang}:${crypto.createHash('sha256').update(text).digest('hex')}`;
 
@@ -33,7 +42,7 @@ function cachePut(key: string, value: string): void {
 }
 
 /** Exported for tests: the cache is a module singleton shared by every App in the process. */
-export function clearTranslationCache(): void { cache.clear(); }
+export function clearTranslationCache(): void { cache.clear(); inflight.clear(); }
 
 export function translateRoutes(app: App) {
   const r = new Hono();
@@ -43,17 +52,33 @@ export function translateRoutes(app: App) {
     if (!body.success) throw new HttpError(400, `bad translate request: ${body.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; ')}`);
     const { texts, lang } = body.data;
     // empty and whitespace-only strings come back as they are; a repeated text is translated once
-    const todo = [...new Set(texts.filter((x) => x.trim() && !cache.has(keyOf(lang, x))))];
+    const missing = [...new Set(texts.filter((x) => x.trim() && !cache.has(keyOf(lang, x))))];
+    // what another request is already asking the model for is waited on; only the rest is this request's to send
+    const waiting = missing.filter((x) => inflight.has(keyOf(lang, x)));
+    const todo = missing.filter((x) => !inflight.has(keyOf(lang, x)));
     const chars = todo.reduce((n, x) => n + x.length, 0);
     if (chars > MAX_CHARS) throw new HttpError(413, `this checkpoint is too large to translate at once (${Math.round(chars / 1000)} KB of text, limit ${MAX_CHARS / 1000} KB); read it in English`);
+    const brief = app.runner.brief?.bind(app.runner);
+    if (todo.length && !brief) throw new HttpError(503, 'translation is not available on this server (the model runner has no one-shot call)');
+    // everything this request learned: a fragment handed back word for word never reaches the cache but still answers
+    const answers = new Map<string, string>();
+    const pending = waiting.map((text) => { const key = keyOf(lang, text); return inflight.get(key)!.then((got) => { answers.set(key, got); }); });
     if (todo.length) {
-      if (!app.runner.brief) throw new HttpError(503, 'translation is not available on this server (the model runner has no one-shot call)');
-      const got = await translateAll(app.runner.brief.bind(app.runner), todo, lang);
-      // a fragment handed back word for word was not translated: answer with it, but do not cache it as a translation,
-      // so the next press of Translate asks for exactly those fragments again instead of serving English forever
-      todo.forEach((text, i) => { if (got[i] !== text) cachePut(keyOf(lang, text), got[i]!); });
+      const call = translateAll(brief!, todo, lang);
+      const keys = todo.map((text) => keyOf(lang, text));
+      const shared = keys.map((_, i) => call.then((got) => got[i]!));
+      // a fragment may end up with no waiter at all: a rejection nobody took must not reach the process as unhandled
+      shared.forEach((p, i) => { void p.catch(() => {}); inflight.set(keys[i]!, p); });
+      // whatever the outcome, the entries go: a failed call poisons nothing, the next press of Translate asks again
+      void call.catch(() => {}).then(() => { keys.forEach((key, i) => { if (inflight.get(key) === shared[i]) inflight.delete(key); }); });
+      pending.push(call.then((got) => {
+        // a fragment handed back word for word was not translated: answer with it, but do not cache it as a translation,
+        // so the next press of Translate asks for exactly those fragments again instead of serving English forever
+        todo.forEach((text, i) => { answers.set(keys[i]!, got[i]!); if (got[i] !== text) cachePut(keys[i]!, got[i]!); });
+      }));
     }
-    return c.json({ texts: texts.map((x) => (x.trim() ? cache.get(keyOf(lang, x)) ?? x : x)) });
+    await Promise.all(pending);
+    return c.json({ texts: texts.map((x) => (x.trim() ? answers.get(keyOf(lang, x)) ?? cache.get(keyOf(lang, x)) ?? x : x)) });
   });
   return r;
 }
