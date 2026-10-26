@@ -6,7 +6,7 @@ import { getCookie, setCookie } from 'hono/cookie';
 import { serveStatic } from '@hono/node-server/serve-static';
 import type { App } from '../app.js';
 import { HttpError } from '../engine/engine.js';
-import { saveConfig, sdlcRoot } from '../config/config.js';
+import { sdlcRoot } from '../config/config.js';
 import { sseHandler } from './sse.js';
 import { tasksRoutes } from './routes/tasks.js';
 import { hilRoutes } from './routes/hil.js';
@@ -17,7 +17,8 @@ import { translateRoutes } from './routes/translate.js';
 export function ensureToken(app: App): string {
   if (!app.config.server.token) {
     app.config.server.token = crypto.randomBytes(24).toString('base64url');
-    try { saveConfig(app.config); } catch (e) { console.error('[sdlc] could not persist token to config:', e); }
+    // through the app, not saveConfig(): an injected config (tests, QA scripts) must never land in the real ~/.sdlc/config.yaml
+    try { app.persistConfig(); } catch (e) { console.error('[sdlc] could not persist token to config:', e); }
   }
   return app.config.server.token;
 }
