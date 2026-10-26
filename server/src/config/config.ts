@@ -73,8 +73,14 @@ export function saveConfig(cfg: SdlcConfig, configPath = CONFIG_PATH): void {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   const { pipelines_dirs, ...rest } = cfg;
   const own = pipelines_dirs.filter((d) => d !== path.join(sdlcRoot(), 'pipelines'));
-  fs.writeFileSync(configPath, YAML.stringify({ ...rest, pipelines_dirs: own }));
+  // secrets loadConfig took from the environment stay there: the file keeps whatever it had for them
+  const onDisk = ((fs.existsSync(configPath) ? YAML.parse(fs.readFileSync(configPath, 'utf8')) : null) ?? {}) as { server?: { token?: string }; telegram?: { bot_token?: string } };
+  const server = { ...rest.server, token: fromEnv('SDLC_TOKEN', rest.server.token, onDisk.server?.token) };
+  const telegram = { ...rest.telegram, bot_token: fromEnv('SDLC_TELEGRAM_TOKEN', rest.telegram.bot_token, onDisk.telegram?.bot_token) };
+  fs.writeFileSync(configPath, YAML.stringify({ ...rest, server, telegram, pipelines_dirs: own }));
 }
+
+const fromEnv = (name: string, value: string | undefined, onDisk: string | undefined) => (value !== undefined && value === process.env[name] ? onDisk : value);
 
 export function loadRepoConfig(repoPath: string): RepoConfig {
   const p = path.join(repoPath, '.sdlc.yaml');
