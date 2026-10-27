@@ -532,13 +532,26 @@ export class Engine {
   /** Kick the state machine for a task. Serialized per task; safe to call from anywhere. */
   advance(taskId: string): Promise<void> {
     const prev = this.chains.get(taskId) ?? Promise.resolve();
-    const next = prev.then(() => this.advanceInner(taskId)).catch((e) => {
-      this.d.events.emit('engine.error', { taskId, message: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }, { taskId });
-      const t = this.d.store.getTask(taskId);
-      if (t && !['succeeded', 'merged', 'closed', 'failed', 'aborted'].includes(t.status)) this.setTaskStatus(t, 'failed');
-    });
+    const next = prev.then(() => this.advanceInner(taskId)).catch((e) => this.onEngineError(taskId, e));
     this.chains.set(taskId, next);
     return next;
+  }
+
+  /**
+   * A bug or a broken environment surfaced while advancing: the task stops at an escalation (retry / resume / skip / abort)
+   * on the phase it was at, rather than ending as `failed`, which nothing can bring back.
+   */
+  private onEngineError(taskId: string, e: unknown) {
+    const { store, events } = this.d;
+    const message = e instanceof Error ? e.message : String(e);
+    events.emit('engine.error', { taskId, message, stack: e instanceof Error ? e.stack : undefined }, { taskId });
+    const t = store.getTask(taskId);
+    if (!t || ['succeeded', 'merged', 'closed', 'failed', 'aborted', 'pr_open'].includes(t.status)) return;
+    if (store.openHilForTask(taskId).length) return;   // the human already has something to answer
+    const run = store.latestRunForTask(taskId);
+    const pr = run && store.phaseRunsForRun(run.id).at(-1);
+    if (run && pr) { this.escalate(t, run, pr, `sdlc error: ${message}`); return; }
+    this.setTaskStatus(t, 'failed');
   }
 
   private async advanceInner(taskId: string): Promise<void> {
@@ -655,6 +668,9 @@ export class Engine {
         case 'failed': {
           pr.status = 'failed'; pr.error = pr.error ?? outcome.error; pr.endedAt = nowIso(); store.updatePhaseRun(pr);
           events.emit('phase.finished', { phaseRun: pr }, { taskId, phaseRunId: pr.id });
+          // stopped by its own turn or budget cap, the phase judged nothing: looping back, retrying or moving on would throw its
+          // work away. The human decides; `resume` continues the same session
+          if (pr.resultSubtype === 'error_max_turns' || pr.resultSubtype === 'error_max_budget_usd') { this.escalate(fresh, run, pr, outcome.error); return; }
           const policy = phase.on_fail;
           const attempts = store.countAttempts(run.id, phase.name);
           const retriesUsed = attempts - 1 - (run.loopCounts[`retry:${phase.name}`] ?? 0) * 0; // attempts include loop re-entries; track retries separately
@@ -673,7 +689,7 @@ export class Engine {
             if ((run.loopCounts[key] ?? 0) < maxLoops) {
               run.loopCounts[key] = (run.loopCounts[key] ?? 0) + 1;
               tpl = buildTemplateContext({ task: fresh, run, spec, repoConfig, store });
-              const fb = policy.feedback ? renderTemplate(policy.feedback, tpl) : `Phase ${phase.name} failed: ${outcome.error}`;
+              const fb = loopFeedback(policy.feedback, tpl, phase.name, outcome.error);
               run.pendingResume = { phase: policy.back_to, feedback: fb };
               run.returnTo = null;
               run.cursor = phaseIndex(spec, policy.back_to);
@@ -1024,6 +1040,27 @@ You already went over this branch at commit \`${prev.headSha.slice(0, 12)}\`. Si
     void this.advance(taskId);
   }
 
+  /**
+   * Bring a `failed` task back at the phase it stopped on: a fresh attempt, or (`resume`) the same Claude session continued
+   * with optional guidance; either way with the limits and settings as they are now. The worktree has to still be there.
+   */
+  async retry(taskId: string, opts: { resume?: boolean; guidance?: string } = {}): Promise<void> {
+    await this.withLock(taskId, async () => {
+      const { store } = this.d;
+      const task = store.getTask(taskId);
+      const run = task && store.latestRunForTask(taskId);
+      if (!task || !run) throw new HttpError(404, 'task not found');
+      if (task.status !== 'failed') throw new HttpError(409, `task is ${task.status}; only a failed task can be retried`);
+      const phase = snapshot(run).spec.phases[run.cursor];
+      if (!phase) throw new HttpError(409, 'the run has no phase to retry');
+      if (!fs.existsSync(task.worktreePath)) throw new HttpError(409, `the worktree ${task.worktreePath} is gone`);
+      run.pendingResume = opts.resume ? { phase: phase.name, feedback: opts.guidance?.trim() || 'You were stopped before you finished. Continue the task from where you left off.' } : null;
+      run.returnTo = null; run.status = 'running'; this.saveRun(run);
+      this.setTaskStatus(task, 'running');
+    });
+    void this.advance(taskId);
+  }
+
   async abort(taskId: string, reason = 'aborted by user'): Promise<void> {
     const { store, events } = this.d;
     const task = store.getTask(taskId);
@@ -1180,3 +1217,10 @@ export function titleFrom(prompt: string): string {
 }
 
 export type { RepoConfig };
+
+/** Feedback for an on_fail loop. A phase that failed without the output the template quotes (a crash, a cap) still loops, with its error. */
+function loopFeedback(tpl: string | undefined, ctx: Record<string, unknown>, phaseName: string, error: string): string {
+  if (!tpl) return `Phase ${phaseName} failed: ${error}`;
+  try { return renderTemplate(tpl, ctx); }
+  catch { return `Phase ${phaseName} failed without a usable report: ${error}`; }
+}

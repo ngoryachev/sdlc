@@ -110,7 +110,7 @@ describe('standard pipeline with HIL (fake runner)', () => {
   it('a failed clarify still reaches refine, which says it failed instead of looking like nothing to clarify', async () => {
     const dir = tmpDir('sdlc-clarify-fail-');
     const repo = makeRepo(dir, { 'a.txt': 'x\n' });
-    const runner = new FakeRunner(() => ({ act: () => ({ subtype: 'error_max_budget_usd' }) }));
+    const runner = new FakeRunner(() => ({ act: () => ({ subtype: 'error_during_execution' }) }));
     const app = testApp(dir, runner);
     const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'standard', baseRemote: null });
     await app.engine.advance(task.id);

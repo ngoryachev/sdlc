@@ -30,7 +30,7 @@ export function TaskPage() {
   const openChildren = (children ?? []).filter((c) => !['merged', 'closed', 'aborted'].includes(c.status));
   const running = phaseRuns.find((p) => p.status === 'running' || p.status === 'waiting_hil');
   const selected = phaseRuns.find((p) => p.id === phaseRunId) ?? running ?? phaseRuns.at(-1) ?? null;
-  const act = async (a: 'pause' | 'resume' | 'abort', body?: unknown) => { try { await api.control(task.id, a, body); toast(`${a} ok`); void reload(); } catch (e) { toast((e as Error).message, 'error'); } };
+  const act = async (a: 'pause' | 'resume' | 'abort' | 'retry', body?: unknown) => { try { await api.control(task.id, a, body); toast(`${a} ok`); void reload(); } catch (e) { toast((e as Error).message, 'error'); } };
   return (
     <>
       <div className="card">
@@ -47,6 +47,7 @@ export function TaskPage() {
         <div className="row" style={{ marginTop: 10 }}>
           {(task.status === 'running' || task.status === 'waiting_hil') && <button onClick={() => act('pause')}>Pause</button>}
           {task.status === 'paused' && <ResumeButton onResume={(g) => act('resume', g ? { guidance: g } : undefined)} />}
+          {task.status === 'failed' && <RetryButton onRetry={(resume, g) => act('retry', { resume, ...(g ? { guidance: g } : {}) })} />}
           {!done && task.status !== 'pr_open' && <ConfirmButton label="Abort" onClick={() => act('abort')} />}
           {task.status === 'succeeded' && !task.prNumber && <CreatePrButton task={task} onDone={reload} />}
           {landable && <LandButton taskId={task.id} hasPr={!!task.prNumber} stacked={openChildren.length} base={task.baseBranch} onDone={reload} />}
@@ -165,6 +166,13 @@ function ResumeButton({ onResume }: { onResume: (guidance?: string) => void }) {
   const [g, setG] = useState(''); const [open, setOpen] = useState(false);
   return open ? <form className="row grow" onSubmit={(e) => { e.preventDefault(); onResume(g.trim() || undefined); }}><input className="grow" autoFocus placeholder="optional guidance" value={g} onChange={(e) => setG(e.target.value)} /><button className="primary">Resume</button></form>
     : <button className="primary" onClick={() => setOpen(true)}>Resume…</button>;
+}
+
+/** A failed task restarts at the phase it stopped on: from scratch, or continuing that phase's session (guidance only goes there). */
+function RetryButton({ onRetry }: { onRetry: (resume: boolean, guidance?: string) => void }) {
+  const [g, setG] = useState(''); const [open, setOpen] = useState(false);
+  return open ? <div className="row grow"><input className="grow" autoFocus placeholder="optional guidance (continue only)" value={g} onChange={(e) => setG(e.target.value)} /><button className="primary" title="continue the failed phase's Claude session" onClick={() => onRetry(true, g.trim() || undefined)}>Continue phase</button><button title="run the failed phase again from scratch" onClick={() => onRetry(false)}>Retry phase</button></div>
+    : <button className="primary" onClick={() => setOpen(true)}>Retry…</button>;
 }
 
 export function useMemoDeps<T>(f: () => T, deps: unknown[]): T { return useMemo(f, deps); }

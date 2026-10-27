@@ -20,8 +20,8 @@ export const ConfigSchema = z.object({
   max_loops: z.number().int().min(0).default(15),   // cap on every on_fail back_to loop (test→implement, review→implement); overrides the pipelines' max_loops
   recheck_scope: z.enum(['delta', 'full']).default('delta'),   // a repeat pass of review/test/qa looks only at what changed since its previous pass (delta) or at everything again (full)
   limits: z.object({
-    phases: z.enum(['pipeline', 'off']).default('pipeline'),   // off: ignore max_turns / max_budget_usd from pipelines
-  }).default({ phases: 'pipeline' }),
+    phases: z.enum(['pipeline', 'off']).default('off'),   // off: ignore max_turns / max_budget_usd from pipelines; task_budget_usd is the guard
+  }).default({ phases: 'off' }),
   merge_method: z.enum(['merge', 'squash', 'rebase']).default('merge'),
   models: z.object({
     default: z.string().optional(),

@@ -27,7 +27,9 @@ export class TelegramNotifier implements Notifier {
     const text = `<b>[${esc(req.kind)}]</b> ${esc(task.title)}\n<i>${esc(req.summary)}</i>`;
     // refine with open questions needs typed answers: only the web UI can do that
     const needsWeb = req.payload.kind === 'refine_prompt' && req.payload.questions.length > 0;
-    const positive = needsWeb ? undefined : req.allowedDecisions.find((d) => ['approve', 'allow', 'retry'].includes(d));
+    // a phase stopped by its cap is worth continuing, not restarting: its work so far is in the session
+    const capped = req.payload.kind === 'escalation' && (req.payload.resultSubtype === 'error_max_budget_usd' || req.payload.resultSubtype === 'error_max_turns');
+    const positive = needsWeb ? undefined : capped ? 'resume' : req.allowedDecisions.find((d) => ['approve', 'allow', 'retry'].includes(d));
     const negative = req.allowedDecisions.find((d) => ['abort', 'deny'].includes(d));
     const row: { text: string; callback_data?: string; url?: string }[] = [];
     if (positive) row.push({ text: `✅ ${positive}`, callback_data: `h:${req.id}:${positive}` });

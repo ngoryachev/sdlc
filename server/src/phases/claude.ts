@@ -5,7 +5,7 @@ import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { ClaudePhaseSpec } from '../pipeline/schema.js';
 import { renderTemplate } from '../pipeline/template.js';
 import { evalExpr } from '../pipeline/expr.js';
-import { resolvePipelineFile } from '../pipeline/loader.js';
+import { loadPipeline, resolvePipelineFile, type LoadedPipeline } from '../pipeline/loader.js';
 import { TranscriptWriter } from '../claude/transcript.js';
 import { toolSummary } from '../claude/render.js';
 import type { ClaudeRunSpec } from '../claude/runner.js';
@@ -54,6 +54,7 @@ export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
       resume = src.sessionId;
     }
 
+    const limits = liveLimits(loaded, phase, spec);
     const allowed = [...phase.allowed_tools, ...repoConfig.allow];
     if (repoConfig.test_command) allowed.push(`Bash(${repoConfig.test_command.split(' ')[0]} *)`);
     const outputSchema = phase.output_schema ? JSON.parse(fs.readFileSync(resolvePipelineFile(loaded, phase.output_schema), 'utf8')) as Record<string, unknown> : undefined;
@@ -77,8 +78,8 @@ export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
       disallowedTools: phase.disallowed_tools.length ? phase.disallowed_tools : undefined,
       systemAppend,
       outputSchema,
-      maxTurns: config.limits.phases === 'off' ? undefined : phase.max_turns ?? spec.defaults.max_turns ?? 40,
-      maxBudgetUsd: config.limits.phases === 'off' ? undefined : phase.max_budget_usd ?? spec.defaults.max_budget_usd ?? 5,
+      maxTurns: config.limits.phases === 'off' ? undefined : limits.maxTurns,
+      maxBudgetUsd: config.limits.phases === 'off' ? undefined : limits.maxBudgetUsd,
       model: chosen.model,
       effort: chosen.effort,
       settingSources: spec.defaults.setting_sources,
@@ -171,4 +172,19 @@ export function normalizeStrings<T>(v: T): T {
   if (Array.isArray(v)) return v.map(normalizeStrings) as T;
   if (v && typeof v === 'object') { const out: Record<string, unknown> = {}; for (const [k, x] of Object.entries(v)) out[k] = normalizeStrings(x); return out as T; }
   return v;
+}
+
+/**
+ * A phase's turn and budget caps come from the pipeline file as it is now, like its prompt, not from the snapshot the task
+ * took at creation: raising a cap that phases keep hitting has to reach the tasks already under way. The snapshot is the
+ * fallback when the file is gone or no longer has the phase.
+ */
+function liveLimits(loaded: LoadedPipeline, phase: ClaudePhaseSpec, spec: LoadedPipeline['spec']): { maxTurns: number; maxBudgetUsd: number } {
+  let cur: ClaudePhaseSpec = phase; let defaults = spec.defaults;
+  try {
+    const now = loadPipeline(loaded.filePath).spec;
+    const p = now.phases.find((x) => x.name === phase.name);
+    if (p?.type === 'claude') { cur = p; defaults = now.defaults; }
+  } catch { /* keep the snapshot */ }
+  return { maxTurns: cur.max_turns ?? defaults.max_turns ?? 40, maxBudgetUsd: cur.max_budget_usd ?? defaults.max_budget_usd ?? 5 };
 }

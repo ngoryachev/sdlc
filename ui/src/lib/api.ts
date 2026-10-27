@@ -42,7 +42,7 @@ export const api = {
   tasks: (status?: string) => req<{ tasks: TaskRow[] }>('GET', `/tasks${status ? `?status=${status}` : ''}`),
   task: (id: string) => req<TaskDetail>('GET', `/tasks/${id}`),
   createTask: (b: { prompt?: string; repoPath: string; pipeline?: string; baseRemote?: string | null; baseBranch?: string; reviewMode?: string; branch?: string; prNumber?: number; startAt?: string; stopAfter?: string; modelOverrides?: ModelOverrides | null }) => req<Task>('POST', '/tasks', b),
-  control: (id: string, action: 'pause' | 'resume' | 'abort', body?: unknown) => req<Task>('POST', `/tasks/${id}/${action}`, body),
+  control: (id: string, action: 'pause' | 'resume' | 'abort' | 'retry', body?: unknown) => req<Task>('POST', `/tasks/${id}/${action}`, body),
   inject: (id: string, t: string) => req<{ deliveredTo: string }>('POST', `/tasks/${id}/inject`, { text: t }),
   worktreeRemove: (id: string) => req<{ removed: boolean }>('POST', `/tasks/${id}/worktree/remove`),
   prPoll: (id: string) => req<{ new: number; hilId?: string; state?: string }>('POST', `/tasks/${id}/pr/poll`),

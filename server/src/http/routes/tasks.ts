@@ -67,6 +67,10 @@ export function tasksRoutes(app: App) {
   });
   r.post('/tasks/:id/pause', async (c) => { await engine.pause(c.req.param('id')); return c.json(mustTask(c.req.param('id'))); });
   r.post('/tasks/:id/resume', async (c) => { const b = await c.req.json().catch(() => ({})) as { guidance?: string }; await engine.resume(c.req.param('id'), b.guidance); return c.json(mustTask(c.req.param('id'))); });
+  r.post('/tasks/:id/retry', async (c) => {
+    const b = z.object({ resume: z.boolean().optional(), guidance: z.string().optional() }).parse(await c.req.json().catch(() => ({})));
+    mustTask(c.req.param('id')); await engine.retry(c.req.param('id'), b); return c.json(mustTask(c.req.param('id')));
+  });
   r.post('/tasks/:id/abort', async (c) => { await engine.abort(c.req.param('id')); return c.json(mustTask(c.req.param('id'))); });
   r.post('/tasks/:id/inject', async (c) => { const b = z.object({ text: z.string().min(1) }).parse(await c.req.json()); mustTask(c.req.param('id')); return c.json({ accepted: true, ...engine.inject(c.req.param('id'), b.text) }); });
   r.post('/tasks/:id/worktree/remove', async (c) => { mustTask(c.req.param('id')); return c.json(await engine.removeTaskWorktree(c.req.param('id'))); });
