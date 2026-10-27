@@ -106,4 +106,17 @@ describe('standard pipeline with HIL (fake runner)', () => {
     expect(app.store.getHil(hil.id)!.status).toBe('answered');
     expect(fs.existsSync(task.worktreePath)).toBe(false);
   });
+
+  it('a failed clarify still reaches refine, which says it failed instead of looking like nothing to clarify', async () => {
+    const dir = tmpDir('sdlc-clarify-fail-');
+    const repo = makeRepo(dir, { 'a.txt': 'x\n' });
+    const runner = new FakeRunner(() => ({ act: () => ({ subtype: 'error_max_budget_usd' }) }));
+    const app = testApp(dir, runner);
+    const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'standard', baseRemote: null });
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    expect(hil.kind).toBe('refine_prompt');
+    expect(hil.payload.kind === 'refine_prompt' && [hil.payload.prompt, hil.payload.questions, hil.payload.suggestedPrompt, hil.payload.clarifyError]).toEqual(['change a', [], null, 'fake failure']);
+    expect(hil.summary).toBe('clarify failed (fake failure); confirm the original prompt');
+  });
 });

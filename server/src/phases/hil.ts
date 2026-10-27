@@ -40,11 +40,13 @@ export class HilPhaseExecutor implements PhaseExecutor<HilPhaseSpec> {
 
 async function buildPayload(kind: HilPhaseSpec['hil'], ctx: PhaseContext): Promise<HilPayload> {
   const { task, tpl } = ctx;
-  const phases = tpl.phases as Record<string, { output?: string; structured?: unknown }>;
+  const phases = tpl.phases as Record<string, { output?: string; structured?: unknown; status?: string; error?: string }>;
   switch (kind) {
     case 'refine_prompt': {
       const c = phases.clarify?.structured as ClarifyOutput | null | undefined;
-      return { kind, prompt: task.refinedPrompt ?? task.initialPrompt, questions: c?.questions ?? [], suggestedPrompt: c?.suggestedPrompt ?? null, assumptions: c?.assumptions ?? [], suggestedTitle: c?.title ?? null, suggestedBranch: c?.branch ?? null };
+      return { kind, prompt: task.refinedPrompt ?? task.initialPrompt, questions: c?.questions ?? [], suggestedPrompt: c?.suggestedPrompt ?? null, assumptions: c?.assumptions ?? [], suggestedTitle: c?.title ?? null, suggestedBranch: c?.branch ?? null,
+        // clarify is optional (on_fail: continue): say so, or its silence reads as "nothing to clarify"
+        clarifyError: phases.clarify?.status === 'failed' ? phases.clarify.error || 'failed' : null };
     }
     case 'approve_plan': {
       const artifacts = tpl.artifacts as Record<string, string>;
@@ -74,7 +76,7 @@ async function buildPayload(kind: HilPhaseSpec['hil'], ctx: PhaseContext): Promi
 
 function summaryFor(p: HilPayload): string {
   switch (p.kind) {
-    case 'refine_prompt': return p.questions.length ? `${p.questions.length} clarifying question(s)` : 'Confirm the prompt';
+    case 'refine_prompt': return p.questions.length ? `${p.questions.length} clarifying question(s)` : p.clarifyError ? `clarify failed (${p.clarifyError}); confirm the original prompt` : 'Confirm the prompt';
     case 'approve_plan': return p.summary.slice(0, 200) || 'Plan is ready for review';
     case 'approve_result': return `${p.commits.length} commit(s); ${p.diffStat.split('\n').pop() ?? ''}${p.test ? `; tests: ${p.test.verdict}` : ''}${p.review ? `; review: ${p.review.verdict}` : ''}${p.qa ? `; qa: ${p.qa.verdict}${p.qa.issues.length ? ` (${p.qa.issues.length} issue(s))` : ''}` : ''}`;
     case 'pr_feedback': return `${p.comments.length} new comment(s) on the PR`;

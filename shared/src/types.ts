@@ -123,7 +123,7 @@ export interface AskUserQuestionItem {
 }
 
 export type HilPayload =
-  | { kind: 'refine_prompt'; prompt: string; questions: ClarifyQuestion[]; suggestedPrompt: string | null; assumptions: string[]; suggestedTitle: string | null; suggestedBranch: string | null }
+  | { kind: 'refine_prompt'; prompt: string; questions: ClarifyQuestion[]; suggestedPrompt: string | null; assumptions: string[]; suggestedTitle: string | null; suggestedBranch: string | null; clarifyError?: string | null }
   | { kind: 'approve_plan'; planMd: string; summary: string; costUsd: number }
   | { kind: 'approve_result'; diffStat: string; diff: string; testOutput: string | null; test: TestOutput | null; review: ReviewOutput | null; qa: QaOutput | null; commits: string[]; branch: string;
       /** Which list the human decides on: review findings, or QA issues at a gate placed after the QA phase. */

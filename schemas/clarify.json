@@ -34,7 +34,7 @@
           },
           "header": {
             "type": "string",
-            "maxLength": 12
+            "maxLength": 30
           },
           "options": {
             "type": "array",

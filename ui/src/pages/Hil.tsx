@@ -190,6 +190,7 @@ function Payload({ p, edited, setEdited, answers, setAnswers, actions, setAction
       const value = edited.prompt ?? p.suggestedPrompt ?? p.prompt;
       return (
         <div>
+          {p.clarifyError && <div className="small" style={{ color: 'var(--warn)', marginBottom: 6 }}>clarify failed: {p.clarifyError}. No questions or rewrite; the prompt below is the original.</div>}
           {p.questions.length > 0 && (
             <div className="card" style={{ background: 'var(--bg)' }}>
               <b>Claude asks</b> <span className="small muted">— every question needs an answer; they are appended to the prompt</span>

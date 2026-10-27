@@ -12,7 +12,7 @@ phases:
     write_scope: [".sdlc/**"]
     output_schema: schemas/clarify.json
     max_turns: 15
-    max_budget_usd: 0.5
+    max_budget_usd: 2
     on_fail: { then: continue }      # clarify is optional: on failure the refine HIL shows the raw prompt
 
   - name: refine

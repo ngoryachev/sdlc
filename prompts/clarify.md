@@ -11,7 +11,7 @@ Briefly explore the repository to understand what the request touches (do not ch
 Return:
 - `title`: a short task title (≤ 60 chars, imperative, no trailing period), e.g. "Validate add() arguments".
 - `branch`: 2–5 English words, lowercase, hyphen-separated, naming the change for a git branch, e.g. `traps-preset` or `play-lines-to-end`. Always English, whatever the language of the request.
-- `questions`: 0–4 questions, each with a short `header` (≤ 12 chars), the `question` text, and optionally 2–4 concrete `options`. Empty if nothing is ambiguous.
+- `questions`: 0–4 questions, each with a short `header` (1–3 words, ≤ 30 chars), the `question` text, and optionally 2–4 concrete `options`. Empty if nothing is ambiguous.
 - `suggestedPrompt`: the request rewritten as a precise task statement for an implementer: what to change, where (files/modules you found), how to verify. Keep the developer's intent; do not invent scope. If there are questions, write the prompt so the developer can answer them inline by editing it.
 - `assumptions`: assumptions you made that the developer should be able to veto.
 
