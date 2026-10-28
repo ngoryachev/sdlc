@@ -149,6 +149,11 @@ describe('config migration', () => {
     const cfg = loadConfig(configPath);
     expect([cfg.limits.phases, cfg.task_budget_usd, cfg.config_version]).toEqual(['pipeline', 20, CONFIG_VERSION + 1]);
     expect(fs.readFileSync(configPath, 'utf8')).toBe(before);
+
+    saveConfig(cfg, configPath);   // a save must not stamp the version back down: the next upgrade would replay that version's migration
+    const saved = read(configPath);
+    expect(saved.config_version).toBe(CONFIG_VERSION + 1);
+    expect([saved.limits, saved.task_budget_usd]).toEqual([{ phases: 'pipeline' }, 20]);
   });
 
   it('creates no file when there is none', async () => {
