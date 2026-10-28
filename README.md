@@ -38,7 +38,7 @@ SDLC_HOME=/tmp/sdlc-dev node server/dist/cli/index.js serve --port 7400
 
 On first start the server generates an access token and prints a login link `http://…:7337/?t=<token>`.
 Open it once per browser (cookie is set). Config lives in `~/.sdlc/config.yaml` (created on first save), data in `~/.sdlc/data/`.
-The file stores only values that differ from the shipped defaults, so a later change of a default reaches an existing installation. A config written before phase limits were turned off is migrated once when it is loaded: a recorded `limits: { phases: pipeline }` becomes `off` and a recorded `task_budget_usd: 20` becomes the current default; after that a `pipeline` chosen in Settings stays.
+The file stores only values that differ from the shipped defaults, so a later change of a default reaches an existing installation. A config written before phase limits were turned off is migrated once when it is loaded, and the file is rewritten in the process (comments and unrecognised keys are not kept): a recorded `limits: { phases: pipeline }` becomes `off` and a recorded `task_budget_usd: 20` becomes the current default; after that a `pipeline` chosen in Settings stays.
 
 ```yaml
 # ~/.sdlc/config.yaml (all keys optional; the file keeps only what differs from the defaults)

@@ -80,13 +80,16 @@ export function loadConfig(configPath = CONFIG_PATH): SdlcConfig {
 }
 
 /**
- * One-time migration of a file without config_version: it came from a saveConfig that wrote every default, so the
- * limits and the task budget it records are the old defaults, not choices. Returns whether the file has to be rewritten.
+ * Migrations of an older file, each gated on the version it belongs to, so a later bump of CONFIG_VERSION never
+ * replays an earlier rule over a value the user has since chosen. Returns whether the file has to be rewritten.
  */
 function migrate(cfg: SdlcConfig, raw: Record<string, unknown>): boolean {
   if (cfg.config_version >= CONFIG_VERSION) return false;
-  if ((raw.limits as { phases?: unknown } | undefined)?.phases === 'pipeline') cfg.limits.phases = 'off';
-  if (raw.task_budget_usd === 20) cfg.task_budget_usd = schemaDefaults().task_budget_usd;
+  // < 1: written by a saveConfig that wrote every default, so the limits and the task budget it records are the old defaults, not choices
+  if (cfg.config_version < 1) {
+    if ((raw.limits as { phases?: unknown } | undefined)?.phases === 'pipeline') cfg.limits.phases = 'off';
+    if (raw.task_budget_usd === 20) cfg.task_budget_usd = schemaDefaults().task_budget_usd;
+  }
   cfg.config_version = CONFIG_VERSION;
   return true;
 }
