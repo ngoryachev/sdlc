@@ -3,6 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openDb, MIGRATIONS, CURRENT_SCHEMA_VERSION } from '../../server/src/store/db.js';
 import { tmpDir } from '../helpers.js';
+import { Store } from '../../server/src/store/repo.js';
 
 const dbFile = (prefix: string) => path.join(tmpDir(prefix), 'sdlc.db');
 
@@ -86,5 +87,78 @@ describe('openDb schema_version bookkeeping', () => {
     openDb(file).close();
     expect(versions(file)).toEqual([CURRENT_SCHEMA_VERSION]);
     expect(read(file, (d) => d.prepare('SELECT id FROM tasks').all())).toEqual([{ id: 't_1' }]);
+  });
+});
+
+describe('openDb schema_version bookkeeping, further cases', () => {
+  it('leaves an in-memory DB at exactly one row too', () => {
+    const db = openDb(':memory:');
+    try {
+      expect(db.prepare('SELECT version FROM schema_version').all()).toEqual([
+        { version: CURRENT_SCHEMA_VERSION },
+      ]);
+    } finally { db.close(); }
+  });
+
+  it('stays at one row over repeated opens of an already repaired DB', () => {
+    const file = dbFile('sdlc-db-repeat-');
+    handBuiltDb(file, MIGRATIONS.length, MIGRATIONS.map((_, i) => i + 1));
+    for (let i = 0; i < 3; i++) openDb(file).close();
+    expect(versions(file)).toEqual([CURRENT_SCHEMA_VERSION]);
+  });
+
+  it('reads the highest version however the broken rows were ordered', () => {
+    const file = dbFile('sdlc-db-scrambled-');
+    // rowid order != version order: the old code read the first row, which is the point of MAX().
+    handBuiltDb(file, MIGRATIONS.length, [MIGRATIONS.length, 1, 2]);
+    openDb(file).close();
+    expect(versions(file)).toEqual([CURRENT_SCHEMA_VERSION]);
+    expect(columns(file, 'tasks')).toContain('model_overrides');
+  });
+
+  it('is a working store after the repair: rows can be written through every migrated table', () => {
+    const file = dbFile('sdlc-db-store-');
+    handBuiltDb(file, MIGRATIONS.length, MIGRATIONS.map((_, i) => i + 1));
+
+    const db = openDb(file);
+    try {
+      const store = new Store(db);
+      const now = new Date().toISOString();
+      store.insertTask({
+        id: 't_1', title: 'x', initialPrompt: 'p', refinedPrompt: null, repoPath: '/r', repoSlug: null,
+        baseRemote: 'origin', baseBranch: 'main', branch: 'sdlc/t_1', worktreePath: '/w', pipelineName: 'auto',
+        reviewMode: 'conceptual', postReview: false, status: 'created', totalCostUsd: 0, prUrl: null,
+        prNumber: null, prFeedbackCursor: null, prHeadSha: null, modelOverrides: null,
+        createdAt: now, updatedAt: now,
+      });
+      // Columns added by the later migrations must be writable, not just present.
+      const t = store.getTask('t_1')!;
+      t.modelOverrides = { implement: { model: 'opus' } };
+      t.prHeadSha = 'deadbeef';
+      store.updateTask(t);
+      expect(store.getTask('t_1')!.prHeadSha).toBe('deadbeef');
+      expect(store.getTask('t_1')!.modelOverrides).toEqual({ implement: { model: 'opus' } });
+    } finally { db.close(); }
+  });
+
+  it('repairs while another connection has the DB open', () => {
+    const file = dbFile('sdlc-db-concurrent-');
+    handBuiltDb(file, MIGRATIONS.length, MIGRATIONS.map((_, i) => i + 1));
+
+    const reader = new DatabaseSync(file);
+    try {
+      reader.prepare('SELECT COUNT(*) AS n FROM schema_version').get();
+      expect(() => openDb(file).close()).not.toThrow();
+      expect(reader.prepare('SELECT version FROM schema_version').all()).toEqual([
+        { version: CURRENT_SCHEMA_VERSION },
+      ]);
+    } finally { reader.close(); }
+  });
+
+  it('does not re-run or rewrite anything for a DB newer than this build', () => {
+    const file = dbFile('sdlc-db-ahead-');
+    handBuiltDb(file, MIGRATIONS.length, [CURRENT_SCHEMA_VERSION + 5]);
+    expect(() => openDb(file).close()).not.toThrow();
+    expect(versions(file)).toEqual([CURRENT_SCHEMA_VERSION + 5]);
   });
 });
