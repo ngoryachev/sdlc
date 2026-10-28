@@ -142,6 +142,15 @@ describe('config migration', () => {
     expect([runner.specs[0]!.maxTurns, runner.specs[0]!.maxBudgetUsd]).toEqual([undefined, undefined]);
   });
 
+  /** Each rule is gated on the version it belongs to: a file from a newer sdlc is neither re-migrated nor rewritten. */
+  it('leaves a file stamped with a version above the current one untouched', () => {
+    const configPath = setup({ config_version: CONFIG_VERSION + 1, limits: { phases: 'pipeline' }, task_budget_usd: 20 });
+    const before = fs.readFileSync(configPath, 'utf8');
+    const cfg = loadConfig(configPath);
+    expect([cfg.limits.phases, cfg.task_budget_usd, cfg.config_version]).toEqual(['pipeline', 20, CONFIG_VERSION + 1]);
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(before);
+  });
+
   it('creates no file when there is none', async () => {
     const home = tmpDir('sdlc-config-home-');
     vi.stubEnv('SDLC_HOME', home); vi.resetModules();   // CONFIG_PATH and the defaults are read at module load
