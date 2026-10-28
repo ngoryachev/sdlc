@@ -38,16 +38,17 @@ SDLC_HOME=/tmp/sdlc-dev node server/dist/cli/index.js serve --port 7400
 
 On first start the server generates an access token and prints a login link `http://…:7337/?t=<token>`.
 Open it once per browser (cookie is set). Config lives in `~/.sdlc/config.yaml` (created on first save), data in `~/.sdlc/data/`.
+The file stores only values that differ from the shipped defaults, so a later change of a default reaches an existing installation. A config written before phase limits were turned off is migrated once when it is loaded: a recorded `limits: { phases: pipeline }` becomes `off` and a recorded `task_budget_usd: 20` becomes the current default; after that a `pipeline` chosen in Settings stays.
 
 ```yaml
-# ~/.sdlc/config.yaml (all keys optional)
+# ~/.sdlc/config.yaml (all keys optional; the file keeps only what differs from the defaults)
 server: { host: 0.0.0.0, port: 7337, public_url: http://192.168.1.10:7337 }   # host 0.0.0.0 to open from a phone
 default_pipeline: standard
 max_parallel_tasks: 10
 max_loops: 15              # cap on test→implement / review→implement loops before escalating (overrides pipelines)
 recheck_scope: delta       # a repeat pass of review/test/qa checks only what changed since its previous pass (full: everything again)
-task_budget_usd: 20        # or off
-limits: { phases: pipeline }   # off: ignore max_turns / max_budget_usd from pipelines
+task_budget_usd: 100       # or off; overall cap per task, checked before each Claude phase starts
+# limits: { phases: pipeline }   # phase limits are off by default: max_turns / max_budget_usd from the pipelines are ignored unless this is set
 merge_method: merge        # merge | squash | rebase, used by Land
 models: { default: opus, effort: high, phases: { review: { model: sonnet } } }   # also editable in the UI (Settings)
 cleanup: never            # never (default: remove explicitly, UI button or `sdlc cleanup`) | on_pr | on_approve
@@ -112,7 +113,7 @@ Base ref: `--base origin/main` or a local branch such as `--base feature/x` (a n
 
 - Every phase runs in the task's worktree; `.sdlc/` (plan, transcripts) is excluded from git.
 - A PreToolUse hook denies writes outside the worktree / `.git`, enforces `write_scope`, and blocks `git push`, `git commit --amend`, `sudo`, `rm -rf /|~`, `curl | sh` in every mode. `Bash(git commit*)`/`Bash(git push*)` are additionally denied in implement phases; the orchestrator commits.
-- Per-phase `max_turns`/`max_budget_usd`, task-level `task_budget_usd` (escalates to a human), `max_parallel_tasks`.
+- The pipelines' per-phase `max_turns`/`max_budget_usd` are ignored unless `limits: { phases: pipeline }` is set, so a phase is never cut off mid-answer by default. `task_budget_usd` is the overall cap per task: it is checked before each Claude phase starts (`server/src/engine/engine.ts`) and escalates to a human instead of interrupting a running phase. `max_parallel_tasks` caps how many tasks run at once.
 - Claude/shell phases get the server's whole environment (API keys for skills and MCP servers included, e.g. from `~/.sdlc/env`) except sdlc's own `SDLC_*` settings (`env_allow` passes a named one through).
 - Claude phases load settings, skills, plugins and MCP servers like an interactive `claude` (`setting_sources: [user, project, local]`); the repo's `.mcp.json` servers start without the approval prompt.
 
