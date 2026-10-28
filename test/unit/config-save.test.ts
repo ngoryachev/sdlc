@@ -64,6 +64,26 @@ describe('saveConfig', () => {
     expect(saved.server).toEqual({ port: 7400 });
   });
 
+  /** Pruning is a chance to lose a setting: every value a user really chose has to come back after a save. */
+  it('keeps every value that differs from the default across a save', () => {
+    vi.stubEnv('SDLC_TELEGRAM_TOKEN', ''); vi.stubEnv('SDLC_TOKEN', '');
+    const configPath = setup({
+      config_version: CONFIG_VERSION,
+      worktrees_dir: '/wt', repos_dir: '/repos', pipelines_dirs: ['/p1'],
+      default_pipeline: 'quick', max_parallel_tasks: 3, task_budget_usd: 'off', max_loops: 0,
+      recheck_scope: 'full', limits: { phases: 'pipeline' }, merge_method: 'squash',
+      models: { default: 'opus', effort: 'max', phases: { review: { model: 'sonnet' } } },
+      question_timeout: '3d', auto_resume_on_restart: false, cleanup: 'on_pr',
+      pr_feedback_from: 'anyone', env_allow: ['FOO'], git_author: 'Me <m@m>',
+      repos: [{ name: 'r', path: '/r', gh_user: 'u' }], pr_sync_interval: 'off',
+      server: { host: '0.0.0.0', port: 1234, public_url: 'http://x', token: 'tok', token_in_url: false },
+      telegram: { enabled: true, bot_token: 'bt', chat_id: 'ci' },
+    });
+    const before = loadConfig(configPath);
+    saveConfig(before, configPath);
+    expect(loadConfig(configPath)).toEqual(before);
+  });
+
   it('does not put defaults back when the UI saves the settings', async () => {
     vi.stubEnv('SDLC_TELEGRAM_TOKEN', ''); vi.stubEnv('SDLC_TOKEN', '');
     const dir = tmpDir('sdlc-config-put-');

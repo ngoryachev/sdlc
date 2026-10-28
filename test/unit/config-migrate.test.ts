@@ -6,8 +6,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { CONFIG_VERSION, loadConfig, saveConfig } from '../../server/src/config/config.js';
 import { createApp } from '../../server/src/app.js';
 import { configRoutes } from '../../server/src/http/routes/config.js';
+import { createHttpApp } from '../../server/src/http/app.js';
 import { FakeRunner } from '../fakes/fake-runner.js';
-import { tmpDir } from '../helpers.js';
+import { makeRepo, tmpDir } from '../helpers.js';
 
 /**
  * Files written by the old saveConfig froze every default in, so the pre-f2a0126 phase limits and task budget are
@@ -67,6 +68,78 @@ describe('config migration', () => {
     const res = await new Hono().route('/api', configRoutes(app)).request('/api/config');
     const body = await res.json() as { limits: { phases: string }; taskBudgetUsd: number };
     expect([body.limits.phases, body.taskBudgetUsd]).toEqual(['off', 100]);
+  });
+
+  /** The rewrite is a write the user never asked for: a value they really chose must come through it unharmed. */
+  it('leaves a budget that is not the frozen 20 and an explicit off alone', () => {
+    const configPath = setup({ limits: { phases: 'off' }, task_budget_usd: 50 });
+    const cfg = loadConfig(configPath);
+    expect([cfg.limits.phases, cfg.task_budget_usd]).toEqual(['off', 50]);
+    expect(read(configPath).task_budget_usd).toBe(50);
+  });
+
+  /** loadConfig writes the file now, so the env-secret guarantee of saveConfig has to hold on that path too. */
+  it('keeps secrets that came from the environment out of the file it rewrites', () => {
+    vi.stubEnv('SDLC_TOKEN', 'env-server'); vi.stubEnv('SDLC_TELEGRAM_TOKEN', 'env-bot');
+    const configPath = setup({ limits: { phases: 'pipeline' }, task_budget_usd: 20, telegram: { enabled: true } });
+    const cfg = loadConfig(configPath);
+    expect([cfg.server.token, cfg.telegram.bot_token]).toEqual(['env-server', 'env-bot']);
+    expect(fs.readFileSync(configPath, 'utf8')).not.toContain('env-');
+    expect(read(configPath).telegram).toEqual({ enabled: true });
+  });
+
+  it('rewrites the file once and leaves it alone on every later load', () => {
+    const configPath = setup({ limits: { phases: 'pipeline' }, task_budget_usd: 20 });
+    loadConfig(configPath);
+    const after = fs.readFileSync(configPath, 'utf8');
+    loadConfig(configPath); loadConfig(configPath);
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(after);
+  });
+
+  /** A config that cannot be written (read-only deployment) must not stop the server; the safe values are in memory. */
+  it('serves the migrated values when the file cannot be rewritten', () => {
+    const configPath = setup({ limits: { phases: 'pipeline' }, task_budget_usd: 20 });
+    fs.chmodSync(configPath, 0o444);
+    try {
+      const cfg = loadConfig(configPath);
+      expect([cfg.limits.phases, cfg.task_budget_usd]).toEqual(['off', 100]);
+      expect(read(configPath).limits).toEqual({ phases: 'pipeline' });   // unchanged on disk
+    } finally { fs.chmodSync(configPath, 0o644); }
+  });
+
+  /** The whole point of the version stamp: turning the phase limits back on in Settings has to survive a restart. */
+  it('keeps phase limits turned back on in Settings across a restart', async () => {
+    vi.stubEnv('SDLC_TOKEN', ''); vi.stubEnv('SDLC_TELEGRAM_TOKEN', '');
+    const configPath = setup({ limits: { phases: 'pipeline' }, task_budget_usd: 20 });
+    const app = createApp({ config: loadConfig(configPath), runner: new FakeRunner(() => ({ act: () => ({}) })), dbFile: ':memory:', configPath });
+    const hono = createHttpApp(app);
+    const body = { task_budget_usd: 20, limits: { phases: 'pipeline' } };
+    const res = await hono.request('/api/config', { method: 'PUT', headers: { 'content-type': 'application/json', authorization: `Bearer ${app.config.server.token!}` }, body: JSON.stringify(body) });
+    expect(res.status).toBe(200);
+
+    const restarted = loadConfig(configPath);
+    expect([restarted.limits.phases, restarted.task_budget_usd]).toEqual(['pipeline', 20]);
+  });
+
+  /** What the migration is for: the pipelines' per-phase caps stop reaching the runner. */
+  it('stops passing the pipelines per-phase caps to Claude once the file is migrated', async () => {
+    const dir = tmpDir('sdlc-migrate-caps-');
+    const repo = makeRepo(dir, { 'a.txt': 'x\n' });
+    const root = path.join(dir, 'sdlc');
+    fs.mkdirSync(path.join(root, 'pipelines'), { recursive: true }); fs.mkdirSync(path.join(root, 'prompts/system'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'prompts/work.md'), '# Phase: work\n');
+    fs.writeFileSync(path.join(root, 'prompts/system/common.md'), '');
+    fs.writeFileSync(path.join(root, 'pipelines/live.yaml'), 'name: live\nphases:\n  - name: work\n    type: claude\n    prompt: prompts/work.md\n    max_turns: 3\n    max_budget_usd: 3\n');
+    const configPath = path.join(dir, 'config.yaml');
+    fs.writeFileSync(configPath, YAML.stringify({
+      data_dir: path.join(dir, 'data'), worktrees_dir: path.join(dir, 'wt'), pipelines_dirs: [path.join(root, 'pipelines')],
+      cleanup: 'never', pr_sync_interval: 'off', limits: { phases: 'pipeline' }, task_budget_usd: 20,
+    }));
+    const runner = new FakeRunner(() => ({ act: () => ({ text: 'ok' }) }));
+    const app = createApp({ config: loadConfig(configPath), runner, dbFile: ':memory:', configPath });
+    const task = await app.engine.createTask({ prompt: 'x', repoPath: repo, pipeline: 'live', baseRemote: null });
+    await app.engine.advance(task.id);
+    expect([runner.specs[0]!.maxTurns, runner.specs[0]!.maxBudgetUsd]).toEqual([undefined, undefined]);
   });
 
   it('creates no file when there is none', async () => {
