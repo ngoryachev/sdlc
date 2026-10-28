@@ -102,10 +102,11 @@ export function saveConfig(cfg: SdlcConfig, configPath = CONFIG_PATH): void {
   const onDisk = ((fs.existsSync(configPath) ? YAML.parse(fs.readFileSync(configPath, 'utf8')) : null) ?? {}) as { server?: { token?: string }; telegram?: { bot_token?: string } };
   const server = { ...rest.server, token: fromEnv('SDLC_TOKEN', rest.server.token, onDisk.server?.token) };
   const telegram = { ...rest.telegram, bot_token: fromEnv('SDLC_TELEGRAM_TOKEN', rest.telegram.bot_token, onDisk.telegram?.bot_token) };
-  const { config_version: _version, ...full } = { ...rest, server, telegram, pipelines_dirs: own };
+  const { config_version, ...full } = { ...rest, server, telegram, pipelines_dirs: own };
   // only what differs from the shipped defaults, so a later change of a default reaches every installation that ever pressed Save
   const kept = prune(full, schemaDefaults() as unknown as Record<string, unknown>);
-  fs.writeFileSync(configPath, YAML.stringify({ config_version: CONFIG_VERSION, ...(kept === DROP ? {} : (kept as Record<string, unknown>)) }));
+  // a file from a newer sdlc keeps its version: downgrading it would replay that version's migration on the next upgrade
+  fs.writeFileSync(configPath, YAML.stringify({ config_version: Math.max(CONFIG_VERSION, config_version), ...(kept === DROP ? {} : (kept as Record<string, unknown>)) }));
 }
 
 const fromEnv = (name: string, value: string | undefined, onDisk: string | undefined) => (value !== undefined && value === process.env[name] ? onDisk : value);
