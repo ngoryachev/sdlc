@@ -2,8 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { loadConfig, saveConfig } from '../../server/src/config/config.js';
-import { tmpDir } from '../helpers.js';
+import { CONFIG_VERSION, loadConfig, saveConfig } from '../../server/src/config/config.js';
+import { createApp } from '../../server/src/app.js';
+import { createHttpApp } from '../../server/src/http/app.js';
+import { FakeRunner } from '../fakes/fake-runner.js';
+import { testApp, tmpDir } from '../helpers.js';
 
 /** SDLC_TELEGRAM_TOKEN and SDLC_TOKEN live in the env file: saving the config must not copy them into config.yaml. */
 describe('saveConfig', () => {
@@ -27,7 +30,7 @@ describe('saveConfig', () => {
     const saved = read(configPath);
     expect(saved.max_loops).toBe(3);
     expect(saved.telegram).toEqual({ enabled: true, chat_id: '1' });
-    expect(saved.server.token).toBeUndefined();
+    expect(saved.server?.token).toBeUndefined();
     expect(fs.readFileSync(configPath, 'utf8')).not.toContain('env-');
   });
 
@@ -46,5 +49,58 @@ describe('saveConfig', () => {
     saveConfig(cfg, configPath);
     expect(read(configPath).server.token).toBe('generated');
     expect(read(configPath).telegram.bot_token).toBe('typed');
+  });
+
+  /** A default frozen into the file is a default that never changes again: only what differs from the schema is written. */
+  it('writes only what differs from the defaults', () => {
+    vi.stubEnv('SDLC_TELEGRAM_TOKEN', ''); vi.stubEnv('SDLC_TOKEN', '');
+    const configPath = setup({ max_loops: 15, max_parallel_tasks: 10, limits: { phases: 'off' }, server: { host: '127.0.0.1', port: 7337, token_in_url: true }, models: { phases: {} }, repos: [] });
+    const cfg = loadConfig(configPath);
+    cfg.server.port = 7400;
+    saveConfig(cfg, configPath);
+    const saved = read(configPath);
+    expect(Object.keys(saved).sort()).toEqual(['config_version', 'data_dir', 'server']);
+    expect(saved.config_version).toBe(CONFIG_VERSION);
+    expect(saved.server).toEqual({ port: 7400 });
+  });
+
+  /** Pruning is a chance to lose a setting: every value a user really chose has to come back after a save. */
+  it('keeps every value that differs from the default across a save', () => {
+    vi.stubEnv('SDLC_TELEGRAM_TOKEN', ''); vi.stubEnv('SDLC_TOKEN', '');
+    const configPath = setup({
+      config_version: CONFIG_VERSION,
+      worktrees_dir: '/wt', repos_dir: '/repos', pipelines_dirs: ['/p1'],
+      default_pipeline: 'quick', max_parallel_tasks: 3, task_budget_usd: 'off', max_loops: 0,
+      recheck_scope: 'full', limits: { phases: 'pipeline' }, merge_method: 'squash',
+      models: { default: 'opus', effort: 'max', phases: { review: { model: 'sonnet' } } },
+      question_timeout: '3d', auto_resume_on_restart: false, cleanup: 'on_pr',
+      pr_feedback_from: 'anyone', env_allow: ['FOO'], git_author: 'Me <m@m>',
+      repos: [{ name: 'r', path: '/r', gh_user: 'u' }], pr_sync_interval: 'off',
+      server: { host: '0.0.0.0', port: 1234, public_url: 'http://x', token: 'tok', token_in_url: false },
+      telegram: { enabled: true, bot_token: 'bt', chat_id: 'ci' },
+    });
+    const before = loadConfig(configPath);
+    saveConfig(before, configPath);
+    expect(loadConfig(configPath)).toEqual(before);
+  });
+
+  it('does not put defaults back when the UI saves the settings', async () => {
+    vi.stubEnv('SDLC_TELEGRAM_TOKEN', ''); vi.stubEnv('SDLC_TOKEN', '');
+    const dir = tmpDir('sdlc-config-put-');
+    const configPath = path.join(dir, 'config.yaml');
+    const runner = () => new FakeRunner(() => ({ act: () => ({}) }));
+    const app = createApp({ config: testApp(dir, runner()).config, runner: runner(), dbFile: ':memory:', configPath });
+    const hono = createHttpApp(app);   // generates and persists the access token
+    const token = app.config.server.token!;
+    const body = { default_pipeline: 'standard', max_parallel_tasks: 10, max_loops: 15, recheck_scope: 'delta', pr_feedback_from: 'collaborators', pr_sync_interval: 'off', task_budget_usd: 100, limits: { phases: 'off' }, merge_method: 'merge', cleanup: 'never', models: { phases: {} } };
+    const res = await hono.request('/api/config', { method: 'PUT', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+    expect(res.status).toBe(200);
+    const saved = read(configPath);
+    expect(saved.limits).toBeUndefined();
+    expect(saved.max_loops).toBeUndefined();
+    expect(saved.task_budget_usd).toBeUndefined();
+    expect(saved.config_version).toBe(CONFIG_VERSION);
+    expect(saved.server.token).toBe(token);
+    expect(saved.pipelines_dirs).toBeUndefined();   // sdlc's own pipelines/ never lands in the file
   });
 });
