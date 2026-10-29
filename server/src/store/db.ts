@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-const MIGRATIONS: string[] = [
+export const MIGRATIONS: string[] = [
   `
   CREATE TABLE tasks (
     id TEXT PRIMARY KEY, title TEXT NOT NULL, initial_prompt TEXT NOT NULL, refined_prompt TEXT,
@@ -41,19 +41,36 @@ const MIGRATIONS: string[] = [
    ALTER TABLE phase_runs ADD COLUMN head_sha TEXT;`,
 ];
 
+export const CURRENT_SCHEMA_VERSION = MIGRATIONS.length;
+
 export function openDb(file: string): DatabaseSync {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
   db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
-  const row = db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined;
+  // MAX(), not the first row: an older bug left one row per applied migration (1..N) instead of
+  // a single row, and reading the first one re-ran migrations that were already applied.
+  const row = db.prepare('SELECT MAX(version) AS version FROM schema_version').get() as
+    | { version: number | null }
+    | undefined;
+  // Branch-free and idempotent: whatever the table looked like, it ends with exactly one row.
+  const setVersion = (version: number) => {
+    db.exec('DELETE FROM schema_version');
+    db.prepare('INSERT INTO schema_version(version) VALUES (?)').run(version);
+  };
   let v = row?.version ?? 0;
   while (v < MIGRATIONS.length) {
     db.exec('BEGIN');
     db.exec(MIGRATIONS[v]!);
     v++;
-    if (row) db.prepare('UPDATE schema_version SET version = ?').run(v);
-    else db.prepare('INSERT INTO schema_version(version) VALUES (?)').run(v);
+    setVersion(v);
+    db.exec('COMMIT');
+  }
+  // Nothing to migrate, but the table may still carry the leftover rows: collapse them once.
+  const { n } = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
+  if (n !== 1) {
+    db.exec('BEGIN');
+    setVersion(v);
     db.exec('COMMIT');
   }
   return db;
