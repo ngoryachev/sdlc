@@ -290,3 +290,49 @@ describe('through the notifier hub, as the server wires it', () => {
     } finally { stop(); }
   });
 });
+
+/** Both cards carry the Jira issue and the branch as url-buttons; a link that cannot be composed is simply not offered. */
+describe('telegram link buttons', () => {
+  const setup = async (o: { jiraUrl?: string } = {}) => {
+    const dir = tmpDir('sdlc-tg-links-');
+    const repo = makeRepo(dir, { 'a.txt': 'x\n' });
+    sh(repo, ['remote', 'add', 'origin', 'https://github.com/me/shop.git']);   // nothing is pushed there; it is only where repoSlug comes from
+    const app = testApp(dir, quickRunner(), { max_loops: 0, repos: [{ name: 'shop', path: repo, gh_user: 'tester', ...(o.jiraUrl ? { jira_url: o.jiraUrl } : {}) }] }, new FakeGitHub(repo));
+    const created = await app.engine.createTask({ prompt: 'ABC-123 change a', repoPath: repo, pipeline: 'quick', baseRemote: null });
+    await app.engine.advance(created.id);
+    const hil = app.store.openHilForTask(created.id)[0]!;
+    const task = app.store.getTask(created.id)!;
+    return { app, task, hil, tg: new TelegramNotifier(app, { botToken: 'x', chatId: '1', token: null }) };
+  };
+  /** The row that holds "🔗 Open", as `text → url` pairs. */
+  const openRow = () => {
+    const kb = (sent.at(-1)!.reply_markup as { inline_keyboard: { text: string; url?: string }[][] }).inline_keyboard;
+    return kb.find((row) => row.some((b) => b.text === '🔗 Open'))!.map((b) => `${b.text} → ${b.url}`);
+  };
+
+  it('offers the issue and the branch once the repository has a jira_url and the branch is pushed', async () => {
+    const { app, task, hil, tg } = await setup({ jiraUrl: 'https://x.atlassian.net/' });
+    app.events.emit('git.pushed', { taskId: task.id, branch: task.branch }, { taskId: task.id });
+    const buttons = [
+      '🔗 Open → http://localhost/x',
+      '🧩 ABC-123 → https://x.atlassian.net/browse/ABC-123',
+      '🌿 branch → https://github.com/me/shop/tree/' + task.branch,
+    ];
+    sent = [];
+    await tg.onHilCreated(hil, task, 'http://localhost/x');
+    expect(openRow()).toEqual(buttons);
+    sent = [];
+    await tg.onTaskStatus(task, 'running', 'pr_open', 'http://localhost/x');
+    expect(openRow()).toEqual(buttons);
+  });
+
+  it('offers only Open when the repository has no jira_url and the branch was never pushed', async () => {
+    const { task, hil, tg } = await setup();
+    sent = [];
+    await tg.onHilCreated(hil, task, 'http://localhost/x');
+    expect(openRow()).toEqual(['🔗 Open → http://localhost/x']);
+    sent = [];
+    await tg.onTaskStatus(task, 'running', 'pr_open', 'http://localhost/x');
+    expect(openRow()).toEqual(['🔗 Open → http://localhost/x']);
+  });
+});

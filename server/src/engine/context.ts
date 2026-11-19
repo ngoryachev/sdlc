@@ -3,13 +3,17 @@ import type { PhaseRun, PipelineRun, Task } from '@sdlc/shared';
 import type { PipelineSpec, RepoConfig } from '../pipeline/schema.js';
 import type { TemplateContext } from '../pipeline/template.js';
 import type { Store } from '../store/repo.js';
+import { NO_LINKS, type TaskLinks } from './links.js';
 
 /** Build the `{{ … }}` context for a task at its current state. */
 export function buildTemplateContext(o: {
   task: Task; run: PipelineRun; spec: PipelineSpec; repoConfig: RepoConfig; store: Store;
   loop?: { feedback: string; count: number } | null;
+  /** Jira issue and branch URLs of the task; omitted (or null inside) they render as empty `{{task.jira_url?}}` / `{{task.branch_url?}}`. */
+  links?: TaskLinks | null;
 }): TemplateContext {
   const { task, run, store } = o;
+  const links = o.links ?? NO_LINKS;
   const phases: Record<string, unknown> = {};
   const artifacts: Record<string, unknown> = {};
   const hil: Record<string, unknown> = {};
@@ -36,6 +40,7 @@ export function buildTemplateContext(o: {
       branch: task.branch, base_branch: task.baseBranch, base_remote: task.baseRemote ?? '', base_ref: task.baseRemote ? `${task.baseRemote}/${task.baseBranch}` : task.baseBranch,
       worktree: task.worktreePath, repo: task.repoPath, review_mode: task.reviewMode, post_review: String(task.postReview),
       cost_usd: task.totalCostUsd.toFixed(2), pr_url: task.prUrl ?? '', jira_key: task.jiraKey ?? '',
+      jira_url: links.jiraUrl ?? '', branch_url: links.branchUrl ?? '',
     },
     phases, artifacts, hil,
     loop: o.loop ?? { feedback: '', count: 0 },

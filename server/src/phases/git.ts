@@ -9,6 +9,7 @@ import { nowIso } from '../store/ids.js';
 import type { PhaseContext, PhaseExecutor, PhaseOutcome } from './executor.js';
 import { catchUpBeforePush } from './catchup.js';
 import { withJiraKey } from '../engine/jira.js';
+import { collapseBlankLines, linkTemplateVars } from '../engine/links.js';
 
 export class GitPhaseExecutor implements PhaseExecutor<GitPhaseSpec> {
   async run(phase: GitPhaseSpec, pr: PhaseRun, ctx: PhaseContext): Promise<PhaseOutcome> {
@@ -79,7 +80,9 @@ export class GitPhaseExecutor implements PhaseExecutor<GitPhaseSpec> {
         const p = phase.pr ?? { draft: false, post_review: false };
         const draft = typeof p.draft === 'string' ? renderTemplate(p.draft, ctx.tpl) === 'true' : p.draft;
         const title = withJiraKey(renderTemplate(p.title ?? '{{task.title}}', ctx.tpl), task.jiraKey);
-        const body = p.body ? renderTemplate(fs.readFileSync(resolvePipelineFile(ctx.loaded, p.body), 'utf8'), ctx.tpl) : `Task: ${task.id}`;
+        // the branch was pushed a moment ago, inside this phase: {{task.branch_url}} only has a value now
+        const bodyTpl = { ...ctx.tpl, task: { ...(ctx.tpl.task as Record<string, unknown>), ...linkTemplateVars(ctx, task) } };
+        const body = p.body ? collapseBlankLines(renderTemplate(fs.readFileSync(resolvePipelineFile(ctx.loaded, p.body), 'utf8'), bodyTpl)) : `Task: ${task.id}`;
         const created = await github.prCreate({ cwd: task.repoPath, head: task.branch, base: task.baseBranch, title, body, draft }, auth);
         task.prUrl = created.url; task.prNumber = created.number;
         pr.resultText = created.url;

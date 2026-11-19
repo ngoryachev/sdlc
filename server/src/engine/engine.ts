@@ -28,6 +28,7 @@ import { ShellPhaseExecutor } from '../phases/shell.js';
 import { GitPhaseExecutor } from '../phases/git.js';
 import { HilPhaseExecutor, newHilRequest } from '../phases/hil.js';
 import { buildTemplateContext } from './context.js';
+import { collapseBlankLines, taskLinks } from './links.js';
 import { HilBroker } from './hil-broker.js';
 
 /** Stands in for a clarifying answer the developer deliberately did not give. Defers to the prompt body: clarify writes `suggestedPrompt` so a question can be answered inline there instead. */
@@ -492,6 +493,9 @@ export class Engine {
     return this.d.store.listTasks().filter((t) => t.id !== task.id && t.repoPath === task.repoPath && t.baseBranch === task.branch && (includeFinished || !FINISHED_STATUSES.includes(t.status)));
   }
 
+  /** The task's Jira issue and branch URLs, for the templates and (through the routes) the UI. */
+  private links(task: Task) { return taskLinks(this.d, task); }
+
   private prBody(task: Task): string {
     const { store } = this.d;
     const run = store.latestRunForTask(task.id);
@@ -499,8 +503,9 @@ export class Engine {
     if (run) {
       try {
         const { spec, loaded } = snapshot(run);
-        const tpl = buildTemplateContext({ task, run, spec, repoConfig: loadRepoConfig(task.repoPath), store });
-        body = renderTemplate(fs.readFileSync(resolvePipelineFile(loaded, 'prompts/pr_body.md'), 'utf8'), tpl);
+        const tpl = buildTemplateContext({ task, run, spec, repoConfig: loadRepoConfig(task.repoPath), store, links: this.links(task) });
+        // an absent optional link line leaves a blank line behind: collapsing runs of them keeps a body without links the one of before
+        body = collapseBlankLines(renderTemplate(fs.readFileSync(resolvePipelineFile(loaded, 'prompts/pr_body.md'), 'utf8'), tpl));
       } catch { /* keep the minimal body */ }
     }
     const stacked = this.childTasks(task, true).filter((c) => c.status === 'merged');
@@ -633,7 +638,7 @@ export class Engine {
       const resume = run.pendingResume && run.pendingResume.phase === phase.name ? run.pendingResume : null;
       if (resume) { run.pendingResume = null; this.saveRun(run); }
       const loopCount = Object.values(run.loopCounts).reduce((a, b) => a + b, 0);
-      let tpl = buildTemplateContext({ task, run, spec, repoConfig, store, loop: resume ? { feedback: resume.feedback, count: loopCount } : null });
+      let tpl = buildTemplateContext({ task, run, spec, repoConfig, store, links: this.links(task), loop: resume ? { feedback: resume.feedback, count: loopCount } : null });
 
       if (phase.when && !evalExpr(phase.when, tpl)) {
         const pr = this.newPhaseRun(run, task, phase);
@@ -738,7 +743,7 @@ export class Engine {
             const maxLoops = config.max_loops;   // global cap; the pipeline's own max_loops is only the fallback documented in the yaml
             if ((run.loopCounts[key] ?? 0) < maxLoops) {
               run.loopCounts[key] = (run.loopCounts[key] ?? 0) + 1;
-              tpl = buildTemplateContext({ task: fresh, run, spec, repoConfig, store });
+              tpl = buildTemplateContext({ task: fresh, run, spec, repoConfig, store, links: this.links(fresh) });
               const fb = loopFeedback(policy.feedback, tpl, phase.name, outcome.error);
               run.pendingResume = { phase: policy.back_to, feedback: fb };
               run.returnTo = null;

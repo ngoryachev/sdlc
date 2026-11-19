@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { App } from '../../app.js';
 import { HttpError } from '../../engine/engine.js';
+import { taskLinks } from '../../engine/links.js';
 
 const Respond = z.object({
   decision: z.enum(['approve', 'request_changes', 'abort', 'allow', 'allow_session', 'deny', 'answer', 'retry', 'resume', 'skip']),
@@ -25,4 +26,8 @@ export function hilRoutes(app: App) {
   return r;
 }
 
-function taskRef(app: App, id: string) { const t = app.store.getTask(id); return t ? { id: t.id, title: t.title, status: t.status } : { id, title: id, status: 'unknown' }; }
+function taskRef(app: App, id: string) {
+  const t = app.store.getTask(id);
+  if (!t) return { id, title: id, status: 'unknown', jiraUrl: null, branchUrl: null };
+  return { id: t.id, title: t.title, status: t.status, ...taskLinks(app, t) };
+}

@@ -8,6 +8,7 @@ import { readTranscript } from '../../claude/transcript.js';
 import { diffAgainst } from '../../git/git.js';
 import { loadPipeline, roleOf } from '../../pipeline/loader.js';
 import { snapshot } from '../../engine/engine.js';
+import { taskLinks } from '../../engine/links.js';
 
 const Effort = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 const ModelOverrides = z.record(z.string(), z.object({ model: z.string().optional(), effort: Effort.optional() }).strict()).nullable().optional();
@@ -44,7 +45,9 @@ export function tasksRoutes(app: App) {
     // the slice of the pipeline this task runs, and what that makes it on its pull request
     let segment: { from: string; to: string } | null = null; let role: string | null = null;
     if (run) { try { const { spec, seg } = snapshot(run); segment = { from: spec.phases[seg.fromIdx]!.name, to: spec.phases[seg.toIdx]!.name }; role = roleOf(spec, seg); } catch { /* snapshot of an older schema */ } }
-    return c.json({ task: t, run, segment, role, phaseRuns: store.phaseRunsForTask(t.id), openHil: store.openHilForTask(t.id), worktreeExists: fs.existsSync(path.join(t.worktreePath, '.git')), baseChain: baseChain(app, t), children });
+    // ready URLs, not the pieces: the Jira base lives in the config and "is the branch pushed" in the event history
+    const { jiraUrl, branchUrl } = taskLinks(app, t);
+    return c.json({ task: t, run, segment, role, phaseRuns: store.phaseRunsForTask(t.id), openHil: store.openHilForTask(t.id), worktreeExists: fs.existsSync(path.join(t.worktreePath, '.git')), baseChain: baseChain(app, t), children, jiraUrl, branchUrl });
   });
   r.post('/tasks/:id/pr', async (c) => {
     const b = z.object({ title: z.string().optional(), draft: z.boolean().optional() }).parse(await c.req.json().catch(() => ({})));

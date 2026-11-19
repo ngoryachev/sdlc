@@ -57,7 +57,7 @@ export const ConfigSchema = z.object({
   pr_feedback_from: z.enum(['collaborators', 'anyone']).default('collaborators'),
   env_allow: z.array(z.string()).default([]),
   git_author: z.string().default('SDLC <sdlc@local>'),
-  repos: z.array(z.object({ name: z.string(), path: z.string(), gh_user: z.string().optional(), files: RepoFilesSchema })).default([]),   // gh_user: GitHub account used for this repo; files: see RepoFileSchema
+  repos: z.array(z.object({ name: z.string(), path: z.string(), gh_user: z.string().optional(), jira_url: z.string().optional(), files: RepoFilesSchema })).default([]),   // gh_user: GitHub account used for this repo; jira_url: Jira base URL (https://company.atlassian.net), turns an issue key into a link; files: see RepoFileSchema
   pr_sync_interval: z.union([z.string().regex(/^\d+(m|h)$/), z.literal('off')]).default('3m'),   // background check of PR state and merged branches
   server: z.object({
     host: z.string().default('127.0.0.1'),

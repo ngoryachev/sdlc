@@ -1,6 +1,7 @@
 import type { HilRequest, Task } from '@sdlc/shared';
 import type { App } from '../app.js';
 import type { Notifier } from './types.js';
+import { taskLinks } from '../engine/links.js';
 
 interface TgUpdate { update_id: number; message?: { chat: { id: number }; text?: string; from?: { id: number; username?: string } }; callback_query?: { id: string; from: { id: number; username?: string }; message?: { chat: { id: number }; message_id: number }; data?: string } }
 
@@ -36,7 +37,7 @@ export class TelegramNotifier implements Notifier {
     if (req.allowedDecisions.includes('skip')) row.push({ text: '⏭ skip', callback_data: `h:${req.id}:skip` });
     if (negative) row.push({ text: `✖ ${negative}`, callback_data: `h:${req.id}:${negative}` });
     const withToken = this.o.token ? (link.includes('?') ? `${link}&t=${this.o.token}` : `${link}?t=${this.o.token}`) : link;
-    const r = await this.api<{ message_id: number }>('sendMessage', { chat_id: this.o.chatId, text, parse_mode: 'HTML', reply_markup: { inline_keyboard: [row, [{ text: '🔗 Open', url: withToken }]] } });
+    const r = await this.api<{ message_id: number }>('sendMessage', { chat_id: this.o.chatId, text, parse_mode: 'HTML', reply_markup: { inline_keyboard: [row, [{ text: '🔗 Open', url: withToken }, ...this.linkButtons(task)]] } });
     this.app.store.setNotificationRef(req.id, this.name, String(r.message_id));
   }
 
@@ -52,7 +53,19 @@ export class TelegramNotifier implements Notifier {
     if (!this.o.chatId) return;
     const { icon, text } = to === 'pr_open' ? this.prOpenLine(task)
       : { icon: to === 'succeeded' || to === 'merged' ? '🎉' : to === 'failed' ? '💥' : to === 'aborted' || to === 'closed' ? '🛑' : '⏸', text: to };
-    await this.api('sendMessage', { chat_id: this.o.chatId, parse_mode: 'HTML', text: `${icon} <b>${esc(task.title)}</b> → ${text}${task.prUrl ? `\n${task.prUrl}` : ''}`, reply_markup: { inline_keyboard: [[{ text: '🔗 Open', url: this.o.token ? `${link}?t=${this.o.token}` : link }]] } });
+    await this.api('sendMessage', { chat_id: this.o.chatId, parse_mode: 'HTML', text: `${icon} <b>${esc(task.title)}</b> → ${text}${task.prUrl ? `\n${task.prUrl}` : ''}`, reply_markup: { inline_keyboard: [[{ text: '🔗 Open', url: this.o.token ? `${link}?t=${this.o.token}` : link }, ...this.linkButtons(task)]] } });
+  }
+
+  /**
+   * The Jira issue and the branch on GitHub, as url-buttons next to "🔗 Open". A link that cannot be composed is left
+   * out entirely: Telegram rejects the whole message over one invalid button url.
+   */
+  private linkButtons(task: Task): { text: string; url: string }[] {
+    const { jiraUrl, branchUrl } = taskLinks(this.app, task);
+    const out: { text: string; url: string }[] = [];
+    if (jiraUrl) out.push({ text: `🧩 ${task.jiraKey}`, url: jiraUrl });
+    if (branchUrl) out.push({ text: '🌿 branch', url: branchUrl });
+    return out;
   }
 
   /**

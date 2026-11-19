@@ -118,7 +118,7 @@ export function HilPage() {
   const p = h.payload;
   return (
     <div className="card">
-      <div className="row"><span className="kind">{h.kind}</span><h2 className="grow" style={{ margin: 0 }}><Link href={`/tasks/${h.taskId}`}>{h.task.title}</Link></h2><span className="small muted">{ago(h.createdAt)} ago</span></div>
+      <div className="row"><span className="kind">{h.kind}</span><h2 className="grow" style={{ margin: 0 }}><Link href={`/tasks/${h.taskId}`}>{h.task.title}</Link></h2>{h.task.jiraUrl && <a className="small" href={h.task.jiraUrl} target="_blank" rel="noreferrer">🧩 Jira</a>}{h.task.branchUrl && <a className="small" href={h.task.branchUrl} target="_blank" rel="noreferrer">🌿 branch</a>}<span className="small muted">{ago(h.createdAt)} ago</span></div>
       <div className="muted" style={{ marginBottom: 10 }}>{t(h.summary)}</div>
       <div className="row small" style={{ marginBottom: 10, gap: 6, flexWrap: 'wrap' }}>
         <select style={{ width: 'auto' }} value={readingLang} disabled={translating} onChange={(e) => setReadingLang(e.target.value as TranslateLang)}>{TRANSLATE_LANGS.map((l) => <option key={l} value={l}>{TRANSLATE_LANG_NAMES[l]}</option>)}</select>

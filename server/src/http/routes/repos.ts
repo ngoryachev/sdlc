@@ -57,14 +57,26 @@ export function reposRoutes(app: App) {
     return c.json({ name: entry.name, path: p, ghUser }, 201);
   });
 
-  /** Choose the account for a repository; null re-detects it (first logged-in account with push access). */
+  /**
+   * Per-repository settings: the GitHub account (null re-detects it: first logged-in account with push access) and the
+   * Jira base URL the issue key links to. Each is applied only when its key is in the body, so either can be sent alone.
+   */
   r.put('/repos/:id', async (c) => {
     const repo = byId(c.req.param('id'));
-    const body = z.object({ gh_user: z.string().nullable() }).parse(await c.req.json());
-    if (body.gh_user && !(await app.github.accounts()).some((a) => a.login === body.gh_user)) throw new HttpError(400, `${body.gh_user} is not logged in to gh (gh auth login)`);
-    app.accounts.set(repo.path, body.gh_user);
+    const body = z.object({ gh_user: z.string().nullable().optional(), jira_url: z.string().nullable().optional() }).parse(await c.req.json());
+    if (body.gh_user !== undefined) {
+      if (body.gh_user && !(await app.github.accounts()).some((a) => a.login === body.gh_user)) throw new HttpError(400, `${body.gh_user} is not logged in to gh (gh auth login)`);
+      app.accounts.set(repo.path, body.gh_user);   // persists the config itself
+    }
+    if (body.jira_url !== undefined) {
+      const url = body.jira_url?.trim() ?? '';
+      // a typo here would be a broken link on four surfaces and a button Telegram refuses the whole message for
+      if (url && !/^https?:\/\/.+/.test(url)) throw new HttpError(400, 'jira_url must start with http:// or https:// (e.g. https://company.atlassian.net)');
+      if (url) repo.jira_url = url; else delete repo.jira_url;
+      app.persistConfig();
+    }
     const ghUser = await app.accounts.userFor(repo.path);
-    return c.json({ name: repo.name, path: repo.path, ghUser });
+    return c.json({ name: repo.name, path: repo.path, ghUser, jiraUrl: repo.jira_url ?? null });
   });
 
   r.get('/repos/:id/branches', async (c) => {

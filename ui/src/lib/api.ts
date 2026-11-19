@@ -11,18 +11,19 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 const text = async (path: string) => { const r = await fetch(`/api${path}`); if (!r.ok) throw new ApiError(r.status, r.statusText, null); return r.text(); };
 
 export type TaskRow = Task & { openHil: number; currentPhase: string | null };
-export type HilRow = HilRequest & { task: { id: string; title: string; status: string } };
+export type HilRow = HilRequest & { task: { id: string; title: string; status: string; jiraUrl: string | null; branchUrl: string | null } };
 export interface BaseChainItem { branch: string; taskId?: string; title?: string; status?: string }
 export interface TaskChild { id: string; title: string; status: string; branch: string; prUrl: string | null; prNumber: number | null }
-export interface TaskDetail { task: Task; run: PipelineRun | null; segment: { from: string; to: string } | null; role: TaskRole | null; phaseRuns: PhaseRun[]; openHil: HilRequest[]; worktreeExists: boolean; baseChain: BaseChainItem[]; children: TaskChild[] }
+export interface TaskDetail { task: Task; run: PipelineRun | null; segment: { from: string; to: string } | null; role: TaskRole | null; phaseRuns: PhaseRun[]; openHil: HilRequest[]; worktreeExists: boolean; baseChain: BaseChainItem[]; children: TaskChild[]; jiraUrl: string | null; branchUrl: string | null }
 export interface GhAccount { login: string; active: boolean }
+export interface RepoSettings { name: string; path: string; ghUser: string | null; jiraUrl: string | null }
 export interface RegisteredRepo { name: string; path: string; ghUser: string | null; exists: boolean }
 export interface GhRepoRow { slug: string; description: string; isFork: boolean; isPrivate: boolean; pushedAt: string | null; defaultBranch: string; canPush: boolean; cloned: boolean }
 /** What the server tells the UI about a per-repository file: never its contents. */
 export interface RepoFileMeta { env: string; filename: string; size: number | null; mtime: string | null; missing: boolean }
 export interface SyncResult { checked: number; changes: { taskId: string; title: string; change: string }[]; errors: string[] }
 export interface ModelsConfig { default?: string; effort?: EffortLevel; phases: Record<string, { model?: string; effort?: EffortLevel }> }
-export interface Config { publicUrl: string; repos: { name: string; path: string; ghUser: string | null; files: RepoFileMeta[] }[]; reposDir: string; prSyncInterval: string; defaultPipeline: string; maxParallelTasks: number; maxLoops: number; recheckScope: 'delta' | 'full'; prFeedbackFrom: 'collaborators' | 'anyone'; taskBudgetUsd: number | 'off'; limits: { phases: 'pipeline' | 'off' }; mergeMethod: 'merge' | 'squash' | 'rebase'; cleanup: string; models: ModelsConfig; telegram: { enabled: boolean; configured: boolean; chatId: string | null } }
+export interface Config { publicUrl: string; repos: { name: string; path: string; ghUser: string | null; jiraUrl: string | null; files: RepoFileMeta[] }[]; reposDir: string; prSyncInterval: string; defaultPipeline: string; maxParallelTasks: number; maxLoops: number; recheckScope: 'delta' | 'full'; prFeedbackFrom: 'collaborators' | 'anyone'; taskBudgetUsd: number | 'off'; limits: { phases: 'pipeline' | 'off' }; mergeMethod: 'merge' | 'squash' | 'rebase'; cleanup: string; models: ModelsConfig; telegram: { enabled: boolean; configured: boolean; chatId: string | null } }
 export type ConfigPatch = Partial<Pick<Config, 'limits' | 'mergeMethod' | 'cleanup' | 'models'>> & { default_pipeline?: string; max_parallel_tasks?: number; task_budget_usd?: number | 'off'; merge_method?: string };
 export interface ModelChoice { value: string; displayName: string; description?: string }
 export interface PipelineInfo { name: string; description?: string; segment?: { from?: string; to?: string }; needsPr?: boolean; phases: { name: string; type: string; hil?: string }[] }
@@ -37,7 +38,9 @@ export const api = {
   closeTask: (id: string, b: { deleteBranch?: boolean; closePr?: boolean }) => req<Task>('POST', `/tasks/${id}/close`, b),
   sync: () => req<SyncResult>('POST', '/tasks/sync'),
   ghAccounts: () => req<{ accounts: GhAccount[]; error?: string }>('GET', '/gh/accounts'),
-  setRepoAccount: (name: string, ghUser: string | null) => req<{ name: string; path: string; ghUser: string | null }>('PUT', `/repos/${encodeURIComponent(name)}`, { gh_user: ghUser }),
+  setRepoAccount: (name: string, ghUser: string | null) => req<RepoSettings>('PUT', `/repos/${encodeURIComponent(name)}`, { gh_user: ghUser }),
+  /** Jira base URL of a repository (`https://company.atlassian.net`); empty clears it, and with it the issue links. */
+  setRepoJira: (name: string, jiraUrl: string | null) => req<RepoSettings>('PUT', `/repos/${encodeURIComponent(name)}`, { jira_url: jiraUrl }),
   githubBranches: (slug: string, account: string | null) => req<{ branches: { remote: string | null; branch: string }[] }>('GET', `/repos/github/branches?slug=${encodeURIComponent(slug)}${account ? `&account=${encodeURIComponent(account)}` : ''}`),
   taskModels: (id: string, modelOverrides: ModelOverrides | null) => req<Task>('PUT', `/tasks/${id}/models`, { modelOverrides }),
   pipelines: () => req<{ pipelines: PipelineInfo[] }>('GET', '/pipelines'),
