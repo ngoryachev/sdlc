@@ -13,6 +13,8 @@ export class FakeGitHub implements GitHub {
   calls: string[] = [];
   /** Comments a test puts on a PR; `prFeedback` returns them in insertion order. */
   feedback = new Map<number, PrComment[]>();
+  /** GitHub's `reviewDecision` per PR; absent = no review happened. */
+  reviewDecisions = new Map<number, string>();
   /** Every review posted through `postReview`. */
   reviews: { number: number; event: ReviewEventName; body: string; comments: ReviewLineComment[] }[] = [];
   private next = 1;
@@ -30,7 +32,9 @@ export class FakeGitHub implements GitHub {
   private pr(n: number) { const p = this.prs.get(n); if (!p) throw new Error(`no PR #${n}`); return p; }
 
   /** Head commit is read from the bare repository, so a push by a test is what "new commits in the PR" means. */
-  async prView(_cwd: string, n: number): Promise<PrInfo> { const p = this.pr(n); return { ...p, headRefOid: this.has(p.headRefName) ? g(this.bare, ['rev-parse', `refs/heads/${p.headRefName}`]) : undefined }; }
+  async prView(_cwd: string, n: number): Promise<PrInfo> { const p = this.pr(n); return { ...p, headRefOid: this.has(p.headRefName) ? g(this.bare, ['rev-parse', `refs/heads/${p.headRefName}`]) : undefined, reviewDecision: this.reviewDecisions.get(n) }; }
+  /** Approve, request changes or drop the review decision of a PR, as a human would on GitHub. */
+  setReviewDecision(n: number, decision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null): void { if (decision === null) this.reviewDecisions.delete(n); else this.reviewDecisions.set(n, decision); }
   /** Open a PR for a branch that is already on the remote (someone else's pull request). */
   openPr(head: string, base: string, title = head, body = ''): number { const number = this.next++; this.prs.set(number, { number, url: `https://github.test/test/repo/pull/${number}`, title, body, headRefName: head, baseRefName: base, state: 'OPEN', isDraft: false }); return number; }
   comment(n: number, c: Partial<PrComment> & { body: string }): void { const list = this.feedback.get(n) ?? []; list.push({ id: `comment:${list.length + 1}`, author: 'alice', association: 'COLLABORATOR', url: `https://github.test/c/${list.length + 1}`, createdAt: new Date(Date.now() + list.length).toISOString(), ...c }); this.feedback.set(n, list); }
