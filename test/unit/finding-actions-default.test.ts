@@ -41,6 +41,13 @@ describe('defaultFindingActions: what a result checkpoint proposes before the hu
       .toEqual({ 'review:0': 'post', 'review:1': 'skip' });
   });
 
+  it('never proposes post for an author, and nothing at all without items', () => {
+    const author = checkpoint({ role: 'author', canFix: true, canPost: true, findings: [finding('blocking'), finding('nit')] });
+    expect(defaultFindingActions(author, null)).toEqual({ 'review:0': 'fix', 'review:1': 'skip' });
+    expect(defaultFindingActions(checkpoint({ role: 'reviewer', canPost: true }), null)).toEqual({});
+    expect(defaultFindingActions(checkpoint({ role: 'author', canFix: true, focus: 'qa' }), null)).toEqual({});
+  });
+
   it('proposes nothing outside a result checkpoint', () => {
     expect(defaultFindingActions({ kind: 'question', questions: [] }, null)).toEqual({});
   });
