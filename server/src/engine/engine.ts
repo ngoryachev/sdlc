@@ -744,11 +744,12 @@ export class Engine {
       let injected = this.pendingInject.get(taskId)?.splice(0).join('\n\n') ?? '';
       const feedback = [resume?.feedback, injected].filter(Boolean).join('\n\n') || null;
 
+      const abortFlags = this.abortFlags;
       const ctx: PhaseContext = {
         task, run, spec, loaded, repoConfig, config: this.d.config, store, events, runner: this.d.runner, github: this.d.github, accounts: this.d.accounts, tpl,
         segment: seg, role: roleOf(spec, seg),
         resumeFeedback: feedback,
-        abortRequested: this.abortFlags.has(taskId),
+        get abortRequested() { return abortFlags.has(taskId); },   // read live: a flag can arrive after the phase started
         canUseTool: (p) => this.makeCanUseTool(task, p),
         registerHandle: (h) => { if (h) this.handles.set(taskId, h); else this.handles.delete(taskId); },
         persistPhase: (p) => store.updatePhaseRun(p),
