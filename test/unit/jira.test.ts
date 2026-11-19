@@ -34,6 +34,9 @@ describe('jiraKeyFrom', () => {
     for (const t of ['decode UTF-8 input', 'switch to SHA-256', 'dates are ISO-8601', 'ask GPT-4', 'patch CVE-2024', 'enable HTTP-2', 'per RFC-5322', 'store UTC-5 offsets', 'use AES-256', 'parse RGB-255'])
       expect(jiraKeyFrom(t)).toBeNull();
     expect(jiraKeyFrom('CVE-2024 is fixed in PROJ-7')).toBe('PROJ-7');
+    for (const t of ['due in Q1-2024', 'planned for Q4-2025', 'follow PEP-8', 'floats are IEEE-754', 'build for X86-64', 'switch to SHA3-256'])
+      expect(jiraKeyFrom(t)).toBeNull();
+    expect(jiraKeyFrom('In Q1-2024 we do PROJ-7')).toBe('PROJ-7');
   });
 });
 
@@ -44,5 +47,15 @@ describe('withJiraKey', () => {
     expect(withJiraKey('sdlc(t_1): ABC-123 add a flag', 'ABC-123')).toBe('sdlc(t_1): ABC-123 add a flag');
     expect(withJiraKey('sdlc(t_1): implement', null)).toBe('sdlc(t_1): implement');
     expect(withJiraKey('sdlc(t_1): implement', '')).toBe('sdlc(t_1): implement');
+  });
+
+  it('looks at the subject line only: a key in the body of a message still gets prefixed', () => {
+    expect(withJiraKey('sdlc(t_1): implement\n\nRefs: ABC-123', 'ABC-123')).toBe('ABC-123 sdlc(t_1): implement\n\nRefs: ABC-123');
+    expect(withJiraKey('ABC-123 sdlc(t_1): implement\n\nRefs: ABC-123', 'ABC-123')).toBe('ABC-123 sdlc(t_1): implement\n\nRefs: ABC-123');
+  });
+
+  it('a longer key that merely starts with this one does not count as already there', () => {
+    expect(withJiraKey('sdlc(t_1): follows PROJ-70', 'PROJ-7')).toBe('PROJ-7 sdlc(t_1): follows PROJ-70');
+    expect(withJiraKey('sdlc(t_1): fixes (PROJ-7)', 'PROJ-7')).toBe('sdlc(t_1): fixes (PROJ-7)');
   });
 });

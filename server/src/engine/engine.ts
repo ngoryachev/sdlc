@@ -207,7 +207,7 @@ export class Engine {
       const into = task.baseRemote ? `${task.baseRemote}/${task.baseBranch}` : task.baseBranch;
       let via: 'pr' | 'local';
       if (task.prNumber) { await this.d.github.prMerge(task.repoPath, task.prNumber, m, auth); via = 'pr'; }
-      else { await mergeLocally({ repo: task.repoPath, base: task.baseBranch, baseRemote: task.baseRemote, head: task.branch, method: m, message: `${task.title}\n\nsdlc task ${task.id}`, author: config.git_author, auth }); via = 'local'; }
+      else { await mergeLocally({ repo: task.repoPath, base: task.baseBranch, baseRemote: task.baseRemote, head: task.branch, method: m, message: `${withJiraKey(task.title, task.jiraKey)}\n\nsdlc task ${task.id}`, author: config.git_author, auth }); via = 'local'; }
       events.emit('git.merged', { taskId: task.id, method: m, into, via }, { taskId: task.id });
       const re = await this.restack(task, children, auth);
       notes.push(...re.notes);

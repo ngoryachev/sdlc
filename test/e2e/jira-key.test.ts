@@ -159,6 +159,21 @@ phases:
     expect(gh.prs.get(2)!.title).toBe('ABC-123 Flip b');          // the key the human typed is not doubled
   });
 
+  it('carries the key into the merge commit when a task is landed without a pull request', async () => {
+    const dir = tmpDir('sdlc-jira-land-');
+    const { repo, bare } = makeRemoteRepo(dir, { 'a.txt': 'x\n' });
+    const gh = new FakeGitHub(bare);
+    const app = testApp(dir, autoRunner(), {}, gh);
+
+    const t = await app.engine.createTask({ prompt: 'Add a flag\n\nTracked in ABC-123.', repoPath: repo, pipeline: 'auto', baseRemote: 'origin' });
+    await app.engine.advance(t.id);
+    expect(app.store.getTask(t.id)!.title).toBe('Add a flag');     // the title alone does not carry the key
+    const r = await app.engine.landTask(t.id, 'squash');
+
+    expect(r.via).toBe('local');                                   // no PR: sdlc writes the merge commit itself
+    expect(sh(bare, ['log', '-1', '--format=%s', 'main'])).toBe('ABC-123 Add a flag');
+  });
+
   it('never renames a branch sdlc adopted, however the pull request mentions a key', async () => {
     const dir = tmpDir('sdlc-jira-adopted-');
     const { repo, bare } = makeRemoteRepo(dir, { 'a.txt': 'x\n' });
