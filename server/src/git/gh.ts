@@ -41,6 +41,17 @@ export interface GitHub {
   prFeedback(cwd: string, number: number, auth: RepoAuth): Promise<{ state: string; comments: PrComment[] }>;
 }
 
+/**
+ * GitHub rejects a `COMMENT` or `REQUEST_CHANGES` review with an empty body (422), even when it carries inline
+ * comments, so those events get a default text. `APPROVE` is the only verdict that may be submitted with nothing said.
+ */
+export function reviewBody(o: { event: ReviewEventName; body: string; comments: unknown[] }): string {
+  if (o.body.trim()) return o.body;
+  if (o.event === 'REQUEST_CHANGES') return 'Changes requested, see the comments.';
+  if (o.event === 'COMMENT' && o.comments.length) return 'See the comments.';
+  return o.body;
+}
+
 function ghEnv(token: string | null | undefined, clearTokens = false): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', GIT_TERMINAL_PROMPT: '0' };
   if (token) { env.GH_TOKEN = token; delete env.GITHUB_TOKEN; }
@@ -194,7 +205,7 @@ export class GhCli implements GitHub {
       try { await gh(['api', `repos/${repo}/pulls/${o.number}/reviews`, '--method', 'POST', '--input', tmp], { token: auth.token }); }
       finally { fs.rmSync(tmp, { force: true }); }
     };
-    const body = o.body || (o.event === 'REQUEST_CHANGES' ? 'Changes requested, see the comments.' : '');
+    const body = reviewBody(o);
     try { await send({ body, event: o.event, comments: o.comments.map((c) => ({ ...c, side: 'RIGHT' })) }); }
     catch (e) {
       // one comment outside the diff makes GitHub reject the whole review (422): keep every text, drop the anchors

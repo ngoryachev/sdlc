@@ -94,7 +94,7 @@ async function isOwnPr(ctx: PhaseContext): Promise<boolean> {
   const auth = await ctx.accounts.forRepo(task.repoPath).catch(() => null);
   if (!auth?.user) return false;
   const pr = await ctx.github.prView(task.repoPath, task.prNumber, auth).catch(() => null);
-  return pr?.author?.login === auth.user;
+  return pr?.author?.login?.toLowerCase() === auth.user.toLowerCase();   // GitHub logins are case-insensitive
 }
 
 async function buildPayload(kind: HilPhaseSpec['hil'], ctx: PhaseContext): Promise<HilPayload> {

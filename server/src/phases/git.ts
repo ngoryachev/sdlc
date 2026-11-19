@@ -62,7 +62,9 @@ export class GitPhaseExecutor implements PhaseExecutor<GitPhaseSpec> {
           if (event === 'COMMENT' || !/own pull request/i.test(msg)) throw e;
           sent = 'COMMENT';
           events.emit('engine.warning', { taskId: task.id, message: `GitHub refused ${event} on PR #${task.prNumber} (sdlc opened it itself); posted the review as a comment instead` }, { taskId: task.id, phaseRunId: pr.id });
-          await github.postReview({ cwd: task.repoPath, number: task.prNumber, event: 'COMMENT', body, comments }, auth);
+          // a comment review needs words of its own, and a clean review has none: the reason stands in for them
+          const why = `sdlc reviewed this pull request${chosen.length ? '' : ' and found nothing to report'}; the \`${event.toLowerCase()}\` verdict cannot be submitted on a pull request opened by the same account.`;
+          await github.postReview({ cwd: task.repoPath, number: task.prNumber, event: 'COMMENT', body: body || why, comments }, auth);
         }
         pr.resultText = `published ${chosen.length} finding(s) on PR #${task.prNumber} as ${sent}${sent === event ? '' : ` (${event} refused: own pull request)`} (${inline.length} inline, ${loose.length} in the review text) from ${hil.id}`;
       } else {

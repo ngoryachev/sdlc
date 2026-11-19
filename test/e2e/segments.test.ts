@@ -165,7 +165,7 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     await app.engine.advance(t1.id);
     await app.engine.respondHil(app.store.openHilForTask(t1.id)[0]!.id, { decision: 'approve', reviewEvent: 'request_changes' }, 'web');
     await app.engine.advance(t1.id);
-    expect(gh.reviews).toEqual([{ number: first, event: 'REQUEST_CHANGES', body: '', comments: [] }]);
+    expect(gh.reviews).toEqual([{ number: first, event: 'REQUEST_CHANGES', body: 'Changes requested, see the comments.', comments: [] }]);   // GitHub needs words with that verdict
     expect(app.store.phaseRunsForTask(t1.id).find((p) => p.phaseName === 'publish')!.status).toBe('succeeded');
 
     // a comment event with no findings and no text would be an empty review: still skipped
@@ -431,7 +431,7 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     expect(hil.payload.kind === 'approve_result' && hil.payload.review?.findings.map((f) => f.title)).toEqual(['Could be shorter']);
     await app.engine.respondHil(hil.id, { decision: 'approve', findings: { 'review:0': 'post' }, reviewEvent: 'approve' }, 'web');
     await app.engine.advance(task.id);
-    expect(gh.reviews).toEqual([{ number: 1, event: 'COMMENT', body: '', comments: [{ path: 'a.txt', line: 1, body: expect.stringContaining('Could be shorter') }] }]);   // own PR: only a comment, whatever was asked
+    expect(gh.reviews).toEqual([{ number: 1, event: 'COMMENT', body: 'See the comments.', comments: [{ path: 'a.txt', line: 1, body: expect.stringContaining('Could be shorter') }] }]);   // own PR: only a comment, whatever was asked
 
     // QA found issues: its gate decides on QA issues, and the fix goes commit → push → QA, without test and review
     hil = app.store.openHilForTask(task.id)[0]!;

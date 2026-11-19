@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { GhAccount, GhRepo, GitHub, MergeMethod, PrComment, PrInfo, RepoAuth, ReviewEventName, ReviewLineComment } from '../../server/src/git/gh.js';
+import { reviewBody } from '../../server/src/git/gh.js';
 
 const ENV = { ...process.env, GIT_AUTHOR_NAME: 'gh', GIT_AUTHOR_EMAIL: 'gh@test', GIT_COMMITTER_NAME: 'gh', GIT_COMMITTER_EMAIL: 'gh@test' };
 const g = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, env: ENV, stdio: 'pipe' }).toString().trim();
@@ -73,7 +74,10 @@ export class FakeGitHub implements GitHub {
     // what GitHub answers when you approve or request changes on a PR you opened yourself
     const own = !!auth?.user && this.pr(o.number).author?.login === auth.user;
     if (own && o.event !== 'COMMENT') throw new Error(`HTTP 422: Can not ${o.event === 'APPROVE' ? 'approve' : 'request changes on'} your own pull request (https://api.github.com/repos/test/repo/pulls/${o.number}/reviews)`);
-    this.reviews.push({ number: o.number, event: o.event, body: o.body, comments: o.comments });
+    // and what it answers when a verdict that needs words carries none, inline comments or not
+    const body = reviewBody(o);
+    if (!body.trim() && o.event !== 'APPROVE') throw new Error(`HTTP 422: Body is required for a ${o.event} review (https://api.github.com/repos/test/repo/pulls/${o.number}/reviews)`);
+    this.reviews.push({ number: o.number, event: o.event, body, comments: o.comments });
     this.calls.push(`review #${o.number} ${o.event} ${o.comments.length} inline`);
   }
   async prFeedback(_cwd: string, n: number): Promise<{ state: string; comments: PrComment[] }> { return { state: this.pr(n).state, comments: [...(this.feedback.get(n) ?? [])] }; }

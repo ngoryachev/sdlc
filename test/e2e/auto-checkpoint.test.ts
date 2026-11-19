@@ -192,12 +192,34 @@ describe('checkpoints with nothing to decide answer themselves', () => {
     await app.engine.advance(task.id);
 
     // the finding still reached the PR, as a comment, and the phase succeeded instead of failing the task
-    expect(gh.reviews).toEqual([{ number: n, event: 'COMMENT', body: '', comments: [{ path: 'feature.txt', line: 2, body: expect.stringContaining('Naming') }] }]);
+    // the comment carries the reason the verdict is missing: GitHub refuses a bodyless COMMENT review as well
+    expect(gh.reviews).toEqual([{ number: n, event: 'COMMENT', body: 'sdlc reviewed this pull request; the `approve` verdict cannot be submitted on a pull request opened by the same account.', comments: [{ path: 'feature.txt', line: 2, body: expect.stringContaining('Naming') }] }]);
     const publish = app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'publish')!;
     expect(publish.status).toBe('succeeded');
     expect(publish.resultText).toContain('as COMMENT (APPROVE refused: own pull request)');
     expect(app.events.replay(0, task.id).filter((e) => e.type === 'engine.warning').map((e) => (e.payload as { message: string }).message))
       .toEqual([`GitHub refused APPROVE on PR #${n} (sdlc opened it itself); posted the review as a comment instead`]);
+    expect(app.store.getTask(task.id)!.status).toBe('pr_open');
+  });
+
+  it('the degraded comment still says something when the clean review had nothing to post', async () => {
+    const dir = tmpDir('sdlc-auto-own-pr-clean-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, gh, 'feature', 'tester');
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: CLEAN }) })), { repos: [{ name: 'r', path: repo, gh_user: 'tester' }] }, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    // the human keeps the proposed approve: nothing is marked to post, so the review has no body of its own
+    await app.engine.respondHil(app.store.openHilForTask(task.id)[0]!.id, { decision: 'approve', reviewEvent: 'approve' }, 'web');
+    await app.engine.advance(task.id);
+
+    // an empty COMMENT review is a 422 too: the fallback writes the reason instead of failing the run
+    expect(gh.reviews).toEqual([{ number: n, event: 'COMMENT', body: 'sdlc reviewed this pull request and found nothing to report; the `approve` verdict cannot be submitted on a pull request opened by the same account.', comments: [] }]);
+    const publish = app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'publish')!;
+    expect([publish.status, publish.resultText]).toEqual(['succeeded', expect.stringContaining('as COMMENT (APPROVE refused: own pull request)')]);
+    expect(app.events.replay(0, task.id).filter((e) => e.type === 'engine.warning').length).toBe(1);
     expect(app.store.getTask(task.id)!.status).toBe('pr_open');
   });
 
