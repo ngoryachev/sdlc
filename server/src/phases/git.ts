@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import type { PhaseRun, ReviewFinding } from '@sdlc/shared';
 import type { GitPhaseSpec } from '../pipeline/schema.js';
-import { renderTemplate } from '../pipeline/template.js';
+import { renderBody, renderTemplate } from '../pipeline/template.js';
 import { resolvePipelineFile } from '../pipeline/loader.js';
 import { commitAll, diffRightLines, push, pushBranch, remoteHasBranch } from '../git/git.js';
 import type { ReviewEventName } from '../git/gh.js';
@@ -9,6 +9,7 @@ import { nowIso } from '../store/ids.js';
 import type { PhaseContext, PhaseExecutor, PhaseOutcome } from './executor.js';
 import { catchUpBeforePush } from './catchup.js';
 import { withJiraKey } from '../engine/jira.js';
+import { LINK_VARS, linkTemplateVars } from '../engine/links.js';
 
 export class GitPhaseExecutor implements PhaseExecutor<GitPhaseSpec> {
   async run(phase: GitPhaseSpec, pr: PhaseRun, ctx: PhaseContext): Promise<PhaseOutcome> {
@@ -92,7 +93,9 @@ export class GitPhaseExecutor implements PhaseExecutor<GitPhaseSpec> {
         const p = phase.pr ?? { draft: false, post_review: false };
         const draft = typeof p.draft === 'string' ? renderTemplate(p.draft, ctx.tpl) === 'true' : p.draft;
         const title = withJiraKey(renderTemplate(p.title ?? '{{task.title}}', ctx.tpl), task.jiraKey);
-        const body = p.body ? renderTemplate(fs.readFileSync(resolvePipelineFile(ctx.loaded, p.body), 'utf8'), ctx.tpl) : `Task: ${task.id}`;
+        // the branch was pushed a moment ago, inside this phase: {{task.branch_url}} only has a value now
+        const bodyTpl = { ...ctx.tpl, task: { ...(ctx.tpl.task as Record<string, unknown>), ...linkTemplateVars(ctx, task) } };
+        const body = p.body ? renderBody(fs.readFileSync(resolvePipelineFile(ctx.loaded, p.body), 'utf8'), bodyTpl, LINK_VARS) : `Task: ${task.id}`;
         const created = await github.prCreate({ cwd: task.repoPath, head: task.branch, base: task.baseBranch, title, body, draft }, auth);
         task.prUrl = created.url; task.prNumber = created.number;
         pr.resultText = created.url;

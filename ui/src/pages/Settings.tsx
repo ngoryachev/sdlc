@@ -91,11 +91,17 @@ function RepoAccountsCard({ repos, onChanged }: { repos: Config['repos']; onChan
     try { const r = await api.setRepoAccount(name, login || null); toast(`${name}: ${r.ghUser ?? 'no account'}`); onChanged(); }
     catch (e) { toast((e as Error).message, 'error'); }
   };
+  const setJira = async (el: HTMLInputElement, name: string, was: string | null) => {
+    const url = el.value.trim();
+    if (url === (was ?? '')) return;   // blur without an edit
+    try { const r = await api.setRepoJira(name, url || null); toast(`${name}: ${r.jiraUrl ?? 'no Jira'}`); onChanged(); }
+    catch (e) { toast((e as Error).message, 'error'); el.value = was ?? ''; }   // refused (not an http(s) URL): show what is still stored
+  };
   return (
     <div className="card">
       <h4 style={{ marginTop: 0 }}>Repositories</h4>
-      <div className="small muted" style={{ marginBottom: 6 }}>Each repository is worked on with its own GitHub account (push, PRs, merges), independent of the account active in gh. "auto" picks the first logged-in account that can push there.</div>
-      <table><thead><tr><th></th><th>repository</th><th>path</th><th>GitHub account</th></tr></thead><tbody>
+      <div className="small muted" style={{ marginBottom: 6 }}>Each repository is worked on with its own GitHub account (push, PRs, merges), independent of the account active in gh. "auto" picks the first logged-in account that can push there. The Jira base URL turns the issue key of a task into a link on the task page, in the checkpoints, in Telegram and in the pull request body.</div>
+      <table><thead><tr><th></th><th>repository</th><th>path</th><th>GitHub account</th><th>Jira base URL</th></tr></thead><tbody>
         {repos.map((r) => (
           <Fragment key={r.path}>
             <tr><td><button style={{ width: 'auto' }} title="files given to phases as environment variables" onClick={() => setOpen(open === r.name ? null : r.name)}>{open === r.name ? '▾' : '▸'} files{r.files.length ? ` (${r.files.length})` : ''}</button></td>
@@ -104,11 +110,12 @@ function RepoAccountsCard({ repos, onChanged }: { repos: Config['repos']; onChan
                 <option value="">auto</option>
                 {accounts.map((a) => <option key={a.login} value={a.login}>{a.login}{a.active ? ' (gh default)' : ''}</option>)}
                 {r.ghUser && !accounts.some((a) => a.login === r.ghUser) && <option value={r.ghUser}>{r.ghUser} (not logged in)</option>}
-              </select></td></tr>
-            {open === r.name && <tr><td></td><td colSpan={3}><RepoFiles repo={r.name} onChanged={onChanged} /></td></tr>}
+              </select></td>
+              <td><input key={r.jiraUrl ?? ''} style={{ width: 'auto' }} defaultValue={r.jiraUrl ?? ''} placeholder="https://company.atlassian.net" onBlur={(e) => void setJira(e.currentTarget, r.name, r.jiraUrl)} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} /></td></tr>
+            {open === r.name && <tr><td></td><td colSpan={4}><RepoFiles repo={r.name} onChanged={onChanged} /></td></tr>}
           </Fragment>
         ))}
-        {repos.length === 0 && <tr><td colSpan={4} className="muted">none registered</td></tr>}
+        {repos.length === 0 && <tr><td colSpan={5} className="muted">none registered</td></tr>}
       </tbody></table>
     </div>
   );

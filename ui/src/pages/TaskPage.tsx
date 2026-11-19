@@ -23,7 +23,7 @@ export function TaskPage() {
   useEffect(() => { void reload(); }, [id, tasksVersion]);
   useEffect(() => { const t = setInterval(reload, 15000); return () => clearInterval(t); }, [id]);
   if (!d) return <div className="muted">loading…</div>;
-  const { task, phaseRuns, openHil, worktreeExists, baseChain, children, segment, role } = d;
+  const { task, phaseRuns, openHil, worktreeExists, baseChain, children, segment, role, jiraUrl, branchUrl } = d;
   const done = ['succeeded', 'merged', 'closed', 'failed', 'aborted'].includes(task.status);
   const idle = done || task.status === 'pr_open';
   const landable = ['succeeded', 'pr_open'].includes(task.status);
@@ -35,7 +35,7 @@ export function TaskPage() {
     <>
       <div className="card">
         <div className="row"><h2 className="grow" style={{ margin: 0 }}>{task.title}</h2><StatusChip t={task} /><Money v={task.totalCostUsd} /></div>
-        <div className="small muted" style={{ marginTop: 4 }}>{task.id} · {task.pipelineName}{segment && (segment.from !== segment.to ? <> [{segment.from} → {segment.to}]</> : <> [{segment.from}]</>)}{role === 'reviewer' && <> · <span title="this task only reviews the pull request: new commits start the review again">reviewer</span></>} · <span className="mono">{task.branch}</span>{(baseChain ?? []).map((b) => <span key={b.branch}> ← <span className="mono">{b.branch}</span>{b.taskId ? <> (<Link href={`/tasks/${b.taskId}`}>{b.title}</Link>{b.status ? <> · {b.status}</> : null})</> : null}</span>)} · review {task.reviewMode}{task.prUrl ? <> · <a href={task.prUrl} target="_blank" rel="noreferrer">PR #{task.prNumber}</a></> : null} · {ago(task.createdAt)} ago</div>
+        <div className="small muted" style={{ marginTop: 4 }}>{task.id} · {task.pipelineName}{segment && (segment.from !== segment.to ? <> [{segment.from} → {segment.to}]</> : <> [{segment.from}]</>)}{role === 'reviewer' && <> · <span title="this task only reviews the pull request: new commits start the review again">reviewer</span></>} · {branchUrl ? <a className="mono" href={branchUrl} target="_blank" rel="noreferrer">{task.branch}</a> : <span className="mono">{task.branch}</span>}{(baseChain ?? []).map((b) => <span key={b.branch}> ← <span className="mono">{b.branch}</span>{b.taskId ? <> (<Link href={`/tasks/${b.taskId}`}>{b.title}</Link>{b.status ? <> · {b.status}</> : null})</> : null}</span>)} · review {task.reviewMode}{task.prUrl ? <> · <a href={task.prUrl} target="_blank" rel="noreferrer">PR #{task.prNumber}</a></> : null}{jiraUrl ? <> · <a href={jiraUrl} target="_blank" rel="noreferrer">{task.jiraKey}</a></> : null} · {ago(task.createdAt)} ago</div>
         {(children ?? []).length > 0 && (
           <div className="stack small">
             <div className="muted">stacked on <span className="mono">{task.branch}</span>:</div>

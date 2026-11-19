@@ -56,6 +56,7 @@ repos:
   - name: shop
     path: /home/me/Develop/shop
     gh_user: me             # GitHub account for this repo (auto-detected; editable in Settings)
+    jira_url: https://company.atlassian.net   # optional; makes the issue key of a task a link (editable in Settings)
     files:                  # files the phases of this repo need but that are not in git; upload them in Settings
       - { env: KEYSTORE, path: /home/me/.sdlc/files/shop-8d9001d32c/release.jks }   # $KEYSTORE is the path, for every phase of a task in this repo
 pr_sync_interval: 3m      # background check of PR states and merged branches (off to disable)
@@ -102,7 +103,7 @@ post_review: false              # post line-level findings to the GitHub PR
 Flow control on any phase: `when: <expr>` (skip when false), `on_fail: { retry, back_to, feedback, max_loops, then: hil|fail|continue }` (`continue` skips a best-effort phase), `on_success: { goto }`.
 `back_to` resumes the target phase's Claude session with `feedback` as the next message — that's how test output and review findings reach the implementer with full context.
 
-Templates: `{{task.prompt}}`, `{{task.base_ref}}`, `{{task.jira_key}}` (empty when the task has none), `{{phases.<name>.output|structured|status|attempt}}`, `{{artifacts.<name>}}`, `{{hil.<phase>.comment}}`, `{{loop.feedback}}`, `{{recheck.note}}` (set on a repeat pass), `{{repo.test_command}}`; `{{x?}}` for optional.
+Templates: `{{task.prompt}}`, `{{task.base_ref}}`, `{{task.jira_key}}`, `{{task.jira_url}}`, `{{task.branch_url}}` (empty when the task has none), `{{phases.<name>.output|structured|status|attempt}}`, `{{artifacts.<name>}}`, `{{hil.<phase>.comment}}`, `{{loop.feedback}}`, `{{recheck.note}}` (set on a repeat pass), `{{repo.test_command}}`; `{{x?}}` for optional.
 Expressions: `repo.test_command`, `structured.verdict == 'request_changes'`, `!a && (b || c)`.
 
 Shipped: `standard` (all checkpoints), `quick` (no separate plan), `auto` (no checkpoints, no PR; for trivial tasks), and two presets that are segments of `standard`: `review-pr` (`extends: standard`, `segment: {from: review, to: publish}`: review someone's PR) and `fix-pr` (`segment: {from: implement, to: pr}`, `wait_for_feedback: true`: fix review comments on a PR). A pipeline's `segment` is the default slice a task runs; the task form can narrow or widen it.
@@ -112,6 +113,8 @@ Language: phases write what they produce — titles, plans, summaries, findings,
 Branches are named `sdlc/<slug>-<id>` where the slug is a 2–5 word English summary of the task (a short haiku call at creation; clarify's `branch` field after refine), as long as the branch has not been pushed.
 
 Jira issue key: the first `ABC-123`-shaped token in the task prompt (standards such as `UTF-8` or `CVE-2024` are skipped) is stored on the task and carried into the branch (`sdlc/<KEY>-<slug>-<id>`, set at creation so it survives a failed or slug-less naming call), the published pull request title and every commit subject sdlc writes — each only when the text does not already contain the key. A prompt without a key changes nothing.
+
+Links: given `repos[].jira_url` for the repository, the key becomes a link to `<jira_url>/browse/<KEY>`; a branch sdlc has pushed (or that hangs on a pull request) links to `https://github.com/<slug>/tree/<branch>`, until delivery deletes that branch. Both appear on the task page, on the checkpoint, as Telegram buttons next to **Open**, and in the pull request body (`{{task.jira_url?}}` / `{{task.branch_url?}}` in `prompts/pr_body.md`, each on a line that disappears when it has nothing to show — a custom body template shows them once it uses those variables). Each is left out entirely when anything it needs is missing, so no surface ever shows a link that leads nowhere.
 
 Base ref: `--base origin/main` or a local branch such as `--base feature/x` (a name whose first segment is not a remote is a local branch). A local-only base is pushed before the PR is created, since GitHub needs it on the remote.
 
