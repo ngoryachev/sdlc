@@ -13,6 +13,7 @@ import { CatchUpConflict } from '../git/git.js';
 import { nowIso } from '../store/ids.js';
 import type { PhaseContext, PhaseExecutor, PhaseOutcome } from './executor.js';
 import { catchUpTaskBranch } from './catchup.js';
+import { repoFileEnvFor } from './file-env.js';
 
 export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
   async run(phase: ClaudePhaseSpec, pr: PhaseRun, ctx: PhaseContext): Promise<PhaseOutcome> {
@@ -85,7 +86,7 @@ export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
       settingSources: spec.defaults.setting_sources,
       writeScope: phase.write_scope,
       canUseTool: ctx.canUseTool?.(pr),
-      env: {},
+      env: repoFileEnvFor(ctx, pr),
       onToolUse: ({ toolName, toolInput }) => events.emit('phase.progress', { phaseRunId: pr.id, toolName, summary: toolSummary(toolName, (toolInput ?? {}) as Record<string, unknown>) }, { taskId: task.id, phaseRunId: pr.id }),
       onStderr: (l) => { if (l.trim()) events.emit('engine.warning', { taskId: task.id, message: `[claude stderr] ${l.trim().slice(0, 500)}` }, { taskId: task.id, phaseRunId: pr.id }); },
     };
