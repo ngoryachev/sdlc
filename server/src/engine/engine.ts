@@ -71,6 +71,8 @@ export class Engine {
   private abortFlags = new Set<string>();
   private pauseFlags = new Set<string>();
   private pendingInject = new Map<string, string[]>();
+  /** Tasks whose running phase is being stopped by `stopPhaseQuietly`: the reason, and no `aborted` task status. */
+  private quietStops = new Map<string, string>();
   private slots: Semaphore;
   readonly broker = new HilBroker();
   private executors: Record<PhaseSpec['type'], PhaseExecutor> = {
@@ -290,9 +292,13 @@ export class Engine {
    * Background reconciliation with GitHub (every `pr_sync_interval`, and on demand): merged PRs → merged (with cleanup),
    * closed PRs → closed, base changed on GitHub → followed; tasks without a PR whose commits reached the base → merged;
    * a reviewer waiting at a result checkpoint whose PR moved on → checkpoint dropped as stale and reviewed again.
+   *
+   * Every task that still has a pull request is checked, not only the finished ones: a task that is still running,
+   * waiting at a checkpoint or `failed` whose PR was merged or closed by hand is over too, and would otherwise hang
+   * forever with a checkpoint nobody can answer any more.
    */
   async syncTasks(): Promise<{ checked: number; changes: { taskId: string; title: string; change: string }[]; errors: string[] }> {
-    const tasks = this.d.store.listTasks(['pr_open', 'succeeded', 'waiting_hil']);
+    const tasks = this.d.store.listTasks(['pr_open', 'succeeded', 'failed', ...ACTIVE_STATUSES]);
     const changes: { taskId: string; title: string; change: string }[] = [];
     const errors: string[] = [];
     for (const t of tasks) {
@@ -312,25 +318,35 @@ export class Engine {
     if (!t || t.status !== 'merged' || !fs.existsSync(t.repoPath)) return null;
     const remote = t.baseRemote ?? (await defaultRemote(t.repoPath));
     const local = await refExists(t.repoPath, `refs/heads/${t.branch}`);
-    const tracked = remote ? await refExists(t.repoPath, `refs/remotes/${remote}/${t.branch}`) : false;
+    // only a branch sdlc created is deleted on the remote: a tracking ref of somebody else's branch (a reviewer task)
+    // is never leftover to clean up, and counting it as one would report the same sweep on every tick
+    const tracked = remote && isSdlcBranch(t.branch, t.id) ? await refExists(t.repoPath, `refs/remotes/${remote}/${t.branch}`) : false;
     if (!local && !tracked && !fs.existsSync(t.worktreePath)) return null;
     const auth = await this.d.accounts.forRepo(t.repoPath);
     const re = await this.restack(t, this.childTasks(t), auth);
-    await this.cleanupDelivered(t, auth, { remote, deleteRemote: re.ok && tracked && isSdlcBranch(t.branch, t.id) });
+    await this.cleanupDelivered(t, auth, { remote, deleteRemote: re.ok && tracked });
     return 'leftover worktree/branch removed';
   }
 
   private async syncOne(taskId: string): Promise<string | null> {
-    const t = this.d.store.getTask(taskId);
+    const { store } = this.d;
+    const t = store.getTask(taskId);
     if (!t) return null;
-    if (t.status === 'waiting_hil') return this.syncStaleCheckpoint(t);
-    if (!['pr_open', 'succeeded'].includes(t.status)) return null;
     const auth = await this.d.accounts.forRepo(t.repoPath);
     if (t.prNumber) {
-      if (t.status !== 'pr_open') return null;
       const pr = await this.d.github.prView(t.repoPath, t.prNumber, auth);
-      if (pr.state === 'MERGED') { await this.markMerged(t, auth); return 'merged (on GitHub)'; }
-      if (pr.state === 'CLOSED') { this.setTaskStatus(t, 'closed'); return 'closed (on GitHub)'; }
+      // a pull request that is over decides the task, whatever the task was doing: before the stale-checkpoint
+      // check and before following the base, because none of that matters once the PR is merged or closed
+      if (pr.state === 'MERGED' || pr.state === 'CLOSED') {
+        const fresh = store.getTask(taskId);   // abort does not take the task lock: re-read before writing
+        if (!fresh) return null;
+        if (ACTIVE_STATUSES.includes(fresh.status) || fresh.status === 'failed') return this.finishFromTerminalPr(fresh, pr.state, auth);
+        if (fresh.status !== 'pr_open') return null;
+        if (pr.state === 'MERGED') { await this.markMerged(fresh, auth); return 'merged (on GitHub)'; }
+        this.setTaskStatus(fresh, 'closed'); return 'closed (on GitHub)';
+      }
+      if (t.status === 'waiting_hil') return this.syncStaleCheckpoint(t, pr, auth);
+      if (t.status !== 'pr_open') return null;
       if (pr.baseRefName && pr.baseRefName !== t.baseBranch) {
         const from = t.baseBranch;
         t.baseBranch = pr.baseRefName; t.updatedAt = nowIso(); this.d.store.updateTask(t);
@@ -342,6 +358,7 @@ export class Engine {
       const rest = await this.syncPrRole(t, pr, auth);
       return [approval, rest].filter(Boolean).join('; ') || null;
     }
+    if (!['pr_open', 'succeeded'].includes(t.status)) return null;
     // no PR: did the branch reach its base some other way (merged by hand, another tool)?
     if (!(await refExists(t.repoPath, `refs/heads/${t.branch}`))) return null;
     if ((await taskCommitCount(t.repoPath, t.branch, t.id)) === 0) return null;
@@ -394,15 +411,13 @@ export class Engine {
    * meanwhile, that decision would be made on a stale diff: the checkpoint is dropped (never counted as an answer,
    * so `answeredVia` stays empty) and the review runs again on the new head.
    */
-  private async syncStaleCheckpoint(t: Task): Promise<string | null> {
+  private async syncStaleCheckpoint(t: Task, pr: PrInfo, auth: RepoAuth): Promise<string | null> {
     const { store, events } = this.d;
     // only the reviewer side follows new commits; an author waiting at a checkpoint is left alone
     if (!t.prNumber || this.roleOfTask(t.id) !== 'reviewer') return null;
     const open = store.openHilForTask(t.id).find((h) => h.kind === 'approve_result');
     if (!open) return null;
-    const auth = await this.d.accounts.forRepo(t.repoPath);
-    const pr = await this.d.github.prView(t.repoPath, t.prNumber, auth);
-    if (pr.state !== 'OPEN' || !pr.headRefOid) return null;
+    if (!pr.headRefOid) return null;
     const base = this.checkpointHead(t, open);
     if (!base || pr.headRefOid === base) return null;
     if (store.getHil(open.id)?.status !== 'open') return null;   // aborted while we were asking GitHub (abort does not take the task lock)
@@ -458,6 +473,75 @@ export class Engine {
     const run = this.d.store.latestRunForTask(task.id);
     if (run && run.status !== 'succeeded') { run.status = 'succeeded'; this.saveRun(run); }
     this.setTaskStatus(task, 'merged');
+  }
+
+  /**
+   * The pull request of a task that was still in flight ended on GitHub: the checkpoints nobody can answer any more
+   * are cancelled, the live phase is stopped without an `aborted` detour (so a notifier rewrites its card once), and
+   * the task ends as the pull request did — `merged` with the full delivery cleanup, `closed` with the worktree only,
+   * because closed work was dropped rather than delivered and its branch is all that is left of it.
+   */
+  private async finishFromTerminalPr(t: Task, state: 'MERGED' | 'CLOSED', auth: RepoAuth): Promise<string | null> {
+    const { store } = this.d;
+    const reason = state === 'MERGED' ? 'PR merged on GitHub' : 'PR closed on GitHub';
+    // cancelling first releases a phase parked on a question; both calls run in one synchronous step, so that
+    // phase cannot reach its own end before `stopPhaseQuietly` has armed the flags that keep it quiet
+    this.cancelOpenHils(t.id, reason, { note: true });
+    await this.stopPhaseQuietly(t.id, reason);
+    this.cancelOpenHils(t.id, reason, { note: true });   // one the stopped phase opened while we waited for it
+    const task = store.getTask(t.id);   // the phase wrote while we waited for it
+    if (!task || FINISHED_STATUSES.includes(task.status)) return null;
+    if (state === 'MERGED') { await this.markMerged(task, auth); return 'merged (on GitHub)'; }
+    const wt = await removeWorktree(task.repoPath, task.worktreePath, task.branch).catch(() => ({ removed: false }));
+    if (wt.removed) this.d.events.emit('task.worktree', { taskId: task.id, action: 'removed', branchDeleted: false }, { taskId: task.id });
+    const run = store.latestRunForTask(task.id);
+    if (run && !['succeeded', 'failed', 'aborted'].includes(run.status)) { run.status = 'aborted'; this.saveRun(run); }
+    this.setTaskStatus(task, 'closed');
+    return 'closed (on GitHub)';
+  }
+
+  /**
+   * Cancel every open checkpoint of a task: the waiter is released, and `hil.answered` lets a notifier rewrite the
+   * card it sent. With `note` the reason is recorded on the request and the phase run it parked is closed out too.
+   */
+  private cancelOpenHils(taskId: string, reason: string, o: { note?: boolean } = {}): void {
+    const { store, events } = this.d;
+    for (const hil of store.openHilForTask(taskId)) {
+      hil.status = 'cancelled';
+      if (o.note) hil.summary = `${hil.summary} — ${reason}`;
+      store.updateHil(hil);
+      this.broker.cancel(hil.id, reason);
+      events.emit('hil.answered', { hil }, { taskId, phaseRunId: hil.phaseRunId });
+      // only a phase that is parked on this request is closed out here; one that is still live (a question from a
+      // running Claude phase) is ended by the phase itself, so it does not report finished twice
+      const phaseRun = o.note && hil.phaseRunId && !this.handles.has(taskId) ? store.getPhaseRun(hil.phaseRunId) : null;
+      if (phaseRun && phaseRun.status === 'waiting_hil') {
+        phaseRun.status = 'skipped'; phaseRun.resultText = reason; phaseRun.endedAt = nowIso();
+        store.updatePhaseRun(phaseRun);
+        events.emit('phase.finished', { phaseRun }, { taskId, phaseRunId: phaseRun.id });
+      }
+    }
+  }
+
+  /**
+   * Stop the phase a task is running without finishing the task as `aborted`: the caller gives it its own final
+   * status, so the task gets one status transition instead of a detour through `aborted`.
+   *
+   * A live Claude session is interrupted and waited for, which is safe from inside the task lock because `advance`
+   * never takes it. A phase with no session to interrupt is only flagged: it may be queued for a slot behind another
+   * task's phase, and waiting for that would hold the task lock — and with it the whole sync tick — for as long as
+   * that phase runs. The flag makes it stop at its own next check, and the quiet finish there cleans up after it.
+   */
+  private async stopPhaseQuietly(taskId: string, reason: string): Promise<void> {
+    const handle = this.handles.get(taskId);
+    // nothing in flight and nothing queued: no phase to stop (a task parked at a checkpoint, a failed one)
+    if (!handle && this.d.store.getTask(taskId)?.status !== 'running') return;
+    this.abortFlags.add(taskId);
+    this.quietStops.set(taskId, reason);
+    if (!handle) return;
+    handle.abort();
+    await (this.chains.get(taskId) ?? Promise.resolve()).catch(() => {});
+    this.quietStops.delete(taskId); this.abortFlags.delete(taskId);
   }
 
   /** Tasks stacked on this one move onto its base: their PRs are retargeted on GitHub, their base updated in sdlc. */
@@ -660,11 +744,12 @@ export class Engine {
       let injected = this.pendingInject.get(taskId)?.splice(0).join('\n\n') ?? '';
       const feedback = [resume?.feedback, injected].filter(Boolean).join('\n\n') || null;
 
+      const abortFlags = this.abortFlags;
       const ctx: PhaseContext = {
         task, run, spec, loaded, repoConfig, config: this.d.config, store, events, runner: this.d.runner, github: this.d.github, accounts: this.d.accounts, tpl,
         segment: seg, role: roleOf(spec, seg),
         resumeFeedback: feedback,
-        abortRequested: this.abortFlags.has(taskId),
+        get abortRequested() { return abortFlags.has(taskId); },   // read live: a flag can arrive after the phase started
         canUseTool: (p) => this.makeCanUseTool(task, p),
         registerHandle: (h) => { if (h) this.handles.set(taskId, h); else this.handles.delete(taskId); },
         persistPhase: (p) => store.updatePhaseRun(p),
@@ -672,9 +757,11 @@ export class Engine {
 
       const needsSlot = phase.type === 'claude' || phase.type === 'shell';
       const release = needsSlot ? await this.slots.acquire() : () => {};
-      let outcome: PhaseOutcome;
+      // flagged before it could start (it waited for a slot, or the flag arrived between phases): running it only to
+      // throw the result away below would burn a whole phase, so it is skipped and classified right here
+      let outcome: PhaseOutcome = { kind: 'aborted' };
       try {
-        outcome = await this.executors[phase.type].run(phase, pr, ctx);
+        if (!this.abortFlags.has(taskId)) outcome = await this.executors[phase.type].run(phase, pr, ctx);
       } catch (e) {
         outcome = { kind: 'failed', error: e instanceof Error ? e.message : String(e) };
         pr.error = outcome.error;
@@ -711,10 +798,22 @@ export class Engine {
           run.status = 'paused'; this.saveRun(run);
           this.setTaskStatus(fresh, 'paused');
           return;
-        case 'aborted':
-          pr.status = 'aborted'; pr.endedAt = nowIso(); store.updatePhaseRun(pr);
-          this.finishTask(fresh, run, 'aborted');
+        case 'aborted': {
+          pr.status = 'aborted'; pr.endedAt = nowIso();
+          const quiet = this.quietStops.get(taskId);
+          if (!quiet) { store.updatePhaseRun(pr); this.finishTask(fresh, run, 'aborted'); return; }
+          // stopped to give the task another final status (its PR is merged or closed): the caller sets it, so the
+          // task is left as it is here — no `aborted` status event, and no cleanup racing the caller's own
+          pr.resultText = quiet; store.updatePhaseRun(pr);                   // why it stopped, not what the cut-off turn said
+          events.emit('phase.finished', { phaseRun: pr }, { taskId, phaseRunId: pr.id });
+          // the caller may already have given the run its own end while this phase was queued, so re-read it: it
+          // does not wait for a phase it cannot interrupt
+          const liveRun = store.getRun(run.id) ?? run;
+          if (!['succeeded', 'failed', 'aborted'].includes(liveRun.status)) { liveRun.status = 'aborted'; this.saveRun(liveRun); }
+          this.cancelOpenHils(taskId, quiet, { note: true });                 // one this phase opened on its way out
+          this.quietStops.delete(taskId); this.abortFlags.delete(taskId); this.pauseFlags.delete(taskId); this.pendingInject.delete(taskId);
           return;
+        }
         case 'failed': {
           pr.status = 'failed'; pr.error = pr.error ?? outcome.error; pr.endedAt = nowIso(); store.updatePhaseRun(pr);
           events.emit('phase.finished', { phaseRun: pr }, { taskId, phaseRunId: pr.id });
@@ -1111,13 +1210,13 @@ You already went over this branch at commit \`${prev.headSha.slice(0, 12)}\`. Si
   }
 
   async abort(taskId: string, reason = 'aborted by user'): Promise<void> {
-    const { store, events } = this.d;
+    const { store } = this.d;
     const task = store.getTask(taskId);
     const run = task && store.latestRunForTask(taskId);
     if (!task || !run) throw new HttpError(404, 'task not found');
     if (['succeeded', 'merged', 'closed', 'failed', 'aborted'].includes(task.status)) throw new HttpError(409, `task already ${task.status}`);
     this.abortFlags.add(taskId);
-    for (const h of store.openHilForTask(taskId)) { h.status = 'cancelled'; store.updateHil(h); this.broker.cancel(h.id, reason); events.emit('hil.answered', { hil: h }, { taskId }); }
+    this.cancelOpenHils(taskId, reason);
     const h = this.handles.get(taskId);
     if (h) { h.abort(); await (this.chains.get(taskId) ?? Promise.resolve()).catch(() => {}); }
     else this.finishTask(task, run, 'aborted');
