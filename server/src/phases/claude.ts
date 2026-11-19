@@ -147,22 +147,27 @@ export function resolveModel(phaseName: string, pipeline: { phaseModel?: string;
 }
 
 const QA_VERDICTS = ['pass', 'issues', 'skipped'];
+const REVIEW_VERDICTS = ['approve', 'request_changes'];
 const GATING_SEVERITIES = ['blocking', 'should_fix'];
 
 /**
- * The QA verdict follows its issues, the way the review verdict follows its findings: one `blocking` or
- * `should_fix` issue means `issues` whatever the model wrote, and `nit`-only issues never gate. A verdict of
- * `issues` with no issues listed is kept as is — the model reported a problem without naming it, and a human
- * should still see it. Done here rather than in the `when` of the gate, so pipeline snapshots taken before
- * this rule existed get it too.
+ * A verdict follows its items, whatever the model wrote: one `blocking` or `should_fix` item means `issues` (QA) or
+ * `request_changes` (review), and `nit`-only items never gate. So a review can never approve a `should_fix`
+ * finding (the line-review prompt once said `request_changes` only for `blocking`). A gating verdict with nothing
+ * listed is kept as is — the model reported a problem without naming it, and a human should still see it. Done here
+ * rather than in the `when` / `fail_if` of the pipeline, so pipeline snapshots taken before this rule existed get it too.
  */
 export function normalizeVerdict<T>(v: T): T {
   if (!v || typeof v !== 'object') return v;
-  const o = v as { verdict?: unknown; issues?: unknown };
-  if (typeof o.verdict !== 'string' || !QA_VERDICTS.includes(o.verdict) || !Array.isArray(o.issues)) return v;
-  const severities = o.issues.map((i) => (i && typeof i === 'object' ? (i as { severity?: unknown }).severity : undefined));
-  if (severities.some((s) => typeof s === 'string' && GATING_SEVERITIES.includes(s))) return (o.verdict === 'issues' ? v : { ...o, verdict: 'issues' }) as T;
-  if (o.verdict === 'issues' && severities.length) return { ...o, verdict: 'pass' } as T;
+  const o = v as { verdict?: unknown; issues?: unknown; findings?: unknown };
+  if (typeof o.verdict !== 'string') return v;
+  const [items, ok, gate] = QA_VERDICTS.includes(o.verdict) && Array.isArray(o.issues) ? [o.issues, 'pass', 'issues']
+    : REVIEW_VERDICTS.includes(o.verdict) && Array.isArray(o.findings) ? [o.findings, 'approve', 'request_changes']
+    : [null, '', ''];
+  if (!items) return v;
+  const severities = items.map((i) => (i && typeof i === 'object' ? (i as { severity?: unknown }).severity : undefined));
+  if (severities.some((s) => typeof s === 'string' && GATING_SEVERITIES.includes(s))) return (o.verdict === gate ? v : { ...o, verdict: gate }) as T;
+  if (o.verdict === gate && severities.length) return { ...o, verdict: ok } as T;
   return v;
 }
 

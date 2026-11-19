@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'wouter';
 import type { FindingAction, HilDecision, HilPayload, HilResponse, ReviewEvent, TranslateLang } from '@sdlc/shared';
-import { TRANSLATE_LANGS, TRANSLATE_LANG_NAMES } from '@sdlc/shared';
+import { TRANSLATE_LANGS, TRANSLATE_LANG_NAMES, defaultReviewEvent } from '@sdlc/shared';
 import { api, ApiError, type HilRow } from '../lib/api.js';
 import { useStore } from '../lib/store.js';
 import { requestNotifyPermission } from '../lib/notify.js';
@@ -250,14 +250,6 @@ function Payload({ p, edited, setEdited, answers, setAnswers, actions, setAction
     case 'escalation':
       return <div><div><b>{p.phaseName}</b> failed{p.resultSubtype ? ` (${p.resultSubtype})` : ''}:</div><pre className="log">{t(p.error)}</pre></div>;
   }
-}
-
-/**
- * What an open checkpoint proposes: a clean review has nothing to argue about, so approve it on GitHub.
- * An answered one shows `comment`, which is what publish uses when the response carried no event (Telegram, CLI).
- */
-function defaultReviewEvent(p: HilPayload): ReviewEvent {
-  return p.kind === 'approve_result' && p.focus === 'review' && p.review?.verdict === 'approve' && !p.review.findings.length ? 'approve' : 'comment';
 }
 
 /** What the checkpoint proposes before the human touches anything: the implementer fixes real defects, a reviewer posts everything. */
