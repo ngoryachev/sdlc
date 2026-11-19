@@ -22,6 +22,14 @@ describe('jiraKeyFrom', () => {
     expect(jiraKeyFrom(null)).toBeNull();
   });
 
+  it('is stateless: the shared global regexp does not carry lastIndex between calls', () => {
+    for (let i = 0; i < 3; i++) {
+      expect(jiraKeyFrom('ABC-123 add a flag')).toBe('ABC-123');
+      expect(jiraKeyFrom('see https://jira.test/browse/PROJ-42 for the details')).toBe('PROJ-42');
+      expect(jiraKeyFrom('no key here')).toBeNull();
+    }
+  });
+
   it('skips tokens that look like keys but are standards or algorithms', () => {
     for (const t of ['decode UTF-8 input', 'switch to SHA-256', 'dates are ISO-8601', 'ask GPT-4', 'patch CVE-2024', 'enable HTTP-2', 'per RFC-5322', 'store UTC-5 offsets', 'use AES-256', 'parse RGB-255'])
       expect(jiraKeyFrom(t)).toBeNull();
