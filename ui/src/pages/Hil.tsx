@@ -63,12 +63,16 @@ export function HilPage() {
   const [tr, setTr] = useState<Record<string, string> | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const [translating, setTranslating] = useState(false);
-  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? (r.status === 'open' ? defaultReviewEvent(r.payload) : 'comment')); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => toast(e.message, 'error')); }, [id]);
-  useEffect(() => { if (h && h.status === 'open' && !openList.some((x) => x.id === h.id)) void api.hilOne(id).then(setH); }, [openList, h?.id]);
-  useEffect(() => { setTr(null); setShowOriginal(false); setTranslating(false); }, [readingLang]);
-  // j/k can move to the next checkpoint while a translation is in flight: that answer belongs to the old one
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  // j/k and a response can move on while a request for this checkpoint is in flight: its answer belongs to the old one
   const shownRef = useRef({ id, lang: readingLang });
   useEffect(() => { shownRef.current = { id, lang: readingLang }; }, [id, readingLang]);
+  // a row for an id that is no longer shown is dropped: an older fetch resolving last must not strand the page on
+  // a checkpoint the human has left, and a failed one says so instead of loading for ever
+  useEffect(() => { setLoadErr(null); void api.hilOne(id).then((r) => { if (shownRef.current.id !== id) return; setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? (r.status === 'open' ? defaultReviewEvent(r.payload) : 'comment')); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => { if (shownRef.current.id !== id) return; setArmedNext(null); setLoadErr((e as Error).message); toast((e as Error).message, 'error'); }); }, [id, reload]);
+  useEffect(() => { if (h && h.status === 'open' && !openList.some((x) => x.id === h.id)) void api.hilOne(id).then((r) => { if (shownRef.current.id === r.id) setH(r); }); }, [openList, h?.id]);
+  useEffect(() => { setTr(null); setShowOriginal(false); setTranslating(false); }, [readingLang]);
   // the next checkpoint is chosen a second after the response: from the queue as it is then, not as it was back then
   const openListRef = useRef(openList);
   useEffect(() => { openListRef.current = openList; }, [openList]);
@@ -128,6 +132,7 @@ export function HilPage() {
       confirmTimer.current = window.setTimeout(() => {
         confirmTimer.current = null;
         setConfirm(null);
+        if (shownRef.current.id !== h.id) return;   // they went somewhere else in that second: leave them there
         const next = openListRef.current.find((x) => x.id !== h.id);
         if (next) setArmedNext({ id: next.id });
         nav(next ? `/hil/${next.id}` : '/hil');
@@ -154,7 +159,10 @@ export function HilPage() {
   }, [h, comment, edited, answers, openList, confirm, locked]);
 
   if (confirm) return (
-    <div className="card hil-confirm"><span className="ok">✓</span><span>{confirm.title}</span><span className="muted">— {confirm.decision} → {confirm.next}</span></div>
+    <div className="card hil-confirm" role="status"><span className="ok" aria-hidden="true">✓</span><span>{confirm.title}</span><span className="muted">— {confirm.decision} → {confirm.next}</span></div>
+  );
+  if (loadErr) return (
+    <div className="card"><div className="muted">could not load this checkpoint: {loadErr}</div><div style={{ marginTop: 8 }}><button onClick={() => setReload((n) => n + 1)}>Retry</button></div></div>
   );
   // the card of the previous checkpoint is never shown for the new id: that is what makes an answer land visibly
   if (!h || h.id !== id) return <div className="muted">loading…</div>;
