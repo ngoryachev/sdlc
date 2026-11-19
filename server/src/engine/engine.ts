@@ -438,7 +438,7 @@ export class Engine {
     // phase cannot reach its own end before `stopPhaseQuietly` has armed the flags that keep it quiet
     this.cancelOpenHils(t.id, reason, { note: true });
     await this.stopPhaseQuietly(t.id, reason);
-    this.cancelOpenHils(t.id, reason, { note: true });   // one the stopped phase opened on its way out
+    this.cancelOpenHils(t.id, reason, { note: true });   // one the stopped phase opened while we waited for it
     const task = store.getTask(t.id);   // the phase wrote while we waited for it
     if (!task || FINISHED_STATUSES.includes(task.status)) return null;
     if (state === 'MERGED') { await this.markMerged(task, auth); return 'merged (on GitHub)'; }
@@ -475,16 +475,21 @@ export class Engine {
 
   /**
    * Stop the phase a task is running without finishing the task as `aborted`: the caller gives it its own final
-   * status, so the task gets one status transition instead of a detour through `aborted`. Awaiting the phase chain is
-   * safe from inside the task lock because `advance` never takes it.
+   * status, so the task gets one status transition instead of a detour through `aborted`.
+   *
+   * A live Claude session is interrupted and waited for, which is safe from inside the task lock because `advance`
+   * never takes it. A phase with no session to interrupt is only flagged: it may be queued for a slot behind another
+   * task's phase, and waiting for that would hold the task lock — and with it the whole sync tick — for as long as
+   * that phase runs. The flag makes it stop at its own next check, and the quiet finish there cleans up after it.
    */
   private async stopPhaseQuietly(taskId: string, reason: string): Promise<void> {
     const handle = this.handles.get(taskId);
-    // no live Claude session to interrupt, but a running task may still be between phases: the flag stops it there
+    // nothing in flight and nothing queued: no phase to stop (a task parked at a checkpoint, a failed one)
     if (!handle && this.d.store.getTask(taskId)?.status !== 'running') return;
     this.abortFlags.add(taskId);
     this.quietStops.set(taskId, reason);
-    handle?.abort();
+    if (!handle) return;
+    handle.abort();
     await (this.chains.get(taskId) ?? Promise.resolve()).catch(() => {});
     this.quietStops.delete(taskId); this.abortFlags.delete(taskId);
   }
@@ -701,9 +706,11 @@ export class Engine {
 
       const needsSlot = phase.type === 'claude' || phase.type === 'shell';
       const release = needsSlot ? await this.slots.acquire() : () => {};
-      let outcome: PhaseOutcome;
+      // flagged before it could start (it waited for a slot, or the flag arrived between phases): running it only to
+      // throw the result away below would burn a whole phase, so it is skipped and classified right here
+      let outcome: PhaseOutcome = { kind: 'aborted' };
       try {
-        outcome = await this.executors[phase.type].run(phase, pr, ctx);
+        if (!this.abortFlags.has(taskId)) outcome = await this.executors[phase.type].run(phase, pr, ctx);
       } catch (e) {
         outcome = { kind: 'failed', error: e instanceof Error ? e.message : String(e) };
         pr.error = outcome.error;
@@ -748,7 +755,11 @@ export class Engine {
           // task is left as it is here — no `aborted` status event, and no cleanup racing the caller's own
           pr.resultText = quiet; store.updatePhaseRun(pr);                   // why it stopped, not what the cut-off turn said
           events.emit('phase.finished', { phaseRun: pr }, { taskId, phaseRunId: pr.id });
-          run.status = 'aborted'; this.saveRun(run);
+          // the caller may already have given the run its own end while this phase was queued, so re-read it: it
+          // does not wait for a phase it cannot interrupt
+          const liveRun = store.getRun(run.id) ?? run;
+          if (!['succeeded', 'failed', 'aborted'].includes(liveRun.status)) { liveRun.status = 'aborted'; this.saveRun(liveRun); }
+          this.cancelOpenHils(taskId, quiet, { note: true });                 // one this phase opened on its way out
           this.quietStops.delete(taskId); this.abortFlags.delete(taskId); this.pauseFlags.delete(taskId); this.pendingInject.delete(taskId);
           return;
         }

@@ -302,6 +302,54 @@ describe('sync: a pull request that ended while its task was still in flight', (
     expect([app.store.getTask(task.id)!.status, app.store.openHilForTask(task.id).length]).toEqual(['merged', 0]);
   });
 
+  it('merged while a phase waits for a slot: the sync does not wait for it, and that phase never runs', async () => {
+    let releaseHolder!: () => void;
+    let held = false;
+    const ran: string[] = [];                                                // worktrees a Claude phase ran in
+    const runner = new FakeRunner((spec) => ({
+      act: async () => {
+        ran.push(spec.cwd);
+        if (!held) { held = true; await new Promise<void>((r) => { releaseHolder = r; }); }   // keeps the only slot
+        if (spec.prompt.includes('Phase: review')) return { structured: { verdict: 'approve', summary: 'ok', findings: [] } };
+        if (spec.prompt.includes('Phase: test')) return { structured: { verdict: 'skipped', summary: 'n/a', commands: [], tests_added: [], failures: [], notes: '' } };
+        if (spec.prompt.includes('Phase: QA')) return { structured: { verdict: 'skipped', summary: 'n/a', checks: [], issues: [] } };
+        fs.writeFileSync(path.join(spec.cwd, `${path.basename(spec.cwd)}.txt`), 'work\n');
+        return { text: 'done' };
+      },
+    }));
+    const dir = tmpDir('sdlc-sync-merged-queued-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, gh);
+    const app = testApp(dir, runner, { max_parallel_tasks: 1 }, gh);
+
+    const holder = await app.engine.createTask({ prompt: 'hold the only slot', repoPath: repo, pipeline: 'auto', baseRemote: 'origin' });
+    void app.engine.advance(holder.id);
+    for (let i = 0; i < 200 && !releaseHolder; i++) await tick(5);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    const reviewing = app.engine.advance(task.id);
+    await tick();                                                            // its review phase is queued for the slot
+    expect([app.store.getTask(task.id)!.status, ran.includes(task.worktreePath)]).toEqual(['running', false]);
+
+    // the sync must not wait for a phase it cannot interrupt: that would hold the task lock, and with it the whole
+    // tick, for as long as the phase ahead of it runs (here: until this test releases it)
+    await gh.prMerge(repo, n, 'merge');
+    const r = await app.engine.syncTasks();
+    expect(r.changes.map((c) => c.change)).toEqual(['merged (on GitHub)']);
+    expect(app.store.getTask(task.id)!.status).toBe('merged');
+
+    // and when the slot frees, the queued phase stops instead of running, without undoing the merge
+    releaseHolder();
+    await reviewing;
+    const review = app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'review')!;
+    expect([review.status, review.resultText]).toEqual(['aborted', 'PR merged on GitHub']);
+    expect(ran.includes(task.worktreePath)).toBe(false);                     // no paid phase was burned on it
+    expect(app.store.getTask(task.id)!.status).toBe('merged');
+    expect(app.store.latestRunForTask(task.id)!.status).toBe('succeeded');
+    expect(app.store.openHilForTask(task.id)).toEqual([]);
+  });
+
   it('closed on GitHub: the checkpoint is cancelled, the worktree goes, the branch of the dropped work stays', async () => {
     const { repo, bare, gh, app, n } = reviewerTask('sdlc-sync-closed-hil-');
     const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
