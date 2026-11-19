@@ -355,7 +355,10 @@ export class Engine {
    */
   private applyReviewDecision(t: Task, pr: PrInfo): string | null {
     const raw = pr.reviewDecision || null;
-    const stale = raw === 'APPROVED' && !!t.reviewDecisionSha && !!pr.headRefOid && pr.headRefOid !== t.reviewDecisionSha;
+    // an approval with no head to anchor it to (or to compare against) decides nothing: leave what is stored alone,
+    // or the mark would flap between the syncs that do see a head sha
+    if (raw === 'APPROVED' && !pr.headRefOid) return null;
+    const stale = raw === 'APPROVED' && !!t.reviewDecisionSha && pr.headRefOid !== t.reviewDecisionSha;
     const decision = raw !== 'APPROVED' ? raw : stale ? null : 'APPROVED';
     const sha = raw !== 'APPROVED' ? null : t.reviewDecisionSha ?? pr.headRefOid ?? null;
     if (decision === t.reviewDecision && sha === t.reviewDecisionSha) return null;
