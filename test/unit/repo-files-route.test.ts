@@ -10,7 +10,7 @@ import { HttpError } from '../../server/src/engine/engine.js';
 import { reposRoutes } from '../../server/src/http/routes/repos.js';
 import { configRoutes } from '../../server/src/http/routes/config.js';
 import { ConfigSchema, loadConfig, saveConfig } from '../../server/src/config/config.js';
-import { MAX_REPO_FILE_BYTES } from '../../server/src/config/repo-files.js';
+import { MAX_REPO_FILE_BYTES, repoFilesDir } from '../../server/src/config/repo-files.js';
 
 interface Meta { env: string; filename: string; size: number | null; mtime: string | null; missing: boolean }
 
@@ -25,7 +25,8 @@ function setup(prefix: string) {
   const hono = new Hono();
   hono.onError((e, c) => c.json({ error: e.message }, (e instanceof HttpError ? e.status : 500) as 500));
   hono.route('/api', reposRoutes(app)).route('/api', configRoutes(app));
-  return { dir, repo, filesDir, app: app as App, hono };
+  // one directory per repository, not per sanitised name: see repoFilesDir
+  return { dir, repo, filesDir, repoDir: repoFilesDir(app.config, REPO), app: app as App, hono };
 }
 
 const id = encodeURIComponent(REPO);
@@ -39,13 +40,13 @@ const list = async (hono: Hono): Promise<Meta[]> => (await (await hono.request(`
 
 describe('per-repository files', () => {
   it('stores an uploaded file privately, records its env variable and reports only metadata', async () => {
-    const { app, filesDir, hono } = setup('sdlc-repo-files-');
+    const { app, repoDir, hono } = setup('sdlc-repo-files-');
     const res = await upload(hono, 'GOOGLE_APPLICATION_CREDENTIALS', 'key.json', SECRET);
     expect(res.status).toBe(201);
 
     const entry = app.config.repos[0]!.files[0]!;
     expect(entry.env).toBe('GOOGLE_APPLICATION_CREDENTIALS');
-    expect(entry.path).toBe(path.join(filesDir, 'owner_name', 'key.json'));
+    expect(entry.path).toBe(path.join(repoDir, 'key.json'));
     expect(fs.readFileSync(entry.path, 'utf8')).toBe(SECRET);
     expect(fs.statSync(entry.path).mode & 0o777).toBe(0o600);
     expect(fs.statSync(path.dirname(entry.path)).mode & 0o777).toBe(0o700);
@@ -61,7 +62,7 @@ describe('per-repository files', () => {
   });
 
   it('replaces the file bound to an env variable and leaves no old copy behind', async () => {
-    const { app, filesDir, hono } = setup('sdlc-repo-files-replace-');
+    const { app, repoDir, hono } = setup('sdlc-repo-files-replace-');
     await upload(hono, 'KEYSTORE', 'old.jks', 'old');
     const res = await upload(hono, 'KEYSTORE', 'new.jks', 'new');
     expect(res.status).toBe(201);
@@ -70,7 +71,7 @@ describe('per-repository files', () => {
     const entry = app.config.repos[0]!.files[0]!;
     expect(path.basename(entry.path)).toBe('new.jks');
     expect(fs.readFileSync(entry.path, 'utf8')).toBe('new');
-    expect(fs.readdirSync(path.join(filesDir, 'owner_name'))).toEqual(['new.jks']);
+    expect(fs.readdirSync(repoDir)).toEqual(['new.jks']);
   });
 
   it('deletes the config entry together with the file on disk', async () => {
@@ -107,16 +108,17 @@ describe('per-repository files', () => {
   });
 
   it('keeps a slug-shaped repository name and a traversing filename inside one component of files_dir', async () => {
-    const { app, filesDir, hono } = setup('sdlc-repo-files-safe-');
+    const { app, filesDir, repoDir, hono } = setup('sdlc-repo-files-safe-');
     expect((await upload(hono, 'SNEAKY', '../../x', 'x')).status).toBe(201);
     const stored = app.config.repos[0]!.files[0]!.path;
-    expect(path.dirname(stored)).toBe(path.join(filesDir, 'owner_name'));
+    expect(path.dirname(stored)).toBe(repoDir);
+    expect(path.dirname(repoDir)).toBe(filesDir);
     expect(path.basename(stored)).not.toContain('..');
     expect(path.relative(filesDir, stored).split(path.sep)).toHaveLength(2);
   });
 
   it('never lets two env variables share one stored file, however the uploads are named', async () => {
-    const { app, filesDir, hono } = setup('sdlc-repo-files-collide-');
+    const { app, repoDir, hono } = setup('sdlc-repo-files-collide-');
     expect((await upload(hono, 'DEV_ENV', '.env', 'dev')).status).toBe(201);
     expect((await upload(hono, 'PROD_ENV', '.env', 'prod')).status).toBe(201);
 
@@ -124,7 +126,7 @@ describe('per-repository files', () => {
     expect(dev!.path).not.toBe(prod!.path);
     expect(fs.readFileSync(dev!.path, 'utf8')).toBe('dev');
     expect(fs.readFileSync(prod!.path, 'utf8')).toBe('prod');
-    expect(fs.readdirSync(path.join(filesDir, 'owner_name'))).toHaveLength(2);
+    expect(fs.readdirSync(repoDir)).toHaveLength(2);
 
     // and deleting one leaves the other's file alone
     expect((await hono.request(`/api/repos/${id}/files/PROD_ENV`, { method: 'DELETE' })).status).toBe(200);

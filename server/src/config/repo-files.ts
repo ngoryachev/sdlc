@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { RepoFile, SdlcConfig } from './config.js';
@@ -25,16 +26,21 @@ function safeComponent(s: string): string {
   return out || 'file';
 }
 
-/** Directory holding the managed files of one repository: `<files_dir>/<repo>`. */
-function repoFilesDir(config: SdlcConfig, repoName: string): string {
-  return path.join(config.files_dir, safeComponent(repoName));
+/**
+ * Directory holding the managed files of one repository: `<files_dir>/<safe name>-<hash of the name>`. Sanitising
+ * alone is lossy — the slug `owner/name` and a repository called `owner_name` both collapse to `owner_name`, and the
+ * length cap collapses any two long names that differ late — and two repositories sharing a directory would read and
+ * delete each other's secrets. The hash is over the full name, so distinct names always get distinct directories.
+ */
+export function repoFilesDir(config: SdlcConfig, repoName: string): string {
+  const hash = crypto.createHash('sha256').update(repoName).digest('hex').slice(0, 10);
+  return path.join(config.files_dir, `${safeComponent(repoName)}-${hash}`);
 }
 
 /**
- * Where a file uploaded for `env` is stored: `<files_dir>/<repo>/<filename>`, repository name and filename each
- * sanitised into one path component. Two env variables must never end up at one file — `.env` for both of them
- * sanitises to the same name — so a name one of the repository's other variables already holds (`taken`) gets this
- * variable's own name prefixed.
+ * Where a file uploaded for `env` is stored: one filename component inside the repository's own directory. Two env
+ * variables must never end up at one file — `.env` for both of them sanitises to the same name — so a name one of the
+ * repository's other variables already holds (`taken`) gets this variable's own name prefixed.
  */
 export function repoFilePath(config: SdlcConfig, repoName: string, env: string, filename: string, taken: string[] = []): string {
   const dir = repoFilesDir(config, repoName);

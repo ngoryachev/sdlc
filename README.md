@@ -37,7 +37,7 @@ SDLC_HOME=/tmp/sdlc-dev node server/dist/cli/index.js serve --port 7400
 ```
 
 On first start the server generates an access token and prints a login link `http://…:7337/?t=<token>`.
-Open it once per browser (cookie is set). Config lives in `~/.sdlc/config.yaml` (created on first save), data in `~/.sdlc/data/`, the files given to a repository in Settings in `~/.sdlc/files/<repo>/`.
+Open it once per browser (cookie is set). Config lives in `~/.sdlc/config.yaml` (created on first save), data in `~/.sdlc/data/`, the files given to a repository in Settings in `~/.sdlc/files/<repo>-<hash>/` (one directory per repository).
 The file stores only values that differ from the shipped defaults, so a later change of a default reaches an existing installation. A config written before phase limits were turned off is migrated once when it is loaded, and the file is rewritten in the process (comments and unrecognised keys are not kept): a recorded `limits: { phases: pipeline }` becomes `off` and a recorded `task_budget_usd: 20` becomes the current default; after that a `pipeline` chosen in Settings stays.
 
 ```yaml
@@ -57,7 +57,7 @@ repos:
     path: /home/me/Develop/shop
     gh_user: me             # GitHub account for this repo (auto-detected; editable in Settings)
     files:                  # files the phases of this repo need but that are not in git; upload them in Settings
-      - { env: KEYSTORE, path: /home/me/.sdlc/files/shop/release.jks }   # $KEYSTORE is the path, for every phase of a task in this repo
+      - { env: KEYSTORE, path: /home/me/.sdlc/files/shop-6e1b0cfa2d/release.jks }   # $KEYSTORE is the path, for every phase of a task in this repo
 pr_sync_interval: 3m      # background check of PR states and merged branches (off to disable)
 telegram: { enabled: true, bot_token: "123:abc", chat_id: "42" }   # or env SDLC_TELEGRAM_TOKEN
 ```
@@ -119,7 +119,7 @@ Base ref: `--base origin/main` or a local branch such as `--base feature/x` (a n
 - A PreToolUse hook denies writes outside the worktree / `.git`, enforces `write_scope`, and blocks `git push`, `git commit --amend`, `sudo`, `rm -rf /|~`, `curl | sh` in every mode. `Bash(git commit*)`/`Bash(git push*)` are additionally denied in implement phases; the orchestrator commits.
 - The pipelines' per-phase `max_turns`/`max_budget_usd` are ignored unless `limits: { phases: pipeline }` is set, so a phase is never cut off mid-answer by default. `task_budget_usd` is the overall cap per task: it is checked before each Claude phase starts (`server/src/engine/engine.ts`) and escalates to a human instead of interrupting a running phase. `max_parallel_tasks` caps how many tasks run at once.
 - Claude/shell phases get the server's whole environment (API keys for skills and MCP servers included, e.g. from `~/.sdlc/env`) except sdlc's own `SDLC_*` settings (`env_allow` passes a named one through).
-- A repository can be given **files** in Settings (Repositories → files): a keystore, a service-account JSON, an `.env` of secrets. Each one is uploaded (at most 10 MB) to `~/.sdlc/files/<repo>/` with mode `0600` in a `0700` directory — outside the repository and outside every worktree — and bound to an environment variable name. Every Claude phase, shell phase and `setup_command` of a task in that repository then runs with that variable holding the file's absolute path, so a phase uses it as `cp "$KEYSTORE" app/release.jks` or `gradle -Pkeystore="$KEYSTORE"`. A name starting with `SDLC_` is refused (those are stripped from a phase's environment, so it would never arrive); the contents are never shown in the UI and never returned by any route — only the name, size and date. A file that has gone missing on disk is a warning on the task and leaves its variable unset, it does not fail the phase.
+- A repository can be given **files** in Settings (Repositories → files): a keystore, a service-account JSON, an `.env` of secrets. Each one is uploaded (at most 10 MB) to `~/.sdlc/files/<repo>-<hash>/` — one `0700` directory per registered repository, the hash of its name keeping two repositories apart — with mode `0600` — outside the repository and outside every worktree — and bound to an environment variable name. Every Claude phase, shell phase and `setup_command` of a task in that repository then runs with that variable holding the file's absolute path, so a phase uses it as `cp "$KEYSTORE" app/release.jks` or `gradle -Pkeystore="$KEYSTORE"`. A name starting with `SDLC_` is refused (those are stripped from a phase's environment, so it would never arrive); the contents are never shown in the UI and never returned by any route — only the name, size and date. A file that has gone missing on disk is a warning on the task and leaves its variable unset, it does not fail the phase.
 - Claude phases load settings, skills, plugins and MCP servers like an interactive `claude` (`setting_sources: [user, project, local]`); the repo's `.mcp.json` servers start without the approval prompt.
 
 ## Tests
