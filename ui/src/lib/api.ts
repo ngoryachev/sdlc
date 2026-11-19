@@ -18,9 +18,11 @@ export interface TaskDetail { task: Task; run: PipelineRun | null; segment: { fr
 export interface GhAccount { login: string; active: boolean }
 export interface RegisteredRepo { name: string; path: string; ghUser: string | null; exists: boolean }
 export interface GhRepoRow { slug: string; description: string; isFork: boolean; isPrivate: boolean; pushedAt: string | null; defaultBranch: string; canPush: boolean; cloned: boolean }
+/** What the server tells the UI about a per-repository file: never its contents. */
+export interface RepoFileMeta { env: string; filename: string; size: number | null; mtime: string | null; missing: boolean }
 export interface SyncResult { checked: number; changes: { taskId: string; title: string; change: string }[]; errors: string[] }
 export interface ModelsConfig { default?: string; effort?: EffortLevel; phases: Record<string, { model?: string; effort?: EffortLevel }> }
-export interface Config { publicUrl: string; repos: { name: string; path: string; ghUser: string | null }[]; reposDir: string; prSyncInterval: string; defaultPipeline: string; maxParallelTasks: number; maxLoops: number; recheckScope: 'delta' | 'full'; prFeedbackFrom: 'collaborators' | 'anyone'; taskBudgetUsd: number | 'off'; limits: { phases: 'pipeline' | 'off' }; mergeMethod: 'merge' | 'squash' | 'rebase'; cleanup: string; models: ModelsConfig; telegram: { enabled: boolean; configured: boolean; chatId: string | null } }
+export interface Config { publicUrl: string; repos: { name: string; path: string; ghUser: string | null; files: RepoFileMeta[] }[]; reposDir: string; prSyncInterval: string; defaultPipeline: string; maxParallelTasks: number; maxLoops: number; recheckScope: 'delta' | 'full'; prFeedbackFrom: 'collaborators' | 'anyone'; taskBudgetUsd: number | 'off'; limits: { phases: 'pipeline' | 'off' }; mergeMethod: 'merge' | 'squash' | 'rebase'; cleanup: string; models: ModelsConfig; telegram: { enabled: boolean; configured: boolean; chatId: string | null } }
 export type ConfigPatch = Partial<Pick<Config, 'limits' | 'mergeMethod' | 'cleanup' | 'models'>> & { default_pipeline?: string; max_parallel_tasks?: number; task_budget_usd?: number | 'off'; merge_method?: string };
 export interface ModelChoice { value: string; displayName: string; description?: string }
 export interface PipelineInfo { name: string; description?: string; segment?: { from?: string; to?: string }; needsPr?: boolean; phases: { name: string; type: string; hil?: string }[] }
@@ -59,6 +61,16 @@ export const api = {
   repos: () => req<{ repos: RegisteredRepo[] }>('GET', '/repos'),
   githubRepos: (account?: string, fresh = false) => req<{ account: string | null; repos: GhRepoRow[] }>('GET', `/repos/github?${new URLSearchParams({ ...(account ? { account } : {}), ...(fresh ? { fresh: '1' } : {}) })}`),
   addRepo: (b: { path?: string; slug?: string; gh_user?: string | null }) => req<{ name: string; path: string; ghUser: string | null }>('POST', '/repos', { ...b, gh_user: b.gh_user ?? undefined }),
+  repoFiles: (name: string) => req<{ files: RepoFileMeta[] }>('GET', `/repos/${encodeURIComponent(name)}/files`),
+  /** multipart, so it bypasses req(): the file is sent as it is, and only its path ever comes back. */
+  uploadRepoFile: async (name: string, env: string, file: File) => {
+    const fd = new FormData(); fd.set('env', env); fd.set('file', file);
+    const r = await fetch(`/api/repos/${encodeURIComponent(name)}/files`, { method: 'POST', body: fd });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new ApiError(r.status, (j as { error?: string }).error ?? r.statusText, j);
+    return j as { files: RepoFileMeta[] };
+  },
+  deleteRepoFile: (name: string, env: string) => req<{ files: RepoFileMeta[] }>('DELETE', `/repos/${encodeURIComponent(name)}/files/${encodeURIComponent(env)}`),
   branches: (name: string) => req<{ branches: { remote: string | null; branch: string }[]; default: { remote: string | null; branch: string } }>('GET', `/repos/${encodeURIComponent(name)}/branches`),
   telegramTest: () => req<{ ok: boolean; error?: string }>('POST', '/config/telegram/test'),
   /** Read-only translation of checkpoint texts; the answer has one string per input, in the same order. */

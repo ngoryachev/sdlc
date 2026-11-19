@@ -5,6 +5,7 @@ import { renderTemplate } from '../pipeline/template.js';
 import { filteredEnv } from '../claude/runner.js';
 import { nowIso } from '../store/ids.js';
 import type { PhaseContext, PhaseExecutor, PhaseOutcome } from './executor.js';
+import { repoFileEnvFor } from './file-env.js';
 
 export class ShellPhaseExecutor implements PhaseExecutor<ShellPhaseSpec> {
   async run(phase: ShellPhaseSpec, pr: PhaseRun, ctx: PhaseContext): Promise<PhaseOutcome> {
@@ -14,7 +15,7 @@ export class ShellPhaseExecutor implements PhaseExecutor<ShellPhaseSpec> {
 
     const chunks: string[] = [];
     let killedBy: 'timeout' | 'abort' | null = null;
-    const child = spawn('sh', ['-c', command], { cwd: task.worktreePath, env: filteredEnv({}, ctx.config.env_allow) as NodeJS.ProcessEnv, detached: true });
+    const child = spawn('sh', ['-c', command], { cwd: task.worktreePath, env: filteredEnv(repoFileEnvFor(ctx, pr), ctx.config.env_allow) as NodeJS.ProcessEnv, detached: true });
     const kill = () => { try { process.kill(-child.pid!, 'SIGTERM'); } catch { child.kill('SIGTERM'); } };
     ctx.registerHandle({ inject: () => {}, interrupt: async () => { killedBy = 'abort'; kill(); }, abort: () => { killedBy = 'abort'; kill(); } });
     const timer = setTimeout(() => { killedBy = 'timeout'; kill(); }, phase.timeout_sec * 1000);

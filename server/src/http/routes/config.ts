@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { App } from '../../app.js';
 import { ConfigSchema } from '../../config/config.js';
+import { repoFileList } from '../../config/repo-files.js';
 
 const Effort = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 const ConfigPatch = z.object({
@@ -22,7 +23,8 @@ function view(app: App) {
   const cfg = app.config;
   return {
     publicUrl: cfg.server.public_url ?? `http://${cfg.server.host}:${cfg.server.port}`,
-    repos: cfg.repos.map((r) => ({ name: r.name, path: r.path, ghUser: r.gh_user ?? null })), reposDir: cfg.repos_dir, prSyncInterval: cfg.pr_sync_interval, defaultPipeline: cfg.default_pipeline, maxParallelTasks: cfg.max_parallel_tasks, maxLoops: cfg.max_loops, recheckScope: cfg.recheck_scope, prFeedbackFrom: cfg.pr_feedback_from,
+    // files: metadata only, like GET /repos/:id/files — never their contents
+    repos: cfg.repos.map((r) => ({ name: r.name, path: r.path, ghUser: r.gh_user ?? null, files: repoFileList(r.files) })), reposDir: cfg.repos_dir, prSyncInterval: cfg.pr_sync_interval, defaultPipeline: cfg.default_pipeline, maxParallelTasks: cfg.max_parallel_tasks, maxLoops: cfg.max_loops, recheckScope: cfg.recheck_scope, prFeedbackFrom: cfg.pr_feedback_from,
     taskBudgetUsd: cfg.task_budget_usd, limits: cfg.limits, mergeMethod: cfg.merge_method, cleanup: cfg.cleanup, models: cfg.models,
     telegram: { enabled: cfg.telegram.enabled, configured: !!cfg.telegram.bot_token, chatId: cfg.telegram.chat_id ?? null },
   };

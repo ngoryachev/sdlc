@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import type { ModelOverrides, TranslateLang } from '@sdlc/shared';
 import { TRANSLATE_LANGS, TRANSLATE_LANG_NAMES } from '@sdlc/shared';
-import { api, type Config, type GhAccount, type ModelChoice, type PipelineInfo } from '../lib/api.js';
+import { api, type Config, type GhAccount, type ModelChoice, type PipelineInfo, type RepoFileMeta } from '../lib/api.js';
 import { useStore } from '../lib/store.js';
 import { EFFORTS, ModelPicker } from '../components/ModelPicker.js';
 
@@ -85,6 +85,7 @@ export function SettingsPage() {
 function RepoAccountsCard({ repos, onChanged }: { repos: Config['repos']; onChanged: () => void }) {
   const toast = useStore((s) => s.toast);
   const [accounts, setAccounts] = useState<GhAccount[]>([]);
+  const [open, setOpen] = useState<string | null>(null);
   useEffect(() => { void api.ghAccounts().then((r) => setAccounts(r.accounts)).catch(() => {}); }, []);
   const set = async (name: string, login: string) => {
     try { const r = await api.setRepoAccount(name, login || null); toast(`${name}: ${r.ghUser ?? 'no account'}`); onChanged(); }
@@ -94,17 +95,76 @@ function RepoAccountsCard({ repos, onChanged }: { repos: Config['repos']; onChan
     <div className="card">
       <h4 style={{ marginTop: 0 }}>Repositories</h4>
       <div className="small muted" style={{ marginBottom: 6 }}>Each repository is worked on with its own GitHub account (push, PRs, merges), independent of the account active in gh. "auto" picks the first logged-in account that can push there.</div>
-      <table><thead><tr><th>repository</th><th>path</th><th>GitHub account</th></tr></thead><tbody>
+      <table><thead><tr><th></th><th>repository</th><th>path</th><th>GitHub account</th></tr></thead><tbody>
         {repos.map((r) => (
-          <tr key={r.path}><td><b>{r.name}</b></td><td className="mono small muted">{r.path}</td>
-            <td><select style={{ width: 'auto' }} value={r.ghUser ?? ''} onChange={(e) => void set(r.name, e.target.value)}>
-              <option value="">auto</option>
-              {accounts.map((a) => <option key={a.login} value={a.login}>{a.login}{a.active ? ' (gh default)' : ''}</option>)}
-              {r.ghUser && !accounts.some((a) => a.login === r.ghUser) && <option value={r.ghUser}>{r.ghUser} (not logged in)</option>}
-            </select></td></tr>
+          <Fragment key={r.path}>
+            <tr><td><button style={{ width: 'auto' }} title="files given to phases as environment variables" onClick={() => setOpen(open === r.name ? null : r.name)}>{open === r.name ? '▾' : '▸'} files{r.files.length ? ` (${r.files.length})` : ''}</button></td>
+              <td><b>{r.name}</b></td><td className="mono small muted">{r.path}</td>
+              <td><select style={{ width: 'auto' }} value={r.ghUser ?? ''} onChange={(e) => void set(r.name, e.target.value)}>
+                <option value="">auto</option>
+                {accounts.map((a) => <option key={a.login} value={a.login}>{a.login}{a.active ? ' (gh default)' : ''}</option>)}
+                {r.ghUser && !accounts.some((a) => a.login === r.ghUser) && <option value={r.ghUser}>{r.ghUser} (not logged in)</option>}
+              </select></td></tr>
+            {open === r.name && <tr><td></td><td colSpan={3}><RepoFiles repo={r.name} onChanged={onChanged} /></td></tr>}
+          </Fragment>
         ))}
-        {repos.length === 0 && <tr><td colSpan={3} className="muted">none registered</td></tr>}
+        {repos.length === 0 && <tr><td colSpan={4} className="muted">none registered</td></tr>}
       </tbody></table>
+    </div>
+  );
+}
+
+const SIZE = (n: number | null) => (n === null ? '—' : n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
+
+/**
+ * Files a repository's phases need but that are not in git (keystores, service-account JSON, .env secrets). Each one
+ * is bound to an environment variable name holding its path on the server; the contents are never read back here.
+ */
+function RepoFiles({ repo, onChanged }: { repo: string; onChanged: () => void }) {
+  const toast = useStore((s) => s.toast);
+  const [files, setFiles] = useState<RepoFileMeta[] | null>(null);
+  const [env, setEnv] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [pick, setPick] = useState(0);   // remounts the file input, so picking the same file twice still fires onChange
+  // asked for on expanding, not taken from the config view: whether a file is still on disk can change without any config edit
+  useEffect(() => { void api.repoFiles(repo).then((r) => setFiles(r.files)).catch((e) => toast((e as Error).message, 'error')); }, [repo]);
+  const upload = async (name: string, file: File) => {
+    setBusy(true);
+    try { setFiles((await api.uploadRepoFile(repo, name, file)).files); toast(`${repo}: $${name} → ${file.name}`); setEnv(''); onChanged(); }
+    catch (e) { toast((e as Error).message, 'error'); }
+    finally { setBusy(false); setPick((n) => n + 1); }
+  };
+  const remove = async (name: string) => {
+    if (!confirm(`Delete the file for $${name}? The phases of ${repo} will no longer get this variable.`)) return;
+    setBusy(true);
+    try { setFiles((await api.deleteRepoFile(repo, name)).files); toast(`${repo}: $${name} removed`); onChanged(); }
+    catch (e) { toast((e as Error).message, 'error'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div style={{ padding: '4px 0 10px' }}>
+      <div className="small muted">Every Claude phase, shell phase and <span className="mono">setup_command</span> of a task in this repository runs with these variables set to the file's path on the server (max 10 MB each, stored outside the repo with mode 0600). Names starting with <span className="mono">SDLC_</span> are refused: they never reach a phase. The contents are never shown or downloaded.</div>
+      <table style={{ marginTop: 6 }}><tbody>
+        {(files ?? []).map((f) => (
+          <tr key={f.env}>
+            <td className="mono">${f.env}</td>
+            <td className="small">{f.filename}{f.missing && <span className="chip failed" style={{ marginLeft: 6 }}>missing on disk</span>}</td>
+            <td className="small muted">{SIZE(f.size)}</td>
+            <td className="small muted">{f.mtime ? new Date(f.mtime).toLocaleString() : '—'}</td>
+            <td><label className="small" style={{ cursor: 'pointer' }}>replace<input key={pick} type="file" style={{ display: 'none' }} disabled={busy} onChange={(e) => { const x = e.target.files?.[0]; if (x) void upload(f.env, x); }} /></label></td>
+            <td><button style={{ width: 'auto' }} disabled={busy} onClick={() => void remove(f.env)}>delete</button></td>
+          </tr>
+        ))}
+        {files !== null && files.length === 0 && <tr><td className="muted small">no files for this repository</td></tr>}
+        {files === null && <tr><td className="muted small">loading…</td></tr>}
+      </tbody></table>
+      <div className="row" style={{ marginTop: 6 }}>
+        <input style={{ width: 260 }} className="mono" placeholder="ENV_VARIABLE_NAME" value={env} onChange={(e) => setEnv(e.target.value)} />
+        <label className="small" style={{ cursor: env.trim() && !busy ? 'pointer' : 'default', opacity: env.trim() && !busy ? 1 : 0.5 }}>
+          choose a file…
+          <input key={pick} type="file" style={{ display: 'none' }} disabled={busy || !env.trim()} onChange={(e) => { const x = e.target.files?.[0]; if (x) void upload(env.trim(), x); }} />
+        </label>
+      </div>
     </div>
   );
 }
