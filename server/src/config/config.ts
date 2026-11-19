@@ -5,16 +5,36 @@ import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { z } from 'zod';
 import { RepoConfigSchema, type RepoConfig } from '../pipeline/schema.js';
+import { envNameError } from './repo-files.js';
 
 export const SDLC_HOME = process.env.SDLC_HOME ?? path.join(os.homedir(), '.sdlc');
 export const CONFIG_PATH = path.join(SDLC_HOME, 'config.yaml');
 /** Version of the shipped defaults. A file without it was written by a saveConfig that froze every default in (see migrate). */
 export const CONFIG_VERSION = 1;
 
+/**
+ * A file given to a repository in Settings: its contents live at `path` (managed ones under `files_dir`) and every
+ * Claude phase, shell phase and `setup_command` of a task in that repository gets `env` set to that absolute path.
+ */
+const RepoFileSchema = z.object({
+  env: z.string().superRefine((v, ctx) => { const e = envNameError(v); if (e) ctx.addIssue({ code: 'custom', message: e }); }),
+  path: z.string().refine((p) => path.isAbsolute(p), { message: 'path must be absolute' }),
+});
+export type RepoFile = z.infer<typeof RepoFileSchema>;
+
+const RepoFilesSchema = z.array(RepoFileSchema).default([]).superRefine((files, ctx) => {
+  const seen = new Set<string>();
+  for (const f of files) {
+    if (seen.has(f.env)) ctx.addIssue({ code: 'custom', message: `${f.env} is configured twice for this repository` });
+    seen.add(f.env);
+  }
+});
+
 export const ConfigSchema = z.object({
   config_version: z.number().int().min(0).default(0),
   data_dir: z.string().default(path.join(SDLC_HOME, 'data')),
   repos_dir: z.string().default(path.join(SDLC_HOME, 'repos')),
+  files_dir: z.string().default(path.join(SDLC_HOME, 'files')),   // per-repository files given to phases as env variables (mode 0600)
   worktrees_dir: z.string().optional(), // default: <repo>/../.sdlc-worktrees/<basename>
   pipelines_dirs: z.array(z.string()).default([]),
   default_pipeline: z.string().default('standard'),
@@ -37,7 +57,7 @@ export const ConfigSchema = z.object({
   pr_feedback_from: z.enum(['collaborators', 'anyone']).default('collaborators'),
   env_allow: z.array(z.string()).default([]),
   git_author: z.string().default('SDLC <sdlc@local>'),
-  repos: z.array(z.object({ name: z.string(), path: z.string(), gh_user: z.string().optional() })).default([]),   // gh_user: GitHub account used for this repo
+  repos: z.array(z.object({ name: z.string(), path: z.string(), gh_user: z.string().optional(), files: RepoFilesSchema })).default([]),   // gh_user: GitHub account used for this repo; files: see RepoFileSchema
   pr_sync_interval: z.union([z.string().regex(/^\d+(m|h)$/), z.literal('off')]).default('3m'),   // background check of PR state and merged branches
   server: z.object({
     host: z.string().default('127.0.0.1'),
@@ -102,7 +122,9 @@ export function saveConfig(cfg: SdlcConfig, configPath = CONFIG_PATH): void {
   const onDisk = ((fs.existsSync(configPath) ? YAML.parse(fs.readFileSync(configPath, 'utf8')) : null) ?? {}) as { server?: { token?: string }; telegram?: { bot_token?: string } };
   const server = { ...rest.server, token: fromEnv('SDLC_TOKEN', rest.server.token, onDisk.server?.token) };
   const telegram = { ...rest.telegram, bot_token: fromEnv('SDLC_TELEGRAM_TOKEN', rest.telegram.bot_token, onDisk.telegram?.bot_token) };
-  const { config_version, ...full } = { ...rest, server, telegram, pipelines_dirs: own };
+  // `repos` is pruned as a whole value, so an empty `files` would be written for every repository that has none
+  const repos = rest.repos.map(({ files, ...r }) => (files.length ? { ...r, files } : r));
+  const { config_version, ...full } = { ...rest, server, telegram, repos, pipelines_dirs: own };
   // only what differs from the shipped defaults, so a later change of a default reaches every installation that ever pressed Save
   const kept = prune(full, schemaDefaults() as unknown as Record<string, unknown>);
   // a file from a newer sdlc keeps its version: downgrading it would replay that version's migration on the next upgrade

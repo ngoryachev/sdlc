@@ -8,13 +8,14 @@ import type { ReviewEventName } from '../git/gh.js';
 import { nowIso } from '../store/ids.js';
 import type { PhaseContext, PhaseExecutor, PhaseOutcome } from './executor.js';
 import { catchUpBeforePush } from './catchup.js';
+import { withJiraKey } from '../engine/jira.js';
 
 export class GitPhaseExecutor implements PhaseExecutor<GitPhaseSpec> {
   async run(phase: GitPhaseSpec, pr: PhaseRun, ctx: PhaseContext): Promise<PhaseOutcome> {
     const { task, events, config, github } = ctx;
     try {
       if (phase.git === 'commit') {
-        const msg = renderTemplate(phase.message ?? 'sdlc({{task.id}}): {{task.title}}', ctx.tpl) + `\n\nTask: ${task.id}`;
+        const msg = withJiraKey(renderTemplate(phase.message ?? 'sdlc({{task.id}}): {{task.title}}', ctx.tpl), task.jiraKey) + `\n\nTask: ${task.id}`;
         const r = await commitAll(task.worktreePath, msg, config.git_author);
         pr.resultText = r.skipped ? 'nothing to commit' : `committed ${r.sha}`;
         if (r.sha) events.emit('git.committed', { taskId: task.id, sha: r.sha, message: msg.split('\n')[0]! }, { taskId: task.id, phaseRunId: pr.id });
@@ -77,7 +78,7 @@ export class GitPhaseExecutor implements PhaseExecutor<GitPhaseSpec> {
         }
         const p = phase.pr ?? { draft: false, post_review: false };
         const draft = typeof p.draft === 'string' ? renderTemplate(p.draft, ctx.tpl) === 'true' : p.draft;
-        const title = renderTemplate(p.title ?? '{{task.title}}', ctx.tpl);
+        const title = withJiraKey(renderTemplate(p.title ?? '{{task.title}}', ctx.tpl), task.jiraKey);
         const body = p.body ? renderTemplate(fs.readFileSync(resolvePipelineFile(ctx.loaded, p.body), 'utf8'), ctx.tpl) : `Task: ${task.id}`;
         const created = await github.prCreate({ cwd: task.repoPath, head: task.branch, base: task.baseBranch, title, body, draft }, auth);
         task.prUrl = created.url; task.prNumber = created.number;

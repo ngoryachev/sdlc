@@ -33,9 +33,21 @@ export class EventBus {
     const rows = taskId
       ? this.db.prepare('SELECT * FROM events WHERE id > ? AND task_id = ? ORDER BY id LIMIT ?').all(since, taskId, limit)
       : this.db.prepare('SELECT * FROM events WHERE id > ? ORDER BY id LIMIT ?').all(since, limit);
-    return (rows as Record<string, unknown>[]).map((r) => ({
-      id: r.id as number, ts: r.ts as string, type: r.type as EventType, taskId: (r.task_id as string) ?? null,
-      phaseRunId: (r.phase_run_id as string) ?? null, payload: JSON.parse(r.payload as string),
-    }));
+    return (rows as Record<string, unknown>[]).map(toEvent);
   }
+
+  /** A task's events of the given types, oldest first: for callers that must tell what the task itself did (notifiers). */
+  ofType(taskId: string, types: EventType[], limit = 500): SdlcEvent[] {
+    if (!types.length) return [];
+    const holes = types.map(() => '?').join(',');
+    const rows = this.db.prepare(`SELECT * FROM events WHERE task_id = ? AND type IN (${holes}) ORDER BY id LIMIT ?`).all(taskId, ...types, limit);
+    return (rows as Record<string, unknown>[]).map(toEvent);
+  }
+}
+
+function toEvent(r: Record<string, unknown>): SdlcEvent {
+  return {
+    id: r.id as number, ts: r.ts as string, type: r.type as EventType, taskId: (r.task_id as string) ?? null,
+    phaseRunId: (r.phase_run_id as string) ?? null, payload: JSON.parse(r.payload as string),
+  };
 }
