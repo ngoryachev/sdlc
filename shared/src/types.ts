@@ -151,6 +151,15 @@ export interface HilResponse {
 
 export type FindingAction = 'fix' | 'post' | 'skip';
 export type ReviewEvent = 'comment' | 'approve' | 'request_changes';
+
+/**
+ * The GitHub review event an open review checkpoint proposes: approve when the reviewer approved and found nothing above
+ * a nit. Nits do not hold an approval back: the ones the human posts go out with it, and skipping them must not drop it.
+ * A blocking or should_fix finding is not approved by default.
+ */
+export function defaultReviewEvent(p: HilPayload): ReviewEvent {
+  return p.kind === 'approve_result' && p.focus === 'review' && p.review?.verdict === 'approve' && p.review.findings.every((f) => f.severity === 'nit') ? 'approve' : 'comment';
+}
 /** author: the task's segment contains the implementing phase (it fixes PR comments); reviewer: it only reviews (it re-reviews new commits). */
 export type TaskRole = 'author' | 'reviewer';
 
