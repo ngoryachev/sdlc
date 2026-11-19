@@ -87,3 +87,34 @@ describe('two repository names that sanitise to the same directory', () => {
     expect(fs.existsSync(pathA)).toBe(true);
   });
 });
+
+/** The other way sanitising collapses two names: the length cap. The directory hash is over the full name. */
+describe('two repository names that differ only past the length cap', () => {
+  it('keeps their uploads apart, and each one is deleted on its own', async () => {
+    const dir = tmpDir('sdlc-repo-files-long-');
+    const a = makeRepo(path.join(dir, 'a'), { 'a.txt': 'x\n' });
+    const b = makeRepo(path.join(dir, 'b'), { 'a.txt': 'x\n' });
+    const [nameA, nameB] = [`${'o'.repeat(130)}/alpha`, `${'o'.repeat(130)}/beta`];
+    const app = testApp(dir, runner(), { files_dir: path.join(dir, 'files'), repos: [{ name: nameA, path: a }, { name: nameB, path: b }] });
+    const hono = new Hono();
+    hono.onError((e, c) => c.json({ error: e.message }, (e instanceof HttpError ? e.status : 500) as 500));
+    hono.route('/api', reposRoutes(app));
+    const upload = (repoName: string, body: string) => {
+      const fd = new FormData();
+      fd.set('env', 'KEYSTORE');
+      fd.set('file', new File([body], 'key.jks'));
+      return hono.request(`/api/repos/${encodeURIComponent(repoName)}/files`, { method: 'POST', body: fd });
+    };
+
+    expect((await upload(nameA, 'secret of A')).status).toBe(201);
+    expect((await upload(nameB, 'secret of B')).status).toBe(201);
+
+    const [pathA, pathB] = [app.config.repos[0]!.files[0]!.path, app.config.repos[1]!.files[0]!.path];
+    expect(fs.readFileSync(pathA, 'utf8')).toBe('secret of A');
+    expect(fs.readFileSync(pathB, 'utf8')).toBe('secret of B');
+
+    expect((await hono.request(`/api/repos/${encodeURIComponent(nameB)}/files/KEYSTORE`, { method: 'DELETE' })).status).toBe(200);
+    expect(fs.existsSync(pathB)).toBe(false);
+    expect(fs.existsSync(pathA)).toBe(true);
+  });
+});
