@@ -67,7 +67,8 @@ export function renderBody(tpl: string, ctx: TemplateContext, ownLine: string[])
     const kept = run.filter((l) => !rendersEmpty(l));
     if (kept.length) { out.push(...kept); continue; }   // at least one link: the block keeps its blank lines
     if (lines[i + 1] === '') i++;                       // nothing to show: the separator after the block goes too
-    else if (out.at(-1) === '') out.pop();              // the block ended the template: take the one before it
+    else if (i === lines.length - 1 && out.at(-1) === '') out.pop();   // the block ended the template: take the one before it
+    // else: text follows straight after the block, so the blank line before it is that paragraph's own
   }
   return renderTemplate(out.join('\n'), ctx);
 }

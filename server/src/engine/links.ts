@@ -22,14 +22,19 @@ export interface LinkDeps { config: SdlcConfig; events: Pick<EventBus, 'ofType'>
 export const NO_LINKS: TaskLinks = { jiraUrl: null, branchUrl: null };
 
 /**
- * The issue page of a key on a Jira base URL. The stored value is normalised rather than trusted: a trailing slash is
- * dropped, and a base that already ends in `/browse` (what one gets by copying an issue URL) does not grow a second one.
+ * The issue page of a key on a Jira base URL. The stored value is normalised rather than trusted: trailing slashes are
+ * dropped, and so is a trailing `/browse` or a whole `/browse/<KEY>` — what one gets by copying an issue URL out of the
+ * browser — so the base does not grow a second one. `config.yaml` is hand-edited and only the Settings route checks the
+ * value, so a base that is not an absolute http(s) URL yields no link at all: as a relative `href` it would navigate
+ * inside the sdlc UI, and as a Telegram button url it would make the Bot API reject the whole message.
  */
 export function jiraIssueUrl(base: string | null | undefined, key: string | null | undefined): string | null {
   if (!base || !key) return null;
-  let b = base.trim().replace(/\/+$/, '');
-  if (b.endsWith('/browse')) b = b.slice(0, -'/browse'.length).replace(/\/+$/, '');
-  return b ? `${b}/browse/${key}` : null;
+  const b = base.trim()
+    .replace(/\/+$/, '')
+    .replace(/\/browse(\/[A-Za-z][A-Za-z0-9]*-\d+)?$/, '')
+    .replace(/\/+$/, '');
+  return /^https?:\/\//i.test(b) ? `${b}/browse/${key}` : null;
 }
 
 /** The branch page on GitHub. The slashes of a branch name are path separators there, everything else is escaped. */

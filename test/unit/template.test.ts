@@ -77,9 +77,12 @@ describe('renderBody', () => {
       .toBe(['a', '', 'J ', '', 'b'].join('\n'));
   });
 
-  it('takes the preceding blank line when the block ends the template', () => {
+  it('takes the preceding blank line only when the block ends the template', () => {
     expect(renderBody(['a', '', '{{task.jira_url?}}'].join('\n'), ctx('', ''), OWN)).toBe('a');
     expect(renderBody(['a', '', '{{task.jira_url?}}'].join('\n'), ctx('J', ''), OWN)).toBe('a\n\nJ');
+    // text follows straight after the block: the blank line before it belongs to that paragraph, not to the block
+    expect(renderBody(['head', '', '{{task.jira_url?}}', 'footer'].join('\n'), ctx('', ''), OWN)).toBe(['head', '', 'footer'].join('\n'));
+    expect(renderBody(['head', '', '{{task.jira_url?}}', 'footer'].join('\n'), ctx('J', ''), OWN)).toBe(['head', '', 'J', 'footer'].join('\n'));
   });
 });
 

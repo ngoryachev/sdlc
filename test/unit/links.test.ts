@@ -27,6 +27,24 @@ describe('jiraIssueUrl', () => {
   it('keeps a base on a sub-path, where /browse is not the root', () => {
     expect(jiraIssueUrl('https://host/jira', 'ABC-123')).toBe('https://host/jira/browse/ABC-123');
   });
+
+  /** A whole issue URL is what copying one out of the browser gives: it must not compose `/browse/X/browse/Y`. */
+  it('strips a pasted issue URL back to its base', () => {
+    expect(jiraIssueUrl('https://x.atlassian.net/browse/ABC-1', 'ABC-123')).toBe('https://x.atlassian.net/browse/ABC-123');
+    expect(jiraIssueUrl('https://x.atlassian.net/browse/ABC-1/', 'ABC-123')).toBe('https://x.atlassian.net/browse/ABC-123');
+    expect(jiraIssueUrl('https://host/jira/browse/PROJ-42', 'ABC-123')).toBe('https://host/jira/browse/ABC-123');
+  });
+
+  /**
+   * config.yaml is hand-edited and only the Settings route checks the value. A scheme-less base would be a relative
+   * href in the UI and a url Telegram rejects the whole message for, so it buys no link at all.
+   */
+  it('gives nothing for a base that is not an absolute http(s) URL', () => {
+    for (const bad of ['company.atlassian.net', 'x.atlassian.net/browse', '/browse', 'ftp://x.atlassian.net', 'javascript:alert(1)']) {
+      expect(jiraIssueUrl(bad, 'ABC-123')).toBeNull();
+    }
+    expect(jiraIssueUrl('HTTPS://X.ATLASSIAN.NET', 'ABC-123')).toBe('HTTPS://X.ATLASSIAN.NET/browse/ABC-123');
+  });
 });
 
 describe('branchTreeUrl', () => {
