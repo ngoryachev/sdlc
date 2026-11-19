@@ -231,6 +231,17 @@ export function isSdlcBranch(branch: string, taskId: string): boolean { return b
 /** Rename the branch checked out in a worktree (before it is pushed). */
 export async function renameBranch(worktree: string, to: string): Promise<void> { await git(worktree, ['branch', '-m', to]); }
 
+/**
+ * Untracked files the repository asks to carry into a worktree (`copy_untracked` in `.sdlc.yaml`): copied from the main
+ * checkout. Called by every path that (re-)creates a worktree, never for one that already exists — an edited copy stays.
+ */
+function copyUntrackedInto(repo: string, worktreePath: string, rels: string[] | undefined): void {
+  for (const rel of rels ?? []) {
+    const src = path.join(repo, rel);
+    if (fs.existsSync(src)) { fs.mkdirSync(path.dirname(path.join(worktreePath, rel)), { recursive: true }); fs.cpSync(src, path.join(worktreePath, rel), { recursive: true }); }
+  }
+}
+
 export async function createWorktree(opts: { repo: string; worktreesDir: string; taskId: string; baseRemote: string | null; baseBranch: string; copyUntracked?: string[]; auth?: NetAuth }): Promise<WorktreeInfo> {
   const { repo, taskId } = opts;
   if (opts.baseRemote) await fetchBranch(repo, opts.baseRemote, opts.baseBranch, opts.auth).catch(() => false);
@@ -247,17 +258,14 @@ export async function createWorktree(opts: { repo: string; worktreesDir: string;
   fs.mkdirSync(path.dirname(exclude), { recursive: true });
   const cur = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : '';
   if (!cur.split('\n').includes('.sdlc/')) fs.appendFileSync(exclude, (cur.endsWith('\n') || cur === '' ? '' : '\n') + '.sdlc/\n');
-  for (const rel of opts.copyUntracked ?? []) {
-    const src = path.join(repo, rel);
-    if (fs.existsSync(src)) { fs.mkdirSync(path.dirname(path.join(worktreePath, rel)), { recursive: true }); fs.cpSync(src, path.join(worktreePath, rel), { recursive: true }); }
-  }
+  copyUntrackedInto(repo, worktreePath, opts.copyUntracked);
   return { worktreePath, branch, baseRef };
 }
 
 /** Attach a worktree to an existing branch for a new task (import of a PR / `--branch`). The branch is left as is. */
-export async function adoptWorktree(o: { repo: string; worktreesDir: string; taskId: string; branch: string; remote: string | null; auth?: NetAuth }): Promise<WorktreeInfo> {
+export async function adoptWorktree(o: { repo: string; worktreesDir: string; taskId: string; branch: string; remote: string | null; copyUntracked?: string[]; auth?: NetAuth }): Promise<WorktreeInfo> {
   const worktreePath = path.join(o.worktreesDir, o.taskId);
-  await recreateWorktree({ repo: o.repo, worktreePath, branch: o.branch, remote: o.remote, auth: o.auth });
+  await recreateWorktree({ repo: o.repo, worktreePath, branch: o.branch, remote: o.remote, copyUntracked: o.copyUntracked, auth: o.auth });
   const gitDir = await git(o.repo, ['rev-parse', '--git-common-dir']);
   const exclude = path.join(path.isAbsolute(gitDir) ? gitDir : path.join(o.repo, gitDir), 'info', 'exclude');
   fs.mkdirSync(path.dirname(exclude), { recursive: true });
@@ -322,7 +330,7 @@ export async function deleteRemoteBranch(repo: string, remote: string | null, br
 }
 
 /** Re-attach a worktree for an existing task branch (after cleanup), e.g. for a PR feedback round. */
-export async function recreateWorktree(o: { repo: string; worktreePath: string; branch: string; remote: string | null; auth?: NetAuth }): Promise<void> {
+export async function recreateWorktree(o: { repo: string; worktreePath: string; branch: string; remote: string | null; copyUntracked?: string[]; auth?: NetAuth }): Promise<void> {
   if (fs.existsSync(path.join(o.worktreePath, '.git'))) return;
   await git(o.repo, ['worktree', 'prune'], { allowFail: true });
   const onRemote = o.remote ? await fetchBranch(o.repo, o.remote, o.branch, o.auth).catch(() => false) : false;
@@ -334,6 +342,7 @@ export async function recreateWorktree(o: { repo: string; worktreePath: string; 
   // catch up with commits pushed from elsewhere; local-only commits are kept (never reset)
   if (local && onRemote && (await isAncestor(o.repo, local, `refs/remotes/${o.remote}/${o.branch}`))) await git(o.worktreePath, ['merge', '--ff-only', '--quiet', `refs/remotes/${o.remote}/${o.branch}`], { allowFail: true });
   fs.mkdirSync(path.join(o.worktreePath, '.sdlc'), { recursive: true });
+  copyUntrackedInto(o.repo, o.worktreePath, o.copyUntracked);
 }
 
 export async function removeWorktree(repo: string, worktreePath: string, branch: string, opts: { deleteBranchIfEmpty?: string } = {}): Promise<{ removed: boolean; branchDeleted: boolean }> {
