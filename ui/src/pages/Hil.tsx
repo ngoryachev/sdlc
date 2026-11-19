@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'wouter';
 import type { FindingAction, HilDecision, HilPayload, HilResponse, ReviewEvent, TranslateLang } from '@sdlc/shared';
-import { TRANSLATE_LANGS, TRANSLATE_LANG_NAMES, defaultReviewEvent } from '@sdlc/shared';
+import { TRANSLATE_LANGS, TRANSLATE_LANG_NAMES, defaultFindingActions, defaultReviewEvent } from '@sdlc/shared';
 import { api, ApiError, type HilRow } from '../lib/api.js';
 import { useStore } from '../lib/store.js';
 import { requestNotifyPermission } from '../lib/notify.js';
@@ -54,7 +54,7 @@ export function HilPage() {
   const [tr, setTr] = useState<Record<string, string> | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const [translating, setTranslating] = useState(false);
-  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? (r.status === 'open' ? defaultReviewEvent(r.payload) : 'comment')); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => toast(e.message, 'error')); }, [id]);
+  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultFindingActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? (r.status === 'open' ? defaultReviewEvent(r.payload) : 'comment')); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => toast(e.message, 'error')); }, [id]);
   useEffect(() => { if (h && h.status === 'open' && !openList.some((x) => x.id === h.id)) void api.hilOne(id).then(setH); }, [openList, h?.id]);
   useEffect(() => { setTr(null); setShowOriginal(false); setTranslating(false); }, [readingLang]);
   // j/k can move to the next checkpoint while a translation is in flight: that answer belongs to the old one
@@ -250,16 +250,6 @@ function Payload({ p, edited, setEdited, answers, setAnswers, actions, setAction
     case 'escalation':
       return <div><div><b>{p.phaseName}</b> failed{p.resultSubtype ? ` (${p.resultSubtype})` : ''}:</div><pre className="log">{t(p.error)}</pre></div>;
   }
-}
-
-/** What the checkpoint proposes before the human touches anything: the implementer fixes real defects, a reviewer posts everything. */
-function defaultActions(p: HilPayload, saved: HilResponse | null): Record<string, FindingAction> {
-  if (p.kind !== 'approve_result') return {};
-  if (saved?.findings) return saved.findings;
-  const out: Record<string, FindingAction> = {};
-  if (p.focus === 'qa') { (p.qa?.issues ?? []).forEach((f, i) => { out[`qa:${i}`] = p.canFix && f.severity !== 'nit' ? 'fix' : 'skip'; }); return out; }
-  (p.review?.findings ?? []).forEach((f, i) => { out[`review:${i}`] = p.role === 'reviewer' ? (p.canPost ? 'post' : 'skip') : p.canFix && f.severity !== 'nit' ? 'fix' : 'skip'; });
-  return out;
 }
 
 /**
