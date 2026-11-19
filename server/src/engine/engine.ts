@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 const execFileP = promisify(execFile);
 import path from 'node:path';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
-import type { AskUserQuestionItem, HilRequest, HilResponse, ModelOverrides, PhaseRun, PipelineRun, Task, TaskRole, TaskStatus } from '@sdlc/shared';
+import type { AskUserQuestionItem, ClarifyQuestion, HilRequest, HilResponse, ModelOverrides, PhaseRun, PipelineRun, Task, TaskRole, TaskStatus } from '@sdlc/shared';
 import { ACTIVE_STATUSES, FINISHED_STATUSES } from '@sdlc/shared';
 import type { SdlcConfig } from '../config/config.js';
 import { loadRepoConfig, parseDuration } from '../config/config.js';
@@ -28,6 +28,9 @@ import { GitPhaseExecutor } from '../phases/git.js';
 import { HilPhaseExecutor, newHilRequest } from '../phases/hil.js';
 import { buildTemplateContext } from './context.js';
 import { HilBroker } from './hil-broker.js';
+
+/** Stands in for a clarifying answer the developer deliberately did not give. Defers to the prompt body: clarify writes `suggestedPrompt` so a question can be answered inline there instead. */
+export const NO_ANSWER = '(no separate answer — if the task text above does not settle it, decide it yourself and say what you chose)';
 
 export interface CreateTaskInput {
   /** May be omitted for a pull request (its title and body are used) or when starting after `implement` on an existing branch (a short summary of the branch is generated). */
@@ -145,6 +148,7 @@ export class Engine {
       baseRemote, baseBranch, branch: wt.branch, worktreePath: wt.worktreePath, pipelineName: spec.name,
       reviewMode: input.reviewMode ?? repoConfig.review_mode ?? 'conceptual', postReview: input.postReview ?? repoConfig.post_review ?? false,
       status: 'created', totalCostUsd: 0, prUrl: pr?.url ?? null, prNumber: pr?.number ?? null, prFeedbackCursor: null, prHeadSha: pr?.headRefOid ?? null,
+      reviewDecision: null, reviewDecisionSha: null,
       modelOverrides: input.modelOverrides ?? null, jiraKey, createdAt: now, updatedAt: now,
     };
     const run: PipelineRun = { id: newId('r'), taskId: id, pipelineName: spec.name,
@@ -328,15 +332,10 @@ export class Engine {
         this.d.events.emit('task.updated', { task: t, change: `base ${from} → ${pr.baseRefName} (changed on GitHub)` }, { taskId });
         return `base → ${pr.baseRefName}`;
       }
-      // the author side picks up new review comments, the reviewer side new commits
-      if (this.roleOfTask(taskId) === 'reviewer') {
-        if (!pr.headRefOid || pr.headRefOid === t.prHeadSha) return null;
-        await this.rereview(t, pr.headRefOid, auth);
-        return `new commits (${pr.headRefOid.slice(0, 7)}) → review`;
-      }
-      if (this.d.store.openHilForTask(taskId).some((h) => h.kind === 'pr_feedback')) return null;
-      const fb = await this.pollPrFeedbackInner(taskId);
-      return fb.new ? `${fb.new} new PR comment(s) → HIL` : null;
+      // every pr_open task keeps GitHub's review verdict, whichever side of the PR it is on
+      const approval = this.applyReviewDecision(t, pr);
+      const rest = await this.syncPrRole(t, pr, auth);
+      return [approval, rest].filter(Boolean).join('; ') || null;
     }
     // no PR: did the branch reach its base some other way (merged by hand, another tool)?
     if (!(await refExists(t.repoPath, `refs/heads/${t.branch}`))) return null;
@@ -346,6 +345,43 @@ export class Engine {
     if (!(await refExists(t.repoPath, baseRef)) || !(await isAncestor(t.repoPath, `refs/heads/${t.branch}`, baseRef))) return null;
     await this.markMerged(t, auth);
     return 'merged (branch found in its base)';
+  }
+
+  /** The side-specific half of a `pr_open` sync: the reviewer follows new commits, the author new review comments. */
+  private async syncPrRole(t: Task, pr: PrInfo, auth: RepoAuth): Promise<string | null> {
+    if (this.roleOfTask(t.id) === 'reviewer') {
+      if (!pr.headRefOid || pr.headRefOid === t.prHeadSha) return null;
+      await this.rereview(t, pr.headRefOid, auth);
+      return `new commits (${pr.headRefOid.slice(0, 7)}) → review`;
+    }
+    if (this.d.store.openHilForTask(t.id).some((h) => h.kind === 'pr_feedback')) return null;
+    const fb = await this.pollPrFeedbackInner(t.id);
+    return fb.new ? `${fb.new} new PR comment(s) → HIL` : null;
+  }
+
+  /**
+   * Keeps GitHub's review verdict on the task. An `APPROVED` is remembered together with the PR head it was seen at:
+   * GitHub keeps reporting `APPROVED` after new commits unless the repository dismisses stale reviews, so once the head
+   * moves the mark is dropped locally (the sha stays, so it stays dropped). Anything else from GitHub clears the mark
+   * and re-arms it for the next approval. Returns a note only when the visible mark appeared or disappeared.
+   */
+  private applyReviewDecision(t: Task, pr: PrInfo): string | null {
+    const raw = pr.reviewDecision || null;
+    // an approval with no head to anchor it to (or to compare against) decides nothing: leave what is stored alone,
+    // or the mark would flap between the syncs that do see a head sha
+    if (raw === 'APPROVED' && !pr.headRefOid) return null;
+    const stale = raw === 'APPROVED' && !!t.reviewDecisionSha && pr.headRefOid !== t.reviewDecisionSha;
+    const decision = raw !== 'APPROVED' ? raw : stale ? null : 'APPROVED';
+    const sha = raw !== 'APPROVED' ? null : t.reviewDecisionSha ?? pr.headRefOid ?? null;
+    if (decision === t.reviewDecision && sha === t.reviewDecisionSha) return null;
+    const wasMarked = t.reviewDecision === 'APPROVED';
+    const isMarked = decision === 'APPROVED';
+    t.reviewDecision = decision; t.reviewDecisionSha = sha; t.updatedAt = nowIso();
+    this.d.store.updateTask(t);
+    if (wasMarked === isMarked) return null;              // e.g. null → REVIEW_REQUIRED: persisted, but nothing to show
+    const note = isMarked ? 'approved on GitHub' : stale ? 'approval dropped (new commits)' : `approval dropped (${raw ?? 'no review'} on GitHub)`;
+    this.d.events.emit('task.updated', { task: t, change: note }, { taskId: t.id });
+    return note;
   }
 
   /**
@@ -735,11 +771,6 @@ export class Engine {
     if (!hil.allowedDecisions.includes(response.decision)) throw new HttpError(400, `decision ${response.decision} not allowed for ${hil.kind}`);
     const fixKeys = Object.entries(response.findings ?? {}).filter(([, a]) => a === 'fix').map(([k]) => k);
     if (response.decision === 'request_changes' && !response.comment?.trim() && !fixKeys.length) throw new HttpError(400, 'request_changes needs a comment or at least one finding marked to fix');
-    if (hil.payload.kind === 'refine_prompt' && response.decision === 'approve') {
-      // every clarifying question needs an explicit answer: an unanswered one silently becomes the implementer's own choice
-      const unanswered = hil.payload.questions.filter((q) => !response.answers?.[q.question]?.trim());
-      if (unanswered.length) throw new HttpError(400, `answer the clarifying question(s) first: ${unanswered.map((q) => q.header).join(', ')}`);
-    }
 
     const task = store.getTask(hil.taskId)!;
     const run = store.latestRunForTask(task.id)!;
@@ -776,7 +807,9 @@ export class Engine {
       case 'refine_prompt': {
         const p = hil.payload as Extract<typeof hil.payload, { kind: 'refine_prompt' }>;
         const base = response.edited?.prompt?.trim() || p.suggestedPrompt || task.initialPrompt;
-        task.refinedPrompt = p.questions.length ? `${base}\n\n## Clarifying questions, answered by the developer\n${p.questions.map((q) => `- **${q.header}**: ${q.question}\n  → ${response.answers![q.question]!.trim()}`).join('\n')}` : base;
+        // an unanswered question is a legal answer in itself: the developer left that call to the implementer, so say so in the prompt
+        const asked = (q: ClarifyQuestion) => `- **${q.header}**: ${q.question}\n  → ${response.answers?.[q.question]?.trim() || NO_ANSWER}`;
+        task.refinedPrompt = p.questions.length ? `${base}\n\n## Clarifying questions\n${p.questions.map(asked).join('\n')}` : base;
         task.title = response.edited?.title?.trim() || p.suggestedTitle || task.title;
         if (!task.jiraKey) task.jiraKey = jiraKeyFrom(task.refinedPrompt);
         if (p.suggestedBranch) await this.renameBranchTo(task, p.suggestedBranch);
