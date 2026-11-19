@@ -51,9 +51,10 @@ export function HilPage() {
   // the transition between checkpoints is made visible: the answer is confirmed for a second, then the next card
   // animates in and stays frozen for a moment, so a keypress meant for the answered card cannot land on it
   const [confirm, setConfirm] = useState<{ title: string; decision: string; next: string } | null>(null);
-  const [frozen, setFrozen] = useState(false);
-  /** armed right before a navigation whose destination must not accept an immediate keypress (a response, j/k) */
-  const armFreeze = useRef(false);
+  /** the card a response or j/k navigates to: it must not accept a keypress the moment it lands */
+  const [armedNext, setArmedNext] = useState<{ id: string } | null>(null);
+  /** the card whose freeze window is running */
+  const [freeze, setFreeze] = useState<{ id: string } | null>(null);
   const confirmTimer = useRef<number | null>(null);
   useEffect(() => () => { if (confirmTimer.current !== null) clearTimeout(confirmTimer.current); }, []);
   const readingLang = useStore((s) => s.readingLang);
@@ -71,16 +72,24 @@ export function HilPage() {
   // the next checkpoint is chosen a second after the response: from the queue as it is then, not as it was back then
   const openListRef = useRef(openList);
   useEffect(() => { openListRef.current = openList; }, [openList]);
-  // the freeze starts when the new row is on screen, not when the id changes: a slow fetch must not eat the window
+  // the window starts when the armed row is on screen, not when the id changes: a slow fetch must not eat it
   useEffect(() => {
-    if (!h || h.id !== id || !armFreeze.current) return;
-    armFreeze.current = false;
-    setFrozen(true);
-    const t = setTimeout(() => setFrozen(false), 700);
+    if (!armedNext) return;
+    if (armedNext.id !== id) { setArmedNext(null); return; }   // the user went elsewhere (Back, a notification): void
+    if (!h || h.id !== id) return;                            // the armed card has not landed yet
+    setArmedNext(null);
+    setFreeze({ id });
+  }, [armedNext, h?.id, id]);
+  // its own effect: re-running the one above must not cancel the window it has just opened
+  useEffect(() => {
+    if (!freeze) return;
+    const t = setTimeout(() => setFreeze(null), 700);
     return () => clearTimeout(t);
-  }, [h?.id, id]);
-  // still armed (navigated, card not yet on screen) counts as locked: there is no unlocked first frame
-  const locked = busy || frozen || armFreeze.current;
+  }, [freeze]);
+  /** the card on screen has just landed from a response or j/k and is not live yet; both halves are keyed by id,
+   *  so leaving mid-window releases the card instead of latching it */
+  const fresh = freeze?.id === id || armedNext?.id === id;
+  const locked = busy || fresh;
 
   const translate = async () => {
     if (!h) return;
@@ -118,9 +127,9 @@ export function HilPage() {
       setConfirm({ title: h.task.title, decision: label(decision), next: h.next[decision] ?? 'ok' });
       confirmTimer.current = window.setTimeout(() => {
         confirmTimer.current = null;
-        armFreeze.current = true;
         setConfirm(null);
         const next = openListRef.current.find((x) => x.id !== h.id);
+        if (next) setArmedNext({ id: next.id });
         nav(next ? `/hil/${next.id}` : '/hil');
       }, 1000);
     } catch (e) {
@@ -132,17 +141,17 @@ export function HilPage() {
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
       // a confirmation on screen or a fresh card swallows the keypress instead of queueing it
-      if (confirm || frozen || armFreeze.current) return;
+      if (confirm || locked) return;
       const tag = (e.target as HTMLElement).tagName;
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { const d = h?.allowedDecisions.find((x) => ['approve', 'answer', 'allow', 'retry'].includes(x)); if (d) void respond(d); return; }
       if (tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') return;
       if (!h || h.status !== 'open') return;
       if (e.key === 'a' && h.allowedDecisions.includes('approve')) void respond('approve');
       if (e.key === 'r' && h.allowedDecisions.includes('request_changes')) document.getElementById('hil-comment')?.focus();
-      if (e.key === 'j' || e.key === 'k') { const i = openList.findIndex((x) => x.id === h.id); const n = openList[i + (e.key === 'j' ? 1 : -1)]; if (n) { armFreeze.current = true; nav(`/hil/${n.id}`); } }
+      if (e.key === 'j' || e.key === 'k') { const i = openList.findIndex((x) => x.id === h.id); const n = openList[i + (e.key === 'j' ? 1 : -1)]; if (n) { setArmedNext({ id: n.id }); nav(`/hil/${n.id}`); } }
     };
     window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k);
-  }, [h, comment, edited, answers, openList, confirm, frozen]);
+  }, [h, comment, edited, answers, openList, confirm, locked]);
 
   if (confirm) return (
     <div className="card hil-confirm"><span className="ok">✓</span><span>{confirm.title}</span><span className="muted">— {confirm.decision} → {confirm.next}</span></div>
@@ -176,7 +185,7 @@ export function HilPage() {
           {h.allowedDecisions.some((d) => ['request_changes', 'resume', 'deny', 'approve'].includes(d)) && h.kind !== 'question' && (
             <div style={{ marginTop: 10 }}><label className="small muted">{granular && p.kind === 'approve_result' ? (p.canPost && p.role === 'reviewer' ? 'Review text (posted to the PR together with the findings marked post; optional)' : counts.fix ? 'Comment for the implementer (optional; the items marked fix are sent anyway)' : p.canPost ? 'Comment (optional; with items marked post it is posted to the PR as the review text)' : 'Comment (optional)') : `Comment ${h.allowedDecisions.includes('request_changes') ? '(required for request changes)' : '(optional)'}`}</label><textarea id="hil-comment" value={comment} onChange={(e) => setComment(e.target.value)} style={{ minHeight: 64 }} /></div>
           )}
-          <div className={`actions${frozen ? ' locked' : ''}`}>
+          <div className={`actions${fresh ? ' locked' : ''}`}>
             {granular && p.kind === 'approve_result' && (
               <div className="act"><button className="primary" disabled={locked} onClick={() => respond('approve')}>{counts.fix ? `Send ${counts.fix} to fix${counts.post ? `, post ${counts.post} later` : ''}${counts.skip ? `, skip ${counts.skip}` : ''}` : counts.post ? `Continue, post ${counts.post}${counts.skip ? `, skip ${counts.skip}` : ''}` : `Continue${counts.skip ? `, skip ${counts.skip}` : ''}`}</button><small>{counts.fix ? h.next.request_changes : h.next.approve}</small></div>
             )}
@@ -185,7 +194,7 @@ export function HilPage() {
             ))}
             <div className="act" style={{ marginLeft: 'auto' }}><ArmedAbort onClick={() => respond('abort')} disabled={locked} /><small>{h.next.abort}</small></div>
           </div>
-          <div className="small muted" style={{ marginTop: 6, opacity: frozen ? .5 : 1 }}><span className="kbd">a</span> approve · <span className="kbd">r</span> comment · <span className="kbd">Ctrl+Enter</span> submit · <span className="kbd">j</span>/<span className="kbd">k</span> next/prev</div>
+          <div className="small muted" style={{ marginTop: 6, opacity: fresh ? .5 : 1 }}><span className="kbd">a</span> approve · <span className="kbd">r</span> comment · <span className="kbd">Ctrl+Enter</span> submit · <span className="kbd">j</span>/<span className="kbd">k</span> next/prev</div>
         </>
       )}
     </div>
