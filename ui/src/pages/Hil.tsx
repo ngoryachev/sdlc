@@ -65,12 +65,13 @@ export function HilPage() {
   const [translating, setTranslating] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  const loadGen = useRef(0);
   // j/k and a response can move on while a request for this checkpoint is in flight: its answer belongs to the old one
   const shownRef = useRef({ id, lang: readingLang });
   useEffect(() => { shownRef.current = { id, lang: readingLang }; }, [id, readingLang]);
   // a row for an id that is no longer shown is dropped: an older fetch resolving last must not strand the page on
   // a checkpoint the human has left, and a failed one says so instead of loading for ever
-  useEffect(() => { setLoadErr(null); void api.hilOne(id).then((r) => { if (shownRef.current.id !== id) return; setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? (r.status === 'open' ? defaultReviewEvent(r.payload) : 'comment')); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => { if (shownRef.current.id !== id) return; setArmedNext(null); setLoadErr((e as Error).message); toast((e as Error).message, 'error'); }); }, [id, reload]);
+  useEffect(() => { const gen = ++loadGen.current; setLoadErr(null); void api.hilOne(id).then((r) => { if (gen !== loadGen.current) return; setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? (r.status === 'open' ? defaultReviewEvent(r.payload) : 'comment')); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => { if (gen !== loadGen.current) return; setArmedNext(null); setLoadErr((e as Error).message); toast((e as Error).message, 'error'); }); }, [id, reload]);
   useEffect(() => { if (h && h.status === 'open' && !openList.some((x) => x.id === h.id)) void api.hilOne(id).then((r) => { if (shownRef.current.id === r.id) setH(r); }); }, [openList, h?.id]);
   useEffect(() => { setTr(null); setShowOriginal(false); setTranslating(false); }, [readingLang]);
   // the next checkpoint is chosen a second after the response: from the queue as it is then, not as it was back then
@@ -93,7 +94,9 @@ export function HilPage() {
   /** the card on screen has just landed from a response or j/k and is not live yet; both halves are keyed by id,
    *  so leaving mid-window releases the card instead of latching it */
   const fresh = freeze?.id === id || armedNext?.id === id;
-  const locked = busy || fresh;
+  // `h` for another id means no card is on screen (loading, or the error card): there is nothing to answer, and the
+  // hotkeys must not reach the checkpoint the human has left — rendering refuses the same thing below
+  const locked = busy || fresh || h?.id !== id;
 
   const translate = async () => {
     if (!h) return;
@@ -117,7 +120,7 @@ export function HilPage() {
   for (const a of Object.values(actions)) counts[a]++;
   const granular = h?.payload.kind === 'approve_result';
   const respond = async (decision: HilDecision) => {
-    if (!h || busy || confirm) return;
+    if (!h || h.id !== id || busy || confirm) return;
     if (decision === 'approve' && unanswered.length) { toast(`answer first: ${unanswered.join(', ')}`, 'error'); return; }
     // at a result checkpoint the items decide: anything marked fix sends the run back, otherwise it goes on
     if (granular && decision !== 'abort') decision = counts.fix ? 'request_changes' : 'approve';
@@ -127,7 +130,7 @@ export function HilPage() {
       findings: granular ? actions : undefined, comments: h.payload.kind === 'pr_feedback' ? commentActions : undefined, reviewEvent: h.payload.kind === 'approve_result' && h.payload.role === 'reviewer' ? reviewEvent : undefined };
     try {
       const r = await api.respond(h.id, body);
-      setH({ ...h, ...r });
+      if (shownRef.current.id === h.id) setH({ ...h, ...r });
       setConfirm({ title: h.task.title, decision: label(decision), next: h.next[decision] ?? 'ok' });
       confirmTimer.current = window.setTimeout(() => {
         confirmTimer.current = null;
@@ -138,7 +141,7 @@ export function HilPage() {
         nav(next ? `/hil/${next.id}` : '/hil');
       }, 1000);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 409) { toast(`already answered${(e.body as { answeredVia?: string }).answeredVia ? ` via ${(e.body as { answeredVia?: string }).answeredVia}` : ''}`, 'error'); void api.hilOne(id).then(setH); }
+      if (e instanceof ApiError && e.status === 409) { toast(`already answered${(e.body as { answeredVia?: string }).answeredVia ? ` via ${(e.body as { answeredVia?: string }).answeredVia}` : ''}`, 'error'); void api.hilOne(id).then((r) => { if (shownRef.current.id === r.id) setH(r); }); }
       else toast((e as Error).message, 'error');
     } finally { setBusy(false); }
   };
@@ -161,7 +164,7 @@ export function HilPage() {
   if (confirm) return (
     <div className="card hil-confirm" role="status"><span className="ok" aria-hidden="true">✓</span><span>{confirm.title}</span><span className="muted">— {confirm.decision} → {confirm.next}</span></div>
   );
-  if (loadErr) return (
+  if (loadErr && (!h || h.id !== id)) return (
     <div className="card"><div className="muted">could not load this checkpoint: {loadErr}</div><div style={{ marginTop: 8 }}><button onClick={() => setReload((n) => n + 1)}>Retry</button></div></div>
   );
   // the card of the previous checkpoint is never shown for the new id: that is what makes an answer land visibly
