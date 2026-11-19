@@ -45,9 +45,12 @@ const OPT_VAR = /\{\{\s*([a-zA-Z0-9_.-]+)\?\s*\}\}/g;
 export function renderBody(tpl: string, ctx: TemplateContext, ownLine: string[]): string {
   const owns = new Set(ownLine);
   const varsOf = (line: string) => [...line.matchAll(OPT_VAR)].map((m) => m[1]!);
+  // only the owned placeholders are stripped: whatever is left — literal text, or another variable, which would lose
+  // its content if the line went — means the line is not the block's and must survive
   const isOwnLine = (line: string) => {
     const vars = varsOf(line);
-    return vars.length > 0 && vars.every((v) => owns.has(v)) && line.replace(/\{\{[^{}]*\}\}/g, '').trim() === '';
+    if (!vars.length || !vars.every((v) => owns.has(v))) return false;
+    return line.replace(OPT_VAR, (m, name: string) => (owns.has(name) ? '' : m)).trim() === '';
   };
   const rendersEmpty = (line: string) => varsOf(line).every((v) => {
     const { found, value } = getPath(ctx, v);

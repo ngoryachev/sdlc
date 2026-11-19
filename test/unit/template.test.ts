@@ -53,6 +53,30 @@ describe('renderBody', () => {
     expect(renderBody(mixed, ctx('', ''), OWN)).toBe(['a', '', 'Jira: ', '', 'b'].join('\n'));
   });
 
+  /**
+   * A custom body template (the README invites one to use these variables) may put a link next to another variable on
+   * one line. Only the named variables are the block's: a line that also carries other content must survive.
+   */
+  it('leaves a line alone when it mixes a link variable with another variable', () => {
+    const c = { task: { id: 't_1', branch: 'sdlc/x', prompt: 'p', jira_url: '', branch_url: 'https://gh/tree/x' } };
+    expect(renderBody(['head', '', '{{task.jira_url?}} {{task.id}}', '', 'tail'].join('\n'), c, OWN))
+      .toBe(['head', '', ' t_1', '', 'tail'].join('\n'));
+    expect(renderBody(['head', '', '{{task.branch}}{{task.jira_url?}}', '', 'tail'].join('\n'), c, OWN))
+      .toBe(['head', '', 'sdlc/x', '', 'tail'].join('\n'));
+  });
+
+  /** The other shapes of "not only the named variables": another optional variable, or both links sharing one line. */
+  it('tells a line of nothing but links from one that carries anything else', () => {
+    const c = { task: { id: 't_1', prompt: 'p', jira_url: '', branch_url: '' }, artifacts: { plan_md: 'PLAN' } };
+    // a non-owned optional variable keeps the line, even though the link next to it is empty
+    expect(renderBody(['a', '', '{{task.jira_url?}}{{artifacts.plan_md?}}', '', 'b'].join('\n'), c, OWN))
+      .toBe(['a', '', 'PLAN', '', 'b'].join('\n'));
+    // both links on one line are still the block's: it vanishes with its separator when neither shows
+    expect(renderBody(['a', '', '{{task.jira_url?}} {{task.branch_url?}}', '', 'b'].join('\n'), c, OWN)).toBe(['a', '', 'b'].join('\n'));
+    expect(renderBody(['a', '', '{{task.jira_url?}} {{task.branch_url?}}', '', 'b'].join('\n'), { ...c, task: { ...c.task, jira_url: 'J' } }, OWN))
+      .toBe(['a', '', 'J ', '', 'b'].join('\n'));
+  });
+
   it('takes the preceding blank line when the block ends the template', () => {
     expect(renderBody(['a', '', '{{task.jira_url?}}'].join('\n'), ctx('', ''), OWN)).toBe('a');
     expect(renderBody(['a', '', '{{task.jira_url?}}'].join('\n'), ctx('J', ''), OWN)).toBe('a\n\nJ');

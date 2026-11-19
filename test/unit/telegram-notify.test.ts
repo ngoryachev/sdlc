@@ -326,6 +326,21 @@ describe('telegram link buttons', () => {
     expect(openRow()).toEqual(buttons);
   });
 
+  /** The card for the merge is sent after the sweep that deleted the branch: its button would have been a 404. */
+  it('drops the branch button from the merged card once the branch has been swept, and keeps the issue', async () => {
+    const { app, task, tg } = await setup({ jiraUrl: 'https://x.atlassian.net' });
+    app.events.emit('git.pushed', { taskId: task.id, branch: task.branch }, { taskId: task.id });
+    const merged = { ...task, prNumber: 7, status: 'merged' as const };
+    sent = [];
+    await tg.onTaskStatus(merged, 'pr_open', 'merged', 'http://localhost/x');
+    expect(openRow()).toContain('\u{1F33F} branch \u2192 https://github.com/me/shop/tree/' + task.branch);
+
+    app.events.emit('task.worktree', { taskId: task.id, action: 'removed', branchDeleted: true }, { taskId: task.id });
+    sent = [];
+    await tg.onTaskStatus(merged, 'pr_open', 'merged', 'http://localhost/x');
+    expect(openRow()).toEqual(['\u{1F517} Open \u2192 http://localhost/x', '\u{1F9E9} ABC-123 \u2192 https://x.atlassian.net/browse/ABC-123']);
+  });
+
   it('offers only Open when the repository has no jira_url and the branch was never pushed', async () => {
     const { task, hil, tg } = await setup();
     sent = [];
