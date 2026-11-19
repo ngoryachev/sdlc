@@ -43,6 +43,8 @@ export interface Task {
   /** Head commit of the PR the last review pass looked at (reviewer tasks re-review when it changes). */
   prHeadSha: string | null;
   modelOverrides: ModelOverrides | null;
+  /** Issue key found in the task prompt (`ABC-123`), used in the branch name, the PR title and commit subjects. */
+  jiraKey: string | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -39,6 +39,7 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE tasks ADD COLUMN pr_head_sha TEXT;
    ALTER TABLE pipeline_runs ADD COLUMN return_to TEXT;
    ALTER TABLE phase_runs ADD COLUMN head_sha TEXT;`,
+  `ALTER TABLE tasks ADD COLUMN jira_key TEXT;`,
 ];
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS.length;

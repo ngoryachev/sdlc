@@ -49,6 +49,7 @@ describe('openDb schema_version bookkeeping', () => {
     expect(versions(file)).toEqual([CURRENT_SCHEMA_VERSION]);
     expect(columns(file, 'tasks')).toContain('model_overrides');
     expect(columns(file, 'tasks')).toContain('pr_head_sha');
+    expect(columns(file, 'tasks')).toContain('jira_key');
   });
 
   it('migrates a single-row DB that is behind forward to the latest version', () => {
@@ -61,6 +62,7 @@ describe('openDb schema_version bookkeeping', () => {
     expect(columns(file, 'tasks')).toContain('model_overrides');
     expect(columns(file, 'pipeline_runs')).toContain('return_to');
     expect(columns(file, 'phase_runs')).toContain('head_sha');
+    expect(columns(file, 'tasks')).toContain('jira_key');
   });
 
   it('migrates a broken multi-row DB that still has migrations pending', () => {
@@ -70,6 +72,7 @@ describe('openDb schema_version bookkeeping', () => {
     openDb(file).close();
     expect(versions(file)).toEqual([CURRENT_SCHEMA_VERSION]);
     expect(columns(file, 'phase_runs')).toContain('head_sha');
+    expect(columns(file, 'tasks')).toContain('jira_key');
   });
 
   it('keeps existing rows when it repairs the version table', () => {
@@ -128,15 +131,17 @@ describe('openDb schema_version bookkeeping, further cases', () => {
         id: 't_1', title: 'x', initialPrompt: 'p', refinedPrompt: null, repoPath: '/r', repoSlug: null,
         baseRemote: 'origin', baseBranch: 'main', branch: 'sdlc/t_1', worktreePath: '/w', pipelineName: 'auto',
         reviewMode: 'conceptual', postReview: false, status: 'created', totalCostUsd: 0, prUrl: null,
-        prNumber: null, prFeedbackCursor: null, prHeadSha: null, modelOverrides: null,
+        prNumber: null, prFeedbackCursor: null, prHeadSha: null, modelOverrides: null, jiraKey: null,
         createdAt: now, updatedAt: now,
       });
       // Columns added by the later migrations must be writable, not just present.
       const t = store.getTask('t_1')!;
       t.modelOverrides = { implement: { model: 'opus' } };
       t.prHeadSha = 'deadbeef';
+      t.jiraKey = 'ABC-1';
       store.updateTask(t);
       expect(store.getTask('t_1')!.prHeadSha).toBe('deadbeef');
+      expect(store.getTask('t_1')!.jiraKey).toBe('ABC-1');
       expect(store.getTask('t_1')!.modelOverrides).toEqual({ implement: { model: 'opus' } });
     } finally { db.close(); }
   });

@@ -215,14 +215,18 @@ export async function listBranches(repo: string): Promise<{ remote: string | nul
 
 export interface WorktreeInfo { worktreePath: string; branch: string; baseRef: string }
 
-/** `sdlc/<slug>-<id>` from a short English summary: lowercase, at most 5 words / 40 chars; falls back to `sdlc/<id>`. */
-export function branchNameFor(summary: string, taskId: string): string {
+/**
+ * `sdlc/<slug>-<id>` from a short English summary: lowercase, at most 5 words / 40 chars; falls back to `sdlc/<id>`.
+ * With an issue key: `sdlc/<KEY>-<slug>-<id>`, or `sdlc/<KEY>-<id>` while there is no slug. The key keeps its case
+ * (it never goes through the slug generator) and does not count towards the 40-char cap.
+ */
+export function branchNameFor(summary: string, taskId: string, jiraKey?: string | null): string {
   const words = summary.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean).slice(0, 5);
   let slug = words.join('-');
   if (slug.length > 40) slug = slug.slice(0, 40).replace(/-[^-]*$/, '');
-  return slug ? `sdlc/${slug}-${taskId}` : `sdlc/${taskId}`;
+  return `sdlc/${[jiraKey, slug, taskId].filter(Boolean).join('-')}`;
 }
-/** Branches sdlc created for this task: `sdlc/<id>` or `sdlc/<slug>-<id>`. Adopted branches never match. */
+/** Branches sdlc created for this task: `sdlc/<id>`, `sdlc/<slug>-<id>` or `sdlc/<KEY>-<slug>-<id>`. Adopted branches never match. */
 export function isSdlcBranch(branch: string, taskId: string): boolean { return branch === `sdlc/${taskId}` || (branch.startsWith('sdlc/') && branch.endsWith(`-${taskId}`)); }
 /** Rename the branch checked out in a worktree (before it is pushed). */
 export async function renameBranch(worktree: string, to: string): Promise<void> { await git(worktree, ['branch', '-m', to]); }
