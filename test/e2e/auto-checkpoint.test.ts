@@ -3,13 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FakeRunner } from '../fakes/fake-runner.js';
 import { FakeGitHub } from '../fakes/fake-github.js';
-import { makeRemoteRepo, makeRepo, sh, testApp, tmpDir } from '../helpers.js';
+import { commitOnRemote, makeRemoteRepo, makeRepo, sh, testApp, tmpDir } from '../helpers.js';
 
 const PASS = { verdict: 'pass', summary: 'ok', commands: [], tests_added: [], failures: [], notes: '' };
 const QA_OK = { verdict: 'pass', summary: 'works', checks: [], issues: [] };
 const CLEAN = { verdict: 'approve', summary: 'looks good', findings: [] };
 const NITS = { verdict: 'approve', summary: 'good with nits', findings: [{ severity: 'nit', title: 'Naming', description: 'meh', file: 'feature.txt', line: 2 }] };
 const FINDING = { verdict: 'request_changes', summary: 'one thing', findings: [{ severity: 'should_fix', title: 'Wrong second line', description: 'two should be 2', file: 'feature.txt', line: 2 }] };
+const UNNAMED = { verdict: 'request_changes', summary: 'something is off and I cannot name it', findings: [] };
 
 /** A branch with one commit pushed to the remote and a pull request for it, as if a colleague opened it. */
 function someonesPr(repo: string, gh: FakeGitHub, branch = 'feature'): number {
@@ -86,6 +87,43 @@ describe('checkpoints with nothing to decide answer themselves', () => {
       expect(requested(app, task.id).length).toBe(1);
       expect(gh.reviews).toEqual([]);
     }
+  });
+
+  it('a request_changes review that named no finding still goes to the human', async () => {
+    // the defaults are all `skip` here too (there is nothing to mark), but the verdict is not an approval
+    const { app, task, gh } = await reviewPr('sdlc-auto-unnamed-', UNNAMED);
+
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    expect([hil.kind, hil.status, hil.answeredVia]).toEqual(['approve_result', 'open', null]);
+    expect(requested(app, task.id).length).toBe(1);
+    expect(gh.reviews).toEqual([]);
+  });
+
+  it('a second clean pass over new commits answers itself again and approves again', async () => {
+    const dir = tmpDir('sdlc-auto-rounds-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, gh);
+    const prompts: string[] = [];
+    const app = testApp(dir, new FakeRunner((spec) => ({ act: () => { prompts.push(spec.prompt); return { structured: CLEAN }; } })), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    expect([app.store.getTask(task.id)!.status, gh.reviews.length]).toEqual(['pr_open', 1]);
+
+    commitOnRemote(bare, 'feature', 'feature.txt', 'one\n2\nthree\n');
+    expect((await app.engine.syncTasks()).changes.length).toBe(1);
+    await app.engine.advance(task.id);
+
+    // the re-review is its own round: a fresh auto-answered checkpoint, and publish is not fooled by the first one
+    expect(prompts.length).toBe(2);
+    const autos = app.store.listHil({ taskId: task.id }).filter((h) => h.answeredVia === 'auto');
+    expect(autos.length).toBe(2);
+    expect(new Set(autos.map((h) => h.id)).size).toBe(2);
+    expect(requested(app, task.id)).toEqual([]);
+    expect(gh.reviews).toEqual([{ number: n, event: 'APPROVE', body: '', comments: [] }, { number: n, event: 'APPROVE', body: '', comments: [] }]);
+    expect(app.store.openHilForTask(task.id)).toEqual([]);
+    expect(app.store.getTask(task.id)!.status).toBe('pr_open');
   });
 
   it('a QA gate is never auto-passed: it exists only when QA reported issues', async () => {

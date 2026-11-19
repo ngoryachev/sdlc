@@ -144,6 +144,21 @@ describe('openDb schema_version bookkeeping, further cases', () => {
     } finally { db.close(); }
   });
 
+  it('a task written before the last migration keeps approving a clean review', () => {
+    const file = dbFile('sdlc-db-backfill-');
+    handBuiltDb(file, MIGRATIONS.length - 1, [MIGRATIONS.length - 1]);
+    expect(columns(file, 'tasks')).not.toContain('approve_on_clean');
+    const now = new Date().toISOString();
+    read(file, (db) => db.prepare('INSERT INTO tasks (id,title,initial_prompt,repo_path,base_branch,branch,worktree_path,pipeline_name,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run('t_old', 'x', 'p', '/r', 'main', 'sdlc/t_old', '/w', 'standard', 'pr_open', now, now));
+
+    const db = openDb(file);
+    try {
+      // the new column is backfilled with DEFAULT 1, so an existing task is not silently switched off
+      expect(new Store(db).getTask('t_old')!.approveOnClean).toBe(true);
+    } finally { db.close(); }
+  });
+
   it('repairs while another connection has the DB open', () => {
     const file = dbFile('sdlc-db-concurrent-');
     handBuiltDb(file, MIGRATIONS.length, MIGRATIONS.map((_, i) => i + 1));
