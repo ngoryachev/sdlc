@@ -51,3 +51,15 @@ table { width:100%; border-collapse: collapse; } th, td { text-align:left; paddi
 .repo-picker .opt:hover { background: var(--bg); }
 .repo-picker .group { padding: 6px 8px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }
 .stack { margin-top: 8px; padding-left: 10px; border-left: 2px solid var(--line); }
+
+/* the move between HIL checkpoints: the new card arrives visibly, the frozen one is visibly not live yet */
+@keyframes hil-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.hil-card { animation: hil-in 220ms ease-out both; }
+.hil-confirm { display:flex; gap:8px; align-items:center; font-size:16px; animation: hil-in 160ms ease-out both; }
+.hil-confirm .ok { color: var(--ok); font-weight: 700; }
+.actions.locked { opacity: .6; }
+.row h2.hil-title { font-size: 24px; font-weight: 700; line-height: 1.2; }
+/* restated after the rule above, same specificity: the mobile size has to come last to win */
+@media (max-width: 640px) { .row h2.hil-title { font-size: 20px; } }
+/* no slide and no fade; the confirmation and the freeze are timers in JS and stay */
+@media (prefers-reduced-motion: reduce) { .hil-card, .hil-confirm { animation: none; } }

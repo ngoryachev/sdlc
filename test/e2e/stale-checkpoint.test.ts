@@ -5,17 +5,7 @@ import type { HilRequest, SdlcEvent } from '@sdlc/shared';
 import { FakeRunner } from '../fakes/fake-runner.js';
 import { FakeGitHub } from '../fakes/fake-github.js';
 import type { PrInfo, RepoAuth } from '../../server/src/git/gh.js';
-import { commitOnRemote, makeRemoteRepo, sh, testApp, tmpDir } from '../helpers.js';
-
-/** A branch with one commit pushed to the remote and a pull request for it, as if a colleague opened it. */
-function someonesPr(repo: string, bare: string, gh: FakeGitHub, branch = 'feature'): number {
-  sh(repo, ['checkout', '-q', '-b', branch]);
-  fs.writeFileSync(path.join(repo, 'feature.txt'), 'one\ntwo\nthree\n');
-  sh(repo, ['add', '-A']); sh(repo, ['commit', '-q', '-m', `${branch}: work`]);
-  sh(repo, ['push', '-q', 'origin', branch]);
-  sh(repo, ['checkout', '-q', 'main']); sh(repo, ['branch', '-q', '-D', branch]);
-  return gh.openPr(branch, 'main', 'Add the feature', 'Adds feature.txt.');
-}
+import { commitOnRemote, makeRemoteRepo, sh, someonesPr, testApp, tmpDir } from '../helpers.js';
 
 const reviewRunner = (prompts: string[]) => new FakeRunner((spec) => ({
   act: () => {
@@ -40,7 +30,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-noop-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const prompts: string[] = [];
     const app = testApp(dir, reviewRunner(prompts), {}, gh);
 
@@ -60,7 +50,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-chain-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const prompts: string[] = [];
     const app = testApp(dir, reviewRunner(prompts), {}, gh);
 
@@ -90,7 +80,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-force-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const prompts: string[] = [];
     const app = testApp(dir, reviewRunner(prompts), {}, gh);
 
@@ -165,7 +155,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-fallback-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const prompts: string[] = [];
     const app = testApp(dir, reviewRunner(prompts), {}, gh);
 
@@ -193,7 +183,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-qagate-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const calls: string[] = [];
     const app = testApp(dir, new FakeRunner((spec) => ({
       act: () => {
@@ -205,7 +195,8 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
       },
     })), {}, gh);
 
-    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'standard', prNumber: n, startAt: 'review', stopAfter: 'qa_gate' });
+    // approveOnClean off: the clean review stops at its own checkpoint, so the gate is reached the same way twice
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'standard', prNumber: n, startAt: 'review', stopAfter: 'qa_gate', approveOnClean: false });
     expect(app.engine.roleOfTask(task.id)).toBe('reviewer');
     await app.engine.advance(task.id);
     await app.engine.respondHil(app.store.openHilForTask(task.id)[0]!.id, { decision: 'approve' }, 'web');
@@ -230,7 +221,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-rename-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const prompts: string[] = [];
     const app = testApp(dir, reviewRunner(prompts), {}, gh);
 
@@ -263,7 +254,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-nofetch-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const prompts: string[] = [];
     const app = testApp(dir, reviewRunner(prompts), {}, gh);
 
@@ -294,7 +285,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-question-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     let asked!: Promise<unknown>;
     const app = testApp(dir, new FakeRunner((spec) => ({
       act: async () => {
@@ -326,7 +317,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-publish-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const prompts: string[] = [];
     const app = testApp(dir, reviewRunner(prompts), {}, gh);
 
@@ -358,7 +349,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
       async prView(cwd: string, n: number) { await gate; return super.prView(cwd, n); }
     }
     const gh = new GatedGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const app = testApp(dir, reviewRunner([]), {}, gh);
 
     const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
@@ -383,7 +374,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-event-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const app = testApp(dir, reviewRunner([]), {}, gh);
 
     const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
@@ -407,7 +398,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-answerable-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const prompts: string[] = [];
     const app = testApp(dir, reviewRunner(prompts), {}, gh);
 
@@ -434,7 +425,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-rewind-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const prompts: string[] = [];
     const app = testApp(dir, reviewRunner(prompts), {}, gh);
 
@@ -471,7 +462,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-lag-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new LaggingGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const prompts: string[] = [];
     const app = testApp(dir, reviewRunner(prompts), {}, gh);
 
@@ -504,7 +495,7 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
     const dir = tmpDir('sdlc-stale-nowt-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
-    const n = someonesPr(repo, bare, gh);
+    const n = someonesPr(repo, gh);
     const prompts: string[] = [];
     const app = testApp(dir, reviewRunner(prompts), {}, gh);
 

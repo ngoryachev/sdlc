@@ -2,9 +2,10 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import type { HilRequest, SdlcEvent } from '@sdlc/shared';
 import { FakeRunner } from '../fakes/fake-runner.js';
 import { FakeGitHub } from '../fakes/fake-github.js';
-import { commitOnRemote, localHas, makeRemoteRepo, makeRepo, remoteFile, remoteHas, sh, testApp, tmpDir } from '../helpers.js';
+import { commitOnRemote, localHas, makeRemoteRepo, makeRepo, remoteFile, remoteHas, sh, someonesPr, testApp, tmpDir } from '../helpers.js';
 import { ConfigSchema } from '../../server/src/config/config.js';
 import { RepoAccounts } from '../../server/src/git/accounts.js';
 import { netEnv } from '../../server/src/git/git.js';
@@ -185,6 +186,192 @@ describe('delivery: create PR, land, restack, close, sync', () => {
     expect(status(a.id)).toBe('merged');
     expect(localHas(repo, a.branch)).toBe(false);
     expect(remoteHas(bare, a.branch)).toBe(false);
+    expect((await app.engine.syncTasks()).changes).toEqual([]);
+  });
+});
+
+/** Stops at the result checkpoint: findings to decide on. */
+const reviewRunner = () => new FakeRunner(() => ({
+  act: () => ({ structured: { verdict: 'request_changes', summary: 'needs work', findings: [{ severity: 'blocking', title: 'Problem', description: 'x', file: 'feature.txt', line: 2 }] } }),
+}));
+
+/** A reviewer task on somebody else's pull request: it has a `prNumber` from the start. */
+function reviewerTask(prefix: string, runner = reviewRunner()) {
+  const dir = tmpDir(prefix);
+  const { repo, bare } = makeRemoteRepo(dir);
+  const gh = new FakeGitHub(bare);
+  const n = someonesPr(repo, gh);
+  const app = testApp(dir, runner, {}, gh);
+  return { repo, bare, gh, app, n };
+}
+
+const tick = (ms = 50) => new Promise((r) => setTimeout(r, ms));
+const hilsOf = (events: SdlcEvent[]) => events.filter((e) => e.type === 'hil.answered').map((e) => (e.payload as { hil: HilRequest }).hil);
+const statusesOf = (events: SdlcEvent[]) => events.filter((e) => e.type === 'task.status').map((e) => (e.payload as { to: string }).to);
+
+describe('sync: a pull request that ended while its task was still in flight', () => {
+  it('merged while a checkpoint is open: the checkpoint is cancelled with the reason and the task is merged', async () => {
+    const { repo, gh, app, n } = reviewerTask('sdlc-sync-merged-hil-');
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    expect([app.store.getTask(task.id)!.status, hil.kind]).toEqual(['waiting_hil', 'approve_result']);
+
+    const events: SdlcEvent[] = [];
+    const off = app.events.on((e) => { if (e.type === 'hil.answered' || e.type === 'task.status') events.push(e); });
+    await gh.prMerge(repo, n, 'merge');
+    const r = await app.engine.syncTasks();
+    off();
+
+    expect([r.errors, r.changes.map((c) => c.change)]).toEqual([[], ['merged (on GitHub)']]);
+    const dropped = app.store.getHil(hil.id)!;
+    expect([dropped.status, dropped.answeredVia, dropped.response]).toEqual(['cancelled', null, null]);
+    expect(dropped.summary).toContain('PR merged on GitHub');
+    expect(hilsOf(events).map((h) => h.id)).toEqual([hil.id]);            // a notifier can rewrite the card it sent
+    expect(statusesOf(events)).toEqual(['merged']);                       // one transition, no `aborted` detour
+    expect(app.store.getPhaseRun(hil.phaseRunId!)!.status).toBe('skipped');
+    expect(fs.existsSync(task.worktreePath)).toBe(false);
+    expect(app.store.openHilForTask(task.id)).toEqual([]);
+    expect((await app.engine.syncTasks()).changes).toEqual([]);
+  });
+
+  it('merged while a phase is running: the phase is stopped and the task goes straight to merged', async () => {
+    let release!: () => void;
+    const runner = new FakeRunner((spec) => ({
+      act: async () => {
+        if (spec.prompt.includes('Phase: review')) await new Promise<void>((r) => { release = r; });
+        return { structured: { verdict: 'approve', summary: 'ok', findings: [] } };
+      },
+    }));
+    const { repo, gh, app, n } = reviewerTask('sdlc-sync-merged-running-', runner);
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    const running = app.engine.advance(task.id);
+    for (let i = 0; i < 200 && !release; i++) await tick(5);
+    expect(app.store.getTask(task.id)!.status).toBe('running');
+
+    const events: SdlcEvent[] = [];
+    const off = app.events.on((e) => { if (e.type === 'task.status') events.push(e); });
+    await gh.prMerge(repo, n, 'merge');
+    const syncing = app.engine.syncTasks();
+    await tick();
+    release();                                                            // the fake runner ignores abort(): end the turn
+    await running;
+    const r = await syncing;
+    off();
+
+    expect([r.errors, r.changes.map((c) => c.change)]).toEqual([[], ['merged (on GitHub)']]);
+    expect(statusesOf(events)).toEqual(['merged']);                       // never `aborted` on the way
+    expect(app.store.getTask(task.id)!.status).toBe('merged');
+    expect(app.store.latestRunForTask(task.id)!.status).toBe('succeeded');
+    const review = app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'review')!;
+    expect([review.status, review.resultText]).toEqual(['aborted', 'PR merged on GitHub']);
+    expect(fs.existsSync(task.worktreePath)).toBe(false);
+    expect((await app.engine.syncTasks()).changes).toEqual([]);
+  });
+
+  it('merged while a running phase waits on a question: the question goes and the phase ends once', async () => {
+    const runner = new FakeRunner((spec) => ({
+      act: async () => {
+        // the review phase asks the human something and keeps running while it waits: the task is `waiting_hil`
+        // with a live Claude session, so both the checkpoint and the phase have to be dealt with
+        await spec.canUseTool!('AskUserQuestion', { questions: [{ question: 'Is the old API still used?', header: 'API', options: ['yes', 'no'] }] }, {} as never);
+        return { structured: { verdict: 'approve', summary: 'ok', findings: [] } };
+      },
+    }));
+    const { repo, gh, app, n } = reviewerTask('sdlc-sync-merged-question-', runner);
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    const running = app.engine.advance(task.id);
+    for (let i = 0; i < 200 && !app.store.openHilForTask(task.id).length; i++) await tick(5);
+    const question = app.store.openHilForTask(task.id)[0]!;
+    expect([question.kind, app.store.getTask(task.id)!.status]).toEqual(['question', 'waiting_hil']);
+
+    const events: SdlcEvent[] = [];
+    const off = app.events.on((e) => { if (e.type === 'task.status' || e.type === 'phase.finished') events.push(e); });
+    await gh.prMerge(repo, n, 'merge');
+    const r = await app.engine.syncTasks();   // cancelling the question releases the phase, which then stops
+    await running;
+    off();
+
+    expect([r.errors, r.changes.map((c) => c.change)]).toEqual([[], ['merged (on GitHub)']]);
+    expect(app.store.getHil(question.id)!.status).toBe('cancelled');
+    expect(statusesOf(events)).toEqual(['merged']);
+    const review = app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'review')!;
+    expect([review.status, review.resultText]).toEqual(['aborted', 'PR merged on GitHub']);
+    // the phase run reports finished once: the live phase ends it, the cancelled question does not park it first
+    expect(events.filter((e) => e.type === 'phase.finished' && (e.payload as { phaseRun: { id: string } }).phaseRun.id === review.id).length).toBe(1);
+    expect([app.store.getTask(task.id)!.status, app.store.openHilForTask(task.id).length]).toEqual(['merged', 0]);
+  });
+
+  it('merged while a phase waits for a slot: the sync does not wait for it, and that phase never runs', async () => {
+    let releaseHolder!: () => void;
+    let held = false;
+    const ran: string[] = [];                                                // worktrees a Claude phase ran in
+    const runner = new FakeRunner((spec) => ({
+      act: async () => {
+        ran.push(spec.cwd);
+        if (!held) { held = true; await new Promise<void>((r) => { releaseHolder = r; }); }   // keeps the only slot
+        if (spec.prompt.includes('Phase: review')) return { structured: { verdict: 'approve', summary: 'ok', findings: [] } };
+        if (spec.prompt.includes('Phase: test')) return { structured: { verdict: 'skipped', summary: 'n/a', commands: [], tests_added: [], failures: [], notes: '' } };
+        if (spec.prompt.includes('Phase: QA')) return { structured: { verdict: 'skipped', summary: 'n/a', checks: [], issues: [] } };
+        fs.writeFileSync(path.join(spec.cwd, `${path.basename(spec.cwd)}.txt`), 'work\n');
+        return { text: 'done' };
+      },
+    }));
+    const dir = tmpDir('sdlc-sync-merged-queued-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, gh);
+    const app = testApp(dir, runner, { max_parallel_tasks: 1 }, gh);
+
+    const holder = await app.engine.createTask({ prompt: 'hold the only slot', repoPath: repo, pipeline: 'auto', baseRemote: 'origin' });
+    void app.engine.advance(holder.id);
+    for (let i = 0; i < 200 && !releaseHolder; i++) await tick(5);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    const reviewing = app.engine.advance(task.id);
+    await tick();                                                            // its review phase is queued for the slot
+    expect([app.store.getTask(task.id)!.status, ran.includes(task.worktreePath)]).toEqual(['running', false]);
+
+    // the sync must not wait for a phase it cannot interrupt: that would hold the task lock, and with it the whole
+    // tick, for as long as the phase ahead of it runs (here: until this test releases it)
+    await gh.prMerge(repo, n, 'merge');
+    const r = await app.engine.syncTasks();
+    expect(r.changes.map((c) => c.change)).toEqual(['merged (on GitHub)']);
+    expect(app.store.getTask(task.id)!.status).toBe('merged');
+
+    // and when the slot frees, the queued phase stops instead of running, without undoing the merge
+    releaseHolder();
+    await reviewing;
+    const review = app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'review')!;
+    expect([review.status, review.resultText]).toEqual(['aborted', 'PR merged on GitHub']);
+    expect(ran.includes(task.worktreePath)).toBe(false);                     // no paid phase was burned on it
+    expect(app.store.getTask(task.id)!.status).toBe('merged');
+    expect(app.store.latestRunForTask(task.id)!.status).toBe('succeeded');
+    expect(app.store.openHilForTask(task.id)).toEqual([]);
+  });
+
+  it('closed on GitHub: the checkpoint is cancelled, the worktree goes, the branch of the dropped work stays', async () => {
+    const { repo, bare, gh, app, n } = reviewerTask('sdlc-sync-closed-hil-');
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    const hil = app.store.openHilForTask(task.id)[0]!;
+
+    const events: SdlcEvent[] = [];
+    const off = app.events.on((e) => { if (e.type === 'hil.answered' || e.type === 'task.status') events.push(e); });
+    await gh.prClose(repo, n);
+    const r = await app.engine.syncTasks();
+    off();
+
+    expect([r.errors, r.changes.map((c) => c.change)]).toEqual([[], ['closed (on GitHub)']]);
+    expect(app.store.getHil(hil.id)!.status).toBe('cancelled');
+    expect(app.store.getHil(hil.id)!.summary).toContain('PR closed on GitHub');
+    expect(hilsOf(events).map((h) => h.id)).toEqual([hil.id]);
+    expect(statusesOf(events)).toEqual(['closed']);
+    expect(app.store.getTask(task.id)!.status).toBe('closed');
+    expect(app.store.latestRunForTask(task.id)!.status).toBe('aborted');
+    expect(fs.existsSync(task.worktreePath)).toBe(false);
+    // the work was dropped, not delivered: nothing is merged anywhere, so the branch is all that is left of it
+    expect([localHas(repo, 'feature'), remoteHas(bare, 'feature')]).toEqual([true, true]);
     expect((await app.engine.syncTasks()).changes).toEqual([]);
   });
 });

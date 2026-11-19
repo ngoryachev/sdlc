@@ -12,7 +12,8 @@ export interface RepoAuth { user: string | null; token: string | null }
 export interface GhAccount { login: string; active: boolean }
 export interface GhRepo { slug: string; description: string; isFork: boolean; isPrivate: boolean; pushedAt: string | null; defaultBranch: string; canPush: boolean }
 /** `reviewDecision` is GitHub's verdict over the whole PR: `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED`, or empty when no review happened. */
-export interface PrInfo { number: number; url: string; title: string; body: string; headRefName: string; baseRefName: string; state: string; isDraft: boolean; headRefOid?: string; reviewDecision?: string }
+/** `author`: the GitHub account that opened the PR; GitHub refuses an approval from that same account (422). */
+export interface PrInfo { number: number; url: string; title: string; body: string; headRefName: string; baseRefName: string; state: string; isDraft: boolean; headRefOid?: string; reviewDecision?: string; author?: { login: string } }
 export interface PrComment { id: string; author: string; body: string; path?: string; line?: number; url: string; reviewState?: string; createdAt: string; association?: string }
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
 export type ReviewEventName = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
@@ -38,6 +39,17 @@ export interface GitHub {
   /** Line comments must point at lines of the PR diff (the caller checks); if GitHub rejects them anyway, their text is kept in the review body. */
   postReview(o: { cwd: string; number: number; event: ReviewEventName; body: string; comments: ReviewLineComment[] }, auth: RepoAuth): Promise<void>;
   prFeedback(cwd: string, number: number, auth: RepoAuth): Promise<{ state: string; comments: PrComment[] }>;
+}
+
+/**
+ * GitHub rejects a `COMMENT` or `REQUEST_CHANGES` review with an empty body (422), even when it carries inline
+ * comments, so those events get a default text. `APPROVE` is the only verdict that may be submitted with nothing said.
+ */
+export function reviewBody(o: { event: ReviewEventName; body: string; comments: unknown[] }): string {
+  if (o.body.trim()) return o.body;
+  if (o.event === 'REQUEST_CHANGES') return 'Changes requested, see the comments.';
+  if (o.event === 'COMMENT' && o.comments.length) return 'See the comments.';
+  return o.body;
 }
 
 function ghEnv(token: string | null | undefined, clearTokens = false): NodeJS.ProcessEnv {
@@ -146,7 +158,7 @@ export class GhCli implements GitHub {
 
   async prView(cwd: string, number: number, auth: RepoAuth): Promise<PrInfo> {
     const repo = await this.prRepo(cwd, auth);
-    return JSON.parse(await gh(['pr', 'view', String(number), '--repo', repo, '--json', 'number,url,title,body,headRefName,baseRefName,state,isDraft,headRefOid,reviewDecision'], { token: auth.token })) as PrInfo;
+    return JSON.parse(await gh(['pr', 'view', String(number), '--repo', repo, '--json', 'number,url,title,body,headRefName,baseRefName,state,isDraft,headRefOid,reviewDecision,author'], { token: auth.token })) as PrInfo;
   }
 
   async prCreate(o: { cwd: string; head: string; base: string; title: string; body: string; draft: boolean }, auth: RepoAuth): Promise<{ url: string; number: number }> {
@@ -193,7 +205,7 @@ export class GhCli implements GitHub {
       try { await gh(['api', `repos/${repo}/pulls/${o.number}/reviews`, '--method', 'POST', '--input', tmp], { token: auth.token }); }
       finally { fs.rmSync(tmp, { force: true }); }
     };
-    const body = o.body || (o.event === 'REQUEST_CHANGES' ? 'Changes requested, see the comments.' : '');
+    const body = reviewBody(o);
     try { await send({ body, event: o.event, comments: o.comments.map((c) => ({ ...c, side: 'RIGHT' })) }); }
     catch (e) {
       // one comment outside the diff makes GitHub reject the whole review (422): keep every text, drop the anchors

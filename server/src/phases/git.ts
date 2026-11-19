@@ -53,8 +53,21 @@ export class GitPhaseExecutor implements PhaseExecutor<GitPhaseSpec> {
         const inline = chosen.filter((f) => f.file && f.line && anchors.get(f.file)?.has(f.line));
         const loose = chosen.filter((f) => !inline.includes(f));
         const body = [note, ...loose.map((f) => `${f.file ? `\`${f.file}${f.line ? `:${f.line}` : ''}\` ` : ''}${text(f)}`)].filter(Boolean).join('\n\n---\n\n');
-        await github.postReview({ cwd: task.repoPath, number: task.prNumber, event, body, comments: inline.map((f) => ({ path: f.file!, line: f.line!, body: text(f) })) }, auth);
-        pr.resultText = `published ${chosen.length} finding(s) on PR #${task.prNumber} as ${event} (${inline.length} inline, ${loose.length} in the review text) from ${hil.id}`;
+        const comments = inline.map((f) => ({ path: f.file!, line: f.line!, body: text(f) }));
+        let sent = event;
+        try { await github.postReview({ cwd: task.repoPath, number: task.prNumber, event, body, comments }, auth); }
+        catch (e) {
+          // the PR turned out to be sdlc's own (the same account reviews and opened it): GitHub refuses the verdict,
+          // but the review itself is worth keeping, so it goes out as a plain comment rather than failing the phase
+          const msg = e instanceof Error ? e.message : String(e);
+          if (event === 'COMMENT' || !/own pull request/i.test(msg)) throw e;
+          sent = 'COMMENT';
+          events.emit('engine.warning', { taskId: task.id, message: `GitHub refused ${event} on PR #${task.prNumber} (sdlc opened it itself); posted the review as a comment instead` }, { taskId: task.id, phaseRunId: pr.id });
+          // a comment review needs words of its own, and a clean review has none: the reason stands in for them
+          const why = `sdlc reviewed this pull request${chosen.length ? '' : ' and found nothing to report'}; the \`${event.toLowerCase()}\` verdict cannot be submitted on a pull request opened by the same account.`;
+          await github.postReview({ cwd: task.repoPath, number: task.prNumber, event: 'COMMENT', body: body || why, comments }, auth);
+        }
+        pr.resultText = `published ${chosen.length} finding(s) on PR #${task.prNumber} as ${sent}${sent === event ? '' : ` (${event} refused: own pull request)`} (${inline.length} inline, ${loose.length} in the review text) from ${hil.id}`;
       } else {
         const remote = task.baseRemote ?? 'origin';
         // a local-only base branch cannot be the base of a PR: publish it first

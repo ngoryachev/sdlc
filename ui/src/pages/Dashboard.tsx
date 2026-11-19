@@ -63,6 +63,7 @@ function NewTaskForm() {
   const [base, setBase] = useState('');
   const [pipeline, setPipeline] = useState('');
   const [reviewMode, setReviewMode] = useState<'conceptual' | 'line'>('conceptual');
+  const [approveOnClean, setApproveOnClean] = useState(true);
   const [prompt, setPrompt] = useState('');
   const [source, setSource] = useState<Source>('new');
   const [existingBranch, setExistingBranch] = useState('');
@@ -108,7 +109,7 @@ function NewTaskForm() {
       let baseRemote: string | null | undefined; let baseBranch: string | undefined;
       if (base && source !== 'pr') { const found = branches.find((b) => (b.remote ? `${b.remote}/${b.branch}` : b.branch) === base); if (found) { baseRemote = found.remote; baseBranch = found.branch; } else { const [r, ...rest] = base.split('/'); if (rest.length) { baseRemote = r; baseBranch = rest.join('/'); } else { baseRemote = null; baseBranch = r; } } }
       const t = await api.createTask({
-        prompt: prompt.trim() || undefined, repoPath, pipeline, baseRemote, baseBranch, reviewMode,
+        prompt: prompt.trim() || undefined, repoPath, pipeline, baseRemote, baseBranch, reviewMode, approveOnClean,
         branch: source === 'branch' ? existingBranch.trim() : undefined, prNumber: source === 'pr' ? parsedPr : undefined,
         startAt: from || undefined, stopAfter: to || undefined, modelOverrides: Object.keys(overrides).length ? overrides : undefined,
       });
@@ -148,6 +149,9 @@ function NewTaskForm() {
             <div className="grow"><label className="small muted">Pipeline</label><select value={pipeline} onChange={(e) => setPipeline(e.target.value)}>{pipelines.map((p) => <option key={p.name} value={p.name} title={p.description}>{p.name}</option>)}</select></div>
             <div><label className="small muted">Review</label><select value={reviewMode} onChange={(e) => setReviewMode(e.target.value as 'conceptual' | 'line')}><option value="conceptual">conceptual</option><option value="line">line-level</option></select></div>
           </div>
+          <label className="small muted" style={{ display: 'block', marginTop: 6 }} title="a review that found nothing above a nit is approved on GitHub without a checkpoint; only a task that reviews someone else’s pull request can approve">
+            <input type="checkbox" style={{ width: 'auto' }} checked={approveOnClean} onChange={(e) => setApproveOnClean(e.target.checked)} /> Approve on GitHub when the review is clean
+          </label>
           <div className="row" style={{ marginTop: 6 }}>
             <div className="grow"><label className="small muted">From phase</label>
               <select value={from} onChange={(e) => setFrom(e.target.value)}><option value="">first</option>{phases.map((p) => <option key={p.name} value={p.name}>{p.name}{p.type === 'hil' ? ' (checkpoint)' : ''}</option>)}</select></div>

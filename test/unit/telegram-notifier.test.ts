@@ -11,7 +11,8 @@ import { NO_ANSWER } from '../../server/src/engine/engine.js';
 async function cardFor(prefix: string, questions: ClarifyQuestion[]) {
   const dir = tmpDir(prefix);
   const repo = makeRepo(dir, { 'a.txt': 'x\n' });
-  const runner = new FakeRunner(() => ({ act: () => ({ structured: { questions, suggestedPrompt: 'p', assumptions: [] } }) }));
+  // without questions the refine checkpoint only opens when clarify failed: a clean clarify output is auto-approved
+  const runner = new FakeRunner(() => ({ act: () => (questions.length ? { structured: { questions, suggestedPrompt: 'p', assumptions: [] } } : { subtype: 'error_during_execution' as const }) }));
   const app = testApp(dir, runner);
   const task = await app.engine.createTask({ prompt: 'x', repoPath: repo, pipeline: 'standard', baseRemote: null });
   await app.engine.advance(task.id);

@@ -8,11 +8,14 @@ import { makeRemoteRepo, makeRepo, remoteHas, sh, testApp, tmpDir } from '../hel
 
 const PASS = { verdict: 'pass', summary: 'ok', commands: [], tests_added: ['a.test.js'], failures: [], notes: '' };
 
-/** implement writes the change, test writes a test file: two commits, so both commit phases really commit. */
-const workRunner = () => new FakeRunner((spec) => ({
+/**
+ * implement writes the change, test writes a test file: two commits, so both commit phases really commit.
+ * `questions`: a clarifying question keeps the refine checkpoint open (without one the pipeline answers it itself).
+ */
+const workRunner = (questions: { question: string; header: string }[] = []) => new FakeRunner((spec) => ({
   act: () => {
     const p = spec.prompt;
-    if (p.includes('Phase: clarify')) return { structured: { questions: [], suggestedPrompt: '', assumptions: [] } };
+    if (p.includes('Phase: clarify')) return { structured: { questions, suggestedPrompt: '', assumptions: [] } };
     if (p.includes('Phase: self_check')) return { text: 'checked' };
     if (p.includes('Phase: test')) { fs.writeFileSync(path.join(spec.cwd, 'a.test.js'), 'ok\n'); return { structured: PASS }; }
     if (p.includes('Phase: implement')) { fs.writeFileSync(path.join(spec.cwd, 'a.txt'), 'y\n'); return { text: 'implemented' }; }
@@ -66,7 +69,7 @@ describe('jira key: branch, commit subjects, PR title', () => {
   it('a key that only the refined prompt carries is picked up and renames the branch', async () => {
     const dir = tmpDir('sdlc-jira-refine-');
     const repo = makeRepo(dir, { 'a.txt': 'x\n' });
-    const app = testApp(dir, workRunner());
+    const app = testApp(dir, workRunner([{ question: 'Which flag?', header: 'Flag' }]));
 
     const t = await app.engine.createTask({ prompt: 'add a flag', repoPath: repo, pipeline: 'quick', baseRemote: null, stopAfter: 'commit_impl' });
     await app.engine.advance(t.id);

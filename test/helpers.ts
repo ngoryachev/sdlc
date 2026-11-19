@@ -46,6 +46,16 @@ export function commitOnRemote(bare: string, branch: string, file: string, conte
   sh(tmp, ['add', '-A']); sh(tmp, ['commit', '-q', '-m', `remote ${file}`]); sh(tmp, ['push', '-q', 'origin', branch]);
   fs.rmSync(tmp, { recursive: true, force: true });
 }
+/** A branch with one commit pushed to the remote and a pull request for it, as if a colleague opened it. */
+export function someonesPr(repo: string, gh: { openPr(head: string, base: string, title?: string, body?: string): number }, branch = 'feature'): number {
+  sh(repo, ['checkout', '-q', '-b', branch]);
+  fs.writeFileSync(path.join(repo, 'feature.txt'), 'one\ntwo\nthree\n');
+  sh(repo, ['add', '-A']); sh(repo, ['commit', '-q', '-m', `${branch}: work`]);
+  sh(repo, ['push', '-q', 'origin', branch]);
+  sh(repo, ['checkout', '-q', 'main']); sh(repo, ['branch', '-q', '-D', branch]);
+  return gh.openPr(branch, 'main', 'Add the feature', 'Adds feature.txt.');
+}
+
 export const remoteHas = (bare: string, branch: string) => { try { sh(bare, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]); return true; } catch { return false; } };
 export const remoteFile = (bare: string, branch: string, file: string) => { try { sh(bare, ['cat-file', '-e', `${branch}:${file}`]); return true; } catch { return false; } };
 export const localHas = (repo: string, branch: string) => { try { sh(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]); return true; } catch { return false; } };

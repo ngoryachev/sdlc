@@ -42,6 +42,7 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE tasks ADD COLUMN review_decision TEXT;
    ALTER TABLE tasks ADD COLUMN review_decision_sha TEXT;`,
   `ALTER TABLE tasks ADD COLUMN jira_key TEXT;`,
+  `ALTER TABLE tasks ADD COLUMN approve_on_clean INTEGER NOT NULL DEFAULT 1;`,
 ];
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS.length;

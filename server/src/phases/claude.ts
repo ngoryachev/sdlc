@@ -91,6 +91,9 @@ export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
       onStderr: (l) => { if (l.trim()) events.emit('engine.warning', { taskId: task.id, message: `[claude stderr] ${l.trim().slice(0, 500)}` }, { taskId: task.id, phaseRunId: pr.id }); },
     };
 
+    // the stop may have arrived while this phase caught up with the remote, before there was a handle to interrupt:
+    // the turn is where it starts costing, so it is not started at all
+    if (ctx.abortRequested) { await tw.close(); pr.endedAt = nowIso(); return { kind: 'aborted' }; }
     const handle = ctx.runner.start(runSpec);
     ctx.registerHandle(handle);
     let result: SDKResultMessage | null = null;

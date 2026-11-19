@@ -1,6 +1,6 @@
 import fs from 'node:fs';
-import type { ClarifyOutput, HilDecision, HilKind, HilPayload, HilRequest, PhaseRun, QaOutput, ReviewOutput, TestOutput } from '@sdlc/shared';
-import { HIL_DECISIONS } from '@sdlc/shared';
+import type { ClarifyOutput, HilDecision, HilKind, HilPayload, HilRequest, HilResponse, PhaseRun, QaOutput, ReviewOutput, TestOutput } from '@sdlc/shared';
+import { HIL_DECISIONS, defaultFindingActions, defaultReviewEvent } from '@sdlc/shared';
 import type { HilPhaseSpec } from '../pipeline/schema.js';
 import { diffAgainst } from '../git/git.js';
 import { newId, nowIso } from '../store/ids.js';
@@ -29,13 +29,72 @@ export class HilPhaseExecutor implements PhaseExecutor<HilPhaseSpec> {
     const { task, store, events } = ctx;
     const payload = await buildPayload(phase.hil, ctx);
     const title = `${task.title}`;
-    const summary = summaryFor(payload);
+    const auto = await autoAnswer(payload, ctx);
+    const summary = [summaryFor(payload), auto?.reason].filter(Boolean).join(' — ');
     const expiresAt = phase.timeout ? new Date(Date.now() + parseDuration(phase.timeout)).toISOString() : null;
     const hil = newHilRequest({ taskId: task.id, phaseRunId: pr.id, kind: phase.hil, title, summary, payload, expiresAt });
+    if (auto) {
+      // nothing for the human to decide: the checkpoint is stored already answered, so the phases that read it
+      // (publish looks up the latest approved review) still find it, and no card or notification is sent out
+      hil.status = 'answered'; hil.response = auto.response; hil.answeredVia = 'auto'; hil.answeredAt = nowIso();
+      store.insertHil(hil);
+      pr.resultText = auto.reason;
+      events.emit('hil.answered', { hil }, { taskId: task.id, phaseRunId: pr.id });
+      // the reason also reaches the task log as `task.updated`, but from the engine: only there has the answer been
+      // applied, so the payload carries the refined title and the renamed branch rather than the values it replaced
+      return { kind: 'wait_hil', hilId: hil.id, autoResponse: auto.response };
+    }
     store.insertHil(hil);
     events.emit('hil.requested', { hil }, { taskId: task.id, phaseRunId: pr.id });
     return { kind: 'wait_hil', hilId: hil.id };
   }
+}
+
+/**
+ * The answer a checkpoint with nothing to decide gets from the pipeline itself, or null when a human is needed.
+ * The decision comes from the same defaults the UI proposes (`defaultFindingActions` / `defaultReviewEvent`),
+ * so what is auto-approved is exactly what the human would have confirmed without touching anything.
+ */
+async function autoAnswer(payload: HilPayload, ctx: PhaseContext): Promise<{ response: HilResponse; reason: string } | null> {
+  if (payload.kind === 'approve_result') {
+    const findings = defaultFindingActions(payload, null);
+    const reviewEvent = defaultReviewEvent(payload);
+    // `approve` requires a real review verdict, so a failed, skipped or out-of-segment review still asks the human;
+    // a qa gate (focus 'qa') exists only when QA reported issues and is never auto-passed
+    if (reviewEvent !== 'approve') return null;
+    if (Object.values(findings).some((a) => a === 'fix' || a === 'post')) return null;
+    // approving someone else's pull request is a published act: a task may be told not to do it on its own
+    if (ctx.role === 'reviewer' && !ctx.task.approveOnClean) return null;
+    // only a reviewer with a pull request publishes the approval; an author's `approve` is forced to COMMENT, and
+    // without a PR `publish` has nothing to post on, so neither may claim it in the reason a human reads
+    const approves = ctx.role === 'reviewer' && payload.canPost;
+    // GitHub rejects an approval of your own pull request (422) and `publish` has no on_fail: an unattended
+    // auto-approve would fail the task, so this one checkpoint is left to the human, who can downgrade the event
+    if (approves && await isOwnPr(ctx)) return null;
+    const reason = `auto-approved: no finding needs fixing or publishing${approves ? '; approving the pull request' : ''}`;
+    return { response: { decision: 'approve', findings, reviewEvent }, reason };
+  }
+  if (payload.kind === 'refine_prompt') {
+    const clarify = (ctx.tpl.phases as Record<string, { structured?: unknown; status?: string } | undefined>).clarify;
+    if (clarify?.status !== 'succeeded' || !clarify.structured) return null;
+    if (payload.questions.length || payload.clarifyError) return null;
+    // no answers and no edits: respondHilInner's refine_prompt branch applies the suggested prompt, title and branch
+    return { response: { decision: 'approve' }, reason: 'auto-approved: clarify had no questions' };
+  }
+  return null;
+}
+
+/**
+ * Was the pull request opened by the very account sdlc reviews it with? Only a known match counts: when the account
+ * or the author cannot be read, the approval is still attempted, and `publish` falls back to a comment if GitHub says no.
+ */
+async function isOwnPr(ctx: PhaseContext): Promise<boolean> {
+  const { task } = ctx;
+  if (!task.prNumber) return false;
+  const auth = await ctx.accounts.forRepo(task.repoPath).catch(() => null);
+  if (!auth?.user) return false;
+  const pr = await ctx.github.prView(task.repoPath, task.prNumber, auth).catch(() => null);
+  return pr?.author?.login?.toLowerCase() === auth.user.toLowerCase();   // GitHub logins are case-insensitive
 }
 
 async function buildPayload(kind: HilPhaseSpec['hil'], ctx: PhaseContext): Promise<HilPayload> {

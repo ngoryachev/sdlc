@@ -1,4 +1,4 @@
-import type { PhaseRun, PipelineRun, Task, TaskRole } from '@sdlc/shared';
+import type { HilResponse, PhaseRun, PipelineRun, Task, TaskRole } from '@sdlc/shared';
 import type { PhaseSpec, PipelineSpec, RepoConfig } from '../pipeline/schema.js';
 import type { LoadedPipeline } from '../pipeline/loader.js';
 import type { SdlcConfig } from '../config/config.js';
@@ -14,7 +14,8 @@ export type PhaseOutcome =
   | { kind: 'ok' }
   | { kind: 'skipped' }
   | { kind: 'failed'; error: string }
-  | { kind: 'wait_hil'; hilId: string }
+  /** `autoResponse`: the checkpoint had nothing to decide and answered itself; the engine applies it and goes on. */
+  | { kind: 'wait_hil'; hilId: string; autoResponse?: HilResponse }
   | { kind: 'paused'; reason: string }
   | { kind: 'aborted' };
 
@@ -37,8 +38,8 @@ export interface PhaseContext {
   tpl: TemplateContext;
   /** Feedback to deliver by resuming this phase's previous session (set when re-entering via back_to / request_changes). */
   resumeFeedback: string | null;
-  /** True when abort() was requested for this task; executors use it to classify an interrupted run. */
-  abortRequested: boolean;
+  /** True when abort() was requested for this task; read live, so a phase can also check it before expensive work. */
+  readonly abortRequested: boolean;
   /** Builds the canUseTool bridge (AskUserQuestion → HIL) for a phase run. */
   canUseTool?: (pr: PhaseRun) => CanUseTool | undefined;
   /** Register a live handle so the engine can pause/abort/inject. */
