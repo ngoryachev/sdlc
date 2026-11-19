@@ -107,7 +107,7 @@ describe('telegram pr_open message follows who owns the PR', () => {
     expect(msg.button).toBe(true);
   });
 
-  it('an author task on a pre-existing PR reports fixes, not an opening', async () => {
+  it('an author task on a pre-existing PR reports no opening (and no push it never made)', async () => {
     const dir = tmpDir('sdlc-tg-existing-');
     const { repo, bare } = makeRemoteRepo(dir);
     const gh = new FakeGitHub(bare);
@@ -121,7 +121,7 @@ describe('telegram pr_open message follows who owns the PR', () => {
     expect(app.engine.roleOfTask(t.id)).toBe('author');
 
     const msg = await notifyPrOpen(app, task);
-    expect(msg.text).toBe(`🔧 <b>${task.title}</b> → fixes pushed to PR #${n}\n${task.prUrl}`);
+    expect(msg.text).toBe(`🔧 <b>${task.title}</b> → attached to PR #${n}\n${task.prUrl}`);   // auto has no push phase
     expect(msg.button).toBe(true);
   });
 });
@@ -193,6 +193,24 @@ describe('telegram pr_open wording: the pipeline pr phase and the untouched stat
 
     const msg = await notifyPrOpen(app, task);
     expect(msg.text).toBe(`🔧 <b>${task.title}</b> → fixes pushed to PR #${n}\n${task.prUrl}`);
+    expect(msg.button).toBe(true);
+  });
+
+  it('a fix-pr task that has not pushed yet is only attached to the PR', async () => {
+    const dir = tmpDir('sdlc-tg-fixpr-');
+    const { repo, bare } = makeRemoteRepo(dir, { 'a.txt': 'x\n' });
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, gh);
+    const app = testApp(dir, quickRunner(), { max_loops: 0 }, gh);
+
+    // wait_for_feedback: the task is set to pr_open at creation, before any phase has run
+    const t = await app.engine.createTask({ repoPath: repo, pipeline: 'fix-pr', prNumber: n });
+    const task = app.store.getTask(t.id)!;
+    expect(task.prNumber).toBe(n);
+    expect(app.engine.roleOfTask(t.id)).toBe('author');
+
+    const msg = await notifyPrOpen(app, task);
+    expect(msg.text).toBe(`🔧 <b>${task.title}</b> → attached to PR #${n}\n${task.prUrl}`);
     expect(msg.button).toBe(true);
   });
 

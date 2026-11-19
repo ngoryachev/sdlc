@@ -62,16 +62,21 @@ export class TelegramNotifier implements Notifier {
    */
   private prOpenLine(task: Task): { icon: string; text: string } {
     const pr = task.prNumber ? `PR #${task.prNumber}` : 'the PR';
-    const events = this.app.events.ofType(task.id, ['git.pr_created', 'task.status']);
+    const events = this.app.events.ofType(task.id, ['git.pr_created', 'git.pushed', 'task.status']);
     const ownPr = events.some((e) => e.type === 'git.pr_created'
       && (task.prNumber == null || (e.payload as { number: number }).number === task.prNumber));
+    // a task that waits for review comments (fix-pr) is set to pr_open at creation, before any phase has run:
+    // until it has pushed, nothing of its own is in that pull request yet
+    const author = events.some((e) => e.type === 'git.pushed')
+      ? { icon: '🔧', text: `fixes pushed to ${pr}` }
+      : { icon: '🔧', text: `attached to ${pr}` };
     if (ownPr) {
       // the transition is already persisted when the hub fans it out, so the first pr_open means exactly one such event
       const opens = events.filter((e) => e.type === 'task.status' && (e.payload as { to: string }).to === 'pr_open').length;
-      return opens <= 1 ? { icon: '🎉', text: 'pr_open' } : { icon: '🔧', text: `fixes pushed to ${pr}` };
+      return opens <= 1 ? { icon: '🎉', text: 'pr_open' } : author;
     }
     if (this.app.engine.roleOfTask(task.id) === 'reviewer') return { icon: '✅', text: `review done, tracking ${pr}` };
-    return { icon: '🔧', text: `fixes pushed to ${pr}` };
+    return author;
   }
 
   private async poll() {
