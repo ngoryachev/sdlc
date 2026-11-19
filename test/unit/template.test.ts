@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderTemplate } from '../../server/src/pipeline/template.js';
+import { renderBody, renderTemplate } from '../../server/src/pipeline/template.js';
 import { evalExpr } from '../../server/src/pipeline/expr.js';
 
 describe('renderTemplate', () => {
@@ -11,6 +11,51 @@ describe('renderTemplate', () => {
   it('throws on unknown unless optional', () => {
     expect(() => renderTemplate('{{nope.x}}', ctx)).toThrow(/unknown variable/);
     expect(renderTemplate('a{{nope.x?}}b', ctx)).toBe('ab');
+  });
+});
+
+/**
+ * The pull request body quotes free-form text verbatim, so dropping an empty link line must never reach into it: a
+ * blank line inside a fenced code block of the prompt is content (two between two functions is what PEP 8 asks for).
+ */
+describe('renderBody', () => {
+  const OWN = ['task.jira_url', 'task.branch_url'];
+  const tpl = ['prelude', '', '{{task.prompt}}', '', '{{task.jira_url?}}', '{{task.branch_url?}}', '', '---', 'footer', ''].join('\n');
+  const CODE = ['```python', 'def f():', '    pass', '', '', 'def g():', '    pass', '```'].join('\n');
+  const ctx = (jira: string, branch: string, prompt = 'do x') => ({ task: { prompt, jira_url: jira, branch_url: branch } });
+  const withoutLinks = ['prelude', '', 'do x', '', '---', 'footer', ''].join('\n');
+
+  it('drops the whole block and its separator when neither link has anything to show', () => {
+    expect(renderBody(tpl, ctx('', ''), OWN)).toBe(withoutLinks);
+    // byte-identical to the same template without those lines at all
+    expect(renderBody(tpl.replace('{{task.jira_url?}}\n{{task.branch_url?}}\n\n', ''), ctx('', ''), OWN)).toBe(withoutLinks);
+  });
+
+  it('keeps the block, blank lines and all, when a single link has something to show', () => {
+    expect(renderBody(tpl, ctx('J', ''), OWN)).toBe(['prelude', '', 'do x', '', 'J', '', '---', 'footer', ''].join('\n'));
+    expect(renderBody(tpl, ctx('', 'B'), OWN)).toBe(['prelude', '', 'do x', '', 'B', '', '---', 'footer', ''].join('\n'));
+    expect(renderBody(tpl, ctx('J', 'B'), OWN)).toBe(['prelude', '', 'do x', '', 'J', 'B', '', '---', 'footer', ''].join('\n'));
+  });
+
+  it('never touches the text it substitutes: blank lines inside a quoted code block survive', () => {
+    for (const links of [['', ''], ['J', 'B']] as const) {
+      const body = renderBody(tpl, ctx(links[0], links[1], CODE), OWN);
+      expect(body).toContain(CODE);
+      expect(body).toContain('    pass\n\n\ndef g():');
+    }
+  });
+
+  it('leaves every other optional line rendering as the empty line it always did', () => {
+    const other = ['a', '', '{{task.nothing?}}', '', 'b'].join('\n');
+    expect(renderBody(other, ctx('', ''), OWN)).toBe(renderTemplate(other, ctx('', '')));
+    // a line that mixes a named variable with other text is not the block's either
+    const mixed = ['a', '', 'Jira: {{task.jira_url?}}', '', 'b'].join('\n');
+    expect(renderBody(mixed, ctx('', ''), OWN)).toBe(['a', '', 'Jira: ', '', 'b'].join('\n'));
+  });
+
+  it('takes the preceding blank line when the block ends the template', () => {
+    expect(renderBody(['a', '', '{{task.jira_url?}}'].join('\n'), ctx('', ''), OWN)).toBe('a');
+    expect(renderBody(['a', '', '{{task.jira_url?}}'].join('\n'), ctx('J', ''), OWN)).toBe('a\n\nJ');
   });
 });
 

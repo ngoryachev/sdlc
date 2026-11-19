@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FakeRunner } from '../fakes/fake-runner.js';
 import { FakeGitHub } from '../fakes/fake-github.js';
-import { makeRemoteRepo, makeRepo, sh, testApp, tmpDir } from '../helpers.js';
+import { taskLinks } from '../../server/src/engine/links.js';
+import { makeRemoteRepo, makeRepo, remoteHas, sh, testApp, tmpDir } from '../helpers.js';
 
 const PASS = { verdict: 'pass', summary: 'ok', commands: [], tests_added: ['a.test.js'], failures: [], notes: '' };
 
@@ -238,6 +239,26 @@ describe('jira key: the links in the pull request body', () => {
     const body = gh.prs.get(1)!.body;
     expect(body).toContain('https://x.atlassian.net/browse/ABC-123');     // the trailing slash of the config value is normalised away
     expect(body).toContain(`https://github.com/me/shop/tree/${after.branch}`);
+  });
+
+  /** The branch link must not outlive the branch; this is the flow that deletes it, so the event the link reads has to be there. */
+  it('drops the branch link once landing has deleted the branch', async () => {
+    const dir = tmpDir('sdlc-jira-links-landed-');
+    const { repo, bare } = makeSlugRepo(dir, { 'a.txt': 'x\n' });
+    const gh = new FakeGitHub(bare);
+    const app = testApp(dir, autoRunner(), { repos: [{ name: 'shop', path: repo, gh_user: 'tester', jira_url: 'https://x.atlassian.net' }] }, gh);
+
+    const t = await app.engine.createTask({ prompt: 'ABC-123 add a flag', repoPath: repo, pipeline: 'auto', baseRemote: 'origin' });
+    await app.engine.advance(t.id);
+    const withPr = await app.engine.createPrForTask(t.id, { title: 'Add a flag' });
+    expect(taskLinks(app, withPr).branchUrl).toBe(`https://github.com/me/shop/tree/${withPr.branch}`);
+
+    await app.engine.landTask(t.id, 'merge');
+    const landed = app.store.getTask(t.id)!;
+    expect(landed.status).toBe('merged');
+    expect(remoteHas(bare, landed.branch)).toBe(false);
+    expect(taskLinks(app, landed).branchUrl).toBeNull();      // the Telegram card for the merge would have offered a 404
+    expect(taskLinks(app, landed).jiraUrl).toBe('https://x.atlassian.net/browse/ABC-123');   // the issue outlives the branch
   });
 
   it('leaves the body exactly as it was for a repository without jira_url and a prompt without a key', async () => {

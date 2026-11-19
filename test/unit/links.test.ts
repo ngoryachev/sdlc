@@ -87,6 +87,31 @@ describe('taskLinks', () => {
     expect(taskLinks(app, app.store.getTask(task.id)!).branchUrl).toBe(`https://github.com/me/shop/tree/${task.branch}`);
   });
 
+  it('retracts the branch link once sdlc has swept the branch, and restores it on a new push', async () => {
+    const { app, task } = await setup();
+    app.events.emit('git.pushed', { taskId: task.id, branch: task.branch }, { taskId: task.id });
+    expect(taskLinks(app, task).branchUrl).not.toBeNull();
+
+    // delivery (land, close --delete-branch, cleanup of an aborted task) deletes the branch: the link would be a 404
+    app.events.emit('task.worktree', { taskId: task.id, action: 'removed', branchDeleted: true }, { taskId: task.id });
+    expect(branchPushed(app.events, task)).toBe(false);
+    expect(taskLinks(app, task).branchUrl).toBeNull();
+
+    // a worktree removal that kept the branch says nothing either way
+    app.events.emit('git.pushed', { taskId: task.id, branch: task.branch }, { taskId: task.id });
+    app.events.emit('task.worktree', { taskId: task.id, action: 'removed', branchDeleted: false }, { taskId: task.id });
+    expect(taskLinks(app, task).branchUrl).toBe(`https://github.com/me/shop/tree/${task.branch}`);
+  });
+
+  it('retracts the branch link of a landed task, whose pull request is no reason to keep it', async () => {
+    const { app, task } = await setup();
+    app.store.updateTask({ ...task, prNumber: 7, status: 'merged' });
+    const landed = app.store.getTask(task.id)!;
+    expect(taskLinks(app, landed).branchUrl).not.toBeNull();
+    app.events.emit('task.worktree', { taskId: task.id, action: 'removed', branchDeleted: true }, { taskId: task.id });
+    expect(taskLinks(app, landed).branchUrl).toBeNull();
+  });
+
   it('gives no Jira link when the configured repository is a different one', async () => {
     const { app, task } = await setup({ jiraUrl: 'https://x.atlassian.net' });
     app.config.repos = [{ name: 'other', path: '/somewhere/else', jira_url: 'https://y.atlassian.net', files: [] }];

@@ -39,13 +39,20 @@ export function branchTreeUrl(slug: string | null | undefined, branch: string | 
 }
 
 /**
- * Whether the branch exists on the remote, as far as sdlc knows without asking git: it pushed it at some point, or the
- * task hangs on a pull request (whose head branch is on GitHub by definition). The same source the Telegram pr_open
- * wording reads.
+ * Whether the branch is on the remote, as far as sdlc knows without asking git: it pushed it at some point, or the task
+ * hangs on a pull request (whose head branch is on GitHub by definition) — and sdlc has not swept it since. Delivery
+ * (land, close with --delete-branch, the cleanup of an aborted task) deletes the branch, and a link to a branch that is
+ * gone is a 404, so a `task.worktree` event reporting the deletion retracts it; a later push brings it back, which is
+ * why the history is walked in order. `branchDeleted` is also set when only the local copy went while the remote
+ * survived: hiding a link that would have worked beats offering one that does not. Same source as the pr_open wording.
  */
 export function branchPushed(events: Pick<EventBus, 'ofType'>, task: Task): boolean {
-  if (task.prNumber != null) return true;
-  return events.ofType(task.id, ['git.pushed']).some((e) => (e.payload as { branch?: string }).branch === task.branch);
+  let onRemote = task.prNumber != null;
+  for (const e of events.ofType(task.id, ['git.pushed', 'task.worktree'])) {
+    if (e.type === 'git.pushed') { if ((e.payload as { branch?: string }).branch === task.branch) onRemote = true; }
+    else if ((e.payload as { branchDeleted?: boolean }).branchDeleted) onRemote = false;
+  }
+  return onRemote;
 }
 
 /** Both links of a task, each null unless everything it needs is there. */
@@ -64,8 +71,5 @@ export function linkTemplateVars(d: LinkDeps, task: Task): { jira_url: string; b
   return { jira_url: jiraUrl ?? '', branch_url: branchUrl ?? '' };
 }
 
-/**
- * A rendered pull request body reads as if the optional link lines were never in the template when they produced
- * nothing: without this, a repository with no `jira_url` would get a blank line where the links would have been.
- */
-export function collapseBlankLines(body: string): string { return body.replace(/\n{3,}/g, '\n\n'); }
+/** The template variables that own a line of their own in a body template (see `renderBody`). */
+export const LINK_VARS = ['task.jira_url', 'task.branch_url'];

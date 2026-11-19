@@ -14,7 +14,7 @@ import { findPipelineFile, loadPipeline, phaseIndex, resolvePipelineFile, roleOf
 import type { PhaseSpec, PipelineSpec, RepoConfig } from '../pipeline/schema.js';
 import { PipelineSchema } from '../pipeline/schema.js';
 import { evalExpr } from '../pipeline/expr.js';
-import { renderTemplate } from '../pipeline/template.js';
+import { renderBody, renderTemplate } from '../pipeline/template.js';
 import { jiraKeyFrom, withJiraKey } from './jira.js';
 import { adoptWorktree, branchNameFor, createWorktree, defaultBase, deleteLocalBranch, deleteRemoteBranch, diffAgainst, fetchBranch, git, isAncestor, isSdlcBranch, mergeLocally, push, pushBranch, recreateWorktree, refExists, remoteHasBranch, remotes, removeWorktree, renameBranch, repoToplevel, slugFromRemote, syncBranchWithRemote, syncLocalBase, taskCommitCount } from '../git/git.js';
 import { TRUSTED_ASSOCIATIONS, type GitHub, type MergeMethod, type PrInfo, type RepoAuth } from '../git/gh.js';
@@ -28,7 +28,7 @@ import { ShellPhaseExecutor } from '../phases/shell.js';
 import { GitPhaseExecutor } from '../phases/git.js';
 import { HilPhaseExecutor, newHilRequest } from '../phases/hil.js';
 import { buildTemplateContext } from './context.js';
-import { collapseBlankLines, taskLinks } from './links.js';
+import { LINK_VARS, taskLinks } from './links.js';
 import { HilBroker } from './hil-broker.js';
 
 /** Stands in for a clarifying answer the developer deliberately did not give. Defers to the prompt body: clarify writes `suggestedPrompt` so a question can be answered inline there instead. */
@@ -504,8 +504,8 @@ export class Engine {
       try {
         const { spec, loaded } = snapshot(run);
         const tpl = buildTemplateContext({ task, run, spec, repoConfig: loadRepoConfig(task.repoPath), store, links: this.links(task) });
-        // an absent optional link line leaves a blank line behind: collapsing runs of them keeps a body without links the one of before
-        body = collapseBlankLines(renderTemplate(fs.readFileSync(resolvePipelineFile(loaded, 'prompts/pr_body.md'), 'utf8'), tpl));
+        // renderBody, not renderTemplate: a link line with nothing to show disappears instead of leaving a blank line
+        body = renderBody(fs.readFileSync(resolvePipelineFile(loaded, 'prompts/pr_body.md'), 'utf8'), tpl, LINK_VARS);
       } catch { /* keep the minimal body */ }
     }
     const stacked = this.childTasks(task, true).filter((c) => c.status === 'merged');
