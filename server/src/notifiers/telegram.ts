@@ -25,14 +25,14 @@ export class TelegramNotifier implements Notifier {
   async onHilCreated(req: HilRequest, task: Task, link: string) {
     if (!this.o.chatId) return;
     const text = `<b>[${esc(req.kind)}]</b> ${esc(task.title)}\n<i>${esc(req.summary)}</i>`;
-    // refine with open questions needs typed answers: only the web UI can do that
-    const needsWeb = req.payload.kind === 'refine_prompt' && req.payload.questions.length > 0;
+    // approving refine from here sends no answers: legal (each question falls to the implementer), but the label has to say so, as only the web UI can type them
+    const noAnswers = req.payload.kind === 'refine_prompt' && req.payload.questions.length > 0;
     // a phase stopped by its cap is worth continuing, not restarting: its work so far is in the session
     const capped = req.payload.kind === 'escalation' && (req.payload.resultSubtype === 'error_max_budget_usd' || req.payload.resultSubtype === 'error_max_turns');
-    const positive = needsWeb ? undefined : capped ? 'resume' : req.allowedDecisions.find((d) => ['approve', 'allow', 'retry'].includes(d));
+    const positive = capped ? 'resume' : req.allowedDecisions.find((d) => ['approve', 'allow', 'retry'].includes(d));
     const negative = req.allowedDecisions.find((d) => ['abort', 'deny'].includes(d));
     const row: { text: string; callback_data?: string; url?: string }[] = [];
-    if (positive) row.push({ text: `✅ ${positive}`, callback_data: `h:${req.id}:${positive}` });
+    if (positive) row.push({ text: `✅ ${positive}${noAnswers && positive === 'approve' ? ' (no answers)' : ''}`, callback_data: `h:${req.id}:${positive}` });
     if (req.allowedDecisions.includes('skip')) row.push({ text: '⏭ skip', callback_data: `h:${req.id}:skip` });
     if (negative) row.push({ text: `✖ ${negative}`, callback_data: `h:${req.id}:${negative}` });
     const withToken = this.o.token ? (link.includes('?') ? `${link}&t=${this.o.token}` : `${link}?t=${this.o.token}`) : link;
@@ -50,8 +50,33 @@ export class TelegramNotifier implements Notifier {
 
   async onTaskStatus(task: Task, _from: string, to: string, link: string) {
     if (!this.o.chatId) return;
-    const icon = to === 'succeeded' || to === 'pr_open' || to === 'merged' ? '🎉' : to === 'failed' ? '💥' : to === 'aborted' || to === 'closed' ? '🛑' : '⏸';
-    await this.api('sendMessage', { chat_id: this.o.chatId, parse_mode: 'HTML', text: `${icon} <b>${esc(task.title)}</b> → ${to}${task.prUrl ? `\n${task.prUrl}` : ''}`, reply_markup: { inline_keyboard: [[{ text: '🔗 Open', url: this.o.token ? `${link}?t=${this.o.token}` : link }]] } });
+    const { icon, text } = to === 'pr_open' ? this.prOpenLine(task)
+      : { icon: to === 'succeeded' || to === 'merged' ? '🎉' : to === 'failed' ? '💥' : to === 'aborted' || to === 'closed' ? '🛑' : '⏸', text: to };
+    await this.api('sendMessage', { chat_id: this.o.chatId, parse_mode: 'HTML', text: `${icon} <b>${esc(task.title)}</b> → ${text}${task.prUrl ? `\n${task.prUrl}` : ''}`, reply_markup: { inline_keyboard: [[{ text: '🔗 Open', url: this.o.token ? `${link}?t=${this.o.token}` : link }]] } });
+  }
+
+  /**
+   * Who owns the pull request decides the wording: only a PR this task opened itself is news, a reviewer task merely
+   * starts tracking somebody else's, and an author task on an existing PR (or on its own PR again, after a round of
+   * requested changes) has pushed fixes into it. Read from the task's own history, not from the pipeline name.
+   */
+  private prOpenLine(task: Task): { icon: string; text: string } {
+    const pr = task.prNumber ? `PR #${task.prNumber}` : 'the PR';
+    const events = this.app.events.ofType(task.id, ['git.pr_created', 'git.pushed', 'task.status']);
+    const ownPr = events.some((e) => e.type === 'git.pr_created'
+      && (task.prNumber == null || (e.payload as { number: number }).number === task.prNumber));
+    // a task that waits for review comments (fix-pr) is set to pr_open at creation, before any phase has run:
+    // until it has pushed, nothing of its own is in that pull request yet
+    const author = events.some((e) => e.type === 'git.pushed')
+      ? { icon: '🔧', text: `fixes pushed to ${pr}` }
+      : { icon: '🔧', text: `attached to ${pr}` };
+    if (ownPr) {
+      // the transition is already persisted when the hub fans it out, so the first pr_open means exactly one such event
+      const opens = events.filter((e) => e.type === 'task.status' && (e.payload as { to: string }).to === 'pr_open').length;
+      return opens <= 1 ? { icon: '🎉', text: 'pr_open' } : author;
+    }
+    if (this.app.engine.roleOfTask(task.id) === 'reviewer') return { icon: '✅', text: `review done, tracking ${pr}` };
+    return author;
   }
 
   private async poll() {

@@ -48,18 +48,55 @@ export function HilPage() {
   const [commentActions, setCommentActions] = useState<Record<string, 'fix' | 'skip'>>({});
   const [reviewEvent, setReviewEvent] = useState<ReviewEvent>('comment');
   const [busy, setBusy] = useState(false);
+  // the transition between checkpoints is made visible: the answer is confirmed for a second, then the next card
+  // animates in and stays frozen for a moment, so a keypress meant for the answered card cannot land on it
+  const [confirm, setConfirm] = useState<{ title: string; decision: string; next: string } | null>(null);
+  /** the card a response or j/k navigates to: it must not accept a keypress the moment it lands */
+  const [armedNext, setArmedNext] = useState<{ id: string } | null>(null);
+  /** the card whose freeze window is running */
+  const [freeze, setFreeze] = useState<{ id: string } | null>(null);
+  const confirmTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (confirmTimer.current !== null) clearTimeout(confirmTimer.current); }, []);
   const readingLang = useStore((s) => s.readingLang);
   const setReadingLang = useStore((s) => s.setReadingLang);
   // translation of this checkpoint: screen only, never saved and never part of the response
   const [tr, setTr] = useState<Record<string, string> | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const [translating, setTranslating] = useState(false);
-  useEffect(() => { void api.hilOne(id).then((r) => { setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultFindingActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? (r.status === 'open' ? defaultReviewEvent(r.payload) : 'comment')); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => toast(e.message, 'error')); }, [id]);
-  useEffect(() => { if (h && h.status === 'open' && !openList.some((x) => x.id === h.id)) void api.hilOne(id).then(setH); }, [openList, h?.id]);
-  useEffect(() => { setTr(null); setShowOriginal(false); setTranslating(false); }, [readingLang]);
-  // j/k can move to the next checkpoint while a translation is in flight: that answer belongs to the old one
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  const loadGen = useRef(0);
+  // j/k and a response can move on while a request for this checkpoint is in flight: its answer belongs to the old one
   const shownRef = useRef({ id, lang: readingLang });
   useEffect(() => { shownRef.current = { id, lang: readingLang }; }, [id, readingLang]);
+  // a row for an id that is no longer shown is dropped: an older fetch resolving last must not strand the page on
+  // a checkpoint the human has left, and a failed one says so instead of loading for ever
+  useEffect(() => { const gen = ++loadGen.current; setLoadErr(null); void api.hilOne(id).then((r) => { if (gen !== loadGen.current) return; setH(r); setEdited({}); setComment(''); setAnswers({}); setActions(defaultFindingActions(r.payload, r.response)); setCommentActions(r.payload.kind === 'pr_feedback' ? Object.fromEntries(r.payload.comments.map((c) => [c.id, r.response?.comments?.[c.id] ?? 'fix'])) : {}); setReviewEvent(r.response?.reviewEvent ?? (r.status === 'open' ? defaultReviewEvent(r.payload) : 'comment')); setTr(null); setShowOriginal(false); setTranslating(false); }).catch((e) => { if (gen !== loadGen.current) return; setArmedNext(null); setLoadErr((e as Error).message); toast((e as Error).message, 'error'); }); }, [id, reload]);
+  useEffect(() => { if (h && h.status === 'open' && !openList.some((x) => x.id === h.id)) void api.hilOne(id).then((r) => { if (shownRef.current.id === r.id) setH(r); }); }, [openList, h?.id]);
+  useEffect(() => { setTr(null); setShowOriginal(false); setTranslating(false); }, [readingLang]);
+  // the next checkpoint is chosen a second after the response: from the queue as it is then, not as it was back then
+  const openListRef = useRef(openList);
+  useEffect(() => { openListRef.current = openList; }, [openList]);
+  // the window starts when the armed row is on screen, not when the id changes: a slow fetch must not eat it
+  useEffect(() => {
+    if (!armedNext) return;
+    if (armedNext.id !== id) { setArmedNext(null); return; }   // the user went elsewhere (Back, a notification): void
+    if (!h || h.id !== id) return;                            // the armed card has not landed yet
+    setArmedNext(null);
+    setFreeze({ id });
+  }, [armedNext, h?.id, id]);
+  // its own effect: re-running the one above must not cancel the window it has just opened
+  useEffect(() => {
+    if (!freeze) return;
+    const t = setTimeout(() => setFreeze(null), 700);
+    return () => clearTimeout(t);
+  }, [freeze]);
+  /** the card on screen has just landed from a response or j/k and is not live yet; both halves are keyed by id,
+   *  so leaving mid-window releases the card instead of latching it */
+  const fresh = freeze?.id === id || armedNext?.id === id;
+  // `h` for another id means no card is on screen (loading, or the error card): there is nothing to answer, and the
+  // hotkeys must not reach the checkpoint the human has left — rendering refuses the same thing below
+  const locked = busy || fresh || h?.id !== id;
 
   const translate = async () => {
     if (!h) return;
@@ -78,13 +115,11 @@ export function HilPage() {
   /** Translated text where there is one, the English original otherwise; identity before Translate is pressed. */
   const t = (s: string) => (tr && !showOriginal ? tr[s] ?? s : s);
 
-  const unanswered = h?.payload.kind === 'refine_prompt' ? h.payload.questions.filter((q) => !answers[q.question]?.trim()).map((q) => q.header) : [];
   const counts = { fix: 0, post: 0, skip: 0 };
   for (const a of Object.values(actions)) counts[a]++;
   const granular = h?.payload.kind === 'approve_result';
   const respond = async (decision: HilDecision) => {
-    if (!h) return;
-    if (decision === 'approve' && unanswered.length) { toast(`answer first: ${unanswered.join(', ')}`, 'error'); return; }
+    if (!h || h.id !== id || busy || confirm) return;
     // at a result checkpoint the items decide: anything marked fix sends the run back, otherwise it goes on
     if (granular && decision !== 'abort') decision = counts.fix ? 'request_changes' : 'approve';
     if (decision === 'request_changes' && !comment.trim() && !counts.fix) { toast('a comment is required for request changes', 'error'); return; }
@@ -93,34 +128,49 @@ export function HilPage() {
       findings: granular ? actions : undefined, comments: h.payload.kind === 'pr_feedback' ? commentActions : undefined, reviewEvent: h.payload.kind === 'approve_result' && h.payload.role === 'reviewer' ? reviewEvent : undefined };
     try {
       const r = await api.respond(h.id, body);
-      setH({ ...h, ...r });
-      toast(`${h.kind}: ${decision} → ${h.next[decision] ?? 'ok'}`);
-      const next = openList.find((x) => x.id !== h.id);
-      nav(next ? `/hil/${next.id}` : '/hil');
+      if (shownRef.current.id === h.id) setH({ ...h, ...r });
+      setConfirm({ title: h.task.title, decision: label(decision), next: h.next[decision] ?? 'ok' });
+      confirmTimer.current = window.setTimeout(() => {
+        confirmTimer.current = null;
+        setConfirm(null);
+        if (shownRef.current.id !== h.id) return;   // they went somewhere else in that second: leave them there
+        const next = openListRef.current.find((x) => x.id !== h.id);
+        if (next) setArmedNext({ id: next.id });
+        nav(next ? `/hil/${next.id}` : '/hil');
+      }, 1000);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 409) { toast(`already answered${(e.body as { answeredVia?: string }).answeredVia ? ` via ${(e.body as { answeredVia?: string }).answeredVia}` : ''}`, 'error'); void api.hilOne(id).then(setH); }
+      if (e instanceof ApiError && e.status === 409) { toast(`already answered${(e.body as { answeredVia?: string }).answeredVia ? ` via ${(e.body as { answeredVia?: string }).answeredVia}` : ''}`, 'error'); void api.hilOne(id).then((r) => { if (shownRef.current.id === r.id) setH(r); }); }
       else toast((e as Error).message, 'error');
     } finally { setBusy(false); }
   };
 
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
+      // a confirmation on screen or a fresh card swallows the keypress instead of queueing it
+      if (confirm || locked) return;
       const tag = (e.target as HTMLElement).tagName;
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { const d = h?.allowedDecisions.find((x) => ['approve', 'answer', 'allow', 'retry'].includes(x)); if (d) void respond(d); return; }
       if (tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') return;
       if (!h || h.status !== 'open') return;
       if (e.key === 'a' && h.allowedDecisions.includes('approve')) void respond('approve');
       if (e.key === 'r' && h.allowedDecisions.includes('request_changes')) document.getElementById('hil-comment')?.focus();
-      if (e.key === 'j' || e.key === 'k') { const i = openList.findIndex((x) => x.id === h.id); const n = openList[i + (e.key === 'j' ? 1 : -1)]; if (n) nav(`/hil/${n.id}`); }
+      if (e.key === 'j' || e.key === 'k') { const i = openList.findIndex((x) => x.id === h.id); const n = openList[i + (e.key === 'j' ? 1 : -1)]; if (n) { setArmedNext({ id: n.id }); nav(`/hil/${n.id}`); } }
     };
     window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k);
-  }, [h, comment, edited, answers, openList]);
+  }, [h, comment, edited, answers, openList, confirm, locked]);
 
-  if (!h) return <div className="muted">loading…</div>;
+  if (confirm) return (
+    <div className="card hil-confirm" role="status"><span className="ok" aria-hidden="true">✓</span><span>{confirm.title}</span><span className="muted">— {confirm.decision} → {confirm.next}</span></div>
+  );
+  if (loadErr && (!h || h.id !== id)) return (
+    <div className="card"><div className="muted">could not load this checkpoint: {loadErr}</div><div style={{ marginTop: 8 }}><button onClick={() => setReload((n) => n + 1)}>Retry</button></div></div>
+  );
+  // the card of the previous checkpoint is never shown for the new id: that is what makes an answer land visibly
+  if (!h || h.id !== id) return <div className="muted">loading…</div>;
   const p = h.payload;
   return (
-    <div className="card">
-      <div className="row"><span className="kind">{h.kind}</span><h2 className="grow" style={{ margin: 0 }}><Link href={`/tasks/${h.taskId}`}>{h.task.title}</Link></h2><span className="small muted">{ago(h.createdAt)} ago</span></div>
+    <div className="card hil-card" key={h.id}>
+      <div className="row"><span className="kind">{h.kind}</span><h2 className="grow hil-title" style={{ margin: 0 }}><Link href={`/tasks/${h.taskId}`}>{h.task.title}</Link></h2><span className="small muted">{ago(h.createdAt)} ago</span></div>
       <div className="muted" style={{ marginBottom: 10 }}>{t(h.summary)}</div>
       <div className="row small" style={{ marginBottom: 10, gap: 6, flexWrap: 'wrap' }}>
         <select style={{ width: 'auto' }} value={readingLang} disabled={translating} onChange={(e) => setReadingLang(e.target.value as TranslateLang)}>{TRANSLATE_LANGS.map((l) => <option key={l} value={l}>{TRANSLATE_LANG_NAMES[l]}</option>)}</select>
@@ -144,16 +194,16 @@ export function HilPage() {
           {h.allowedDecisions.some((d) => ['request_changes', 'resume', 'deny', 'approve'].includes(d)) && h.kind !== 'question' && (
             <div style={{ marginTop: 10 }}><label className="small muted">{granular && p.kind === 'approve_result' ? (p.canPost && p.role === 'reviewer' ? 'Review text (posted to the PR together with the findings marked post; optional)' : counts.fix ? 'Comment for the implementer (optional; the items marked fix are sent anyway)' : p.canPost ? 'Comment (optional; with items marked post it is posted to the PR as the review text)' : 'Comment (optional)') : `Comment ${h.allowedDecisions.includes('request_changes') ? '(required for request changes)' : '(optional)'}`}</label><textarea id="hil-comment" value={comment} onChange={(e) => setComment(e.target.value)} style={{ minHeight: 64 }} /></div>
           )}
-          <div className="actions">
+          <div className={`actions${fresh ? ' locked' : ''}`}>
             {granular && p.kind === 'approve_result' && (
-              <div className="act"><button className="primary" disabled={busy} onClick={() => respond('approve')}>{counts.fix ? `Send ${counts.fix} to fix${counts.post ? `, post ${counts.post} later` : ''}${counts.skip ? `, skip ${counts.skip}` : ''}` : counts.post ? `Continue, post ${counts.post}${counts.skip ? `, skip ${counts.skip}` : ''}` : `Continue${counts.skip ? `, skip ${counts.skip}` : ''}`}</button><small>{counts.fix ? h.next.request_changes : h.next.approve}</small></div>
+              <div className="act"><button className="primary" disabled={locked} onClick={() => respond('approve')}>{counts.fix ? `Send ${counts.fix} to fix${counts.post ? `, post ${counts.post} later` : ''}${counts.skip ? `, skip ${counts.skip}` : ''}` : counts.post ? `Continue, post ${counts.post}${counts.skip ? `, skip ${counts.skip}` : ''}` : `Continue${counts.skip ? `, skip ${counts.skip}` : ''}`}</button><small>{counts.fix ? h.next.request_changes : h.next.approve}</small></div>
             )}
             {h.allowedDecisions.filter((d) => d !== 'abort' && !(granular && (d === 'approve' || d === 'request_changes'))).map((d) => (
-              <div className="act" key={d}><button className={['approve', 'answer', 'allow', 'retry'].includes(d) ? 'primary' : ''} disabled={busy || (d === 'approve' && unanswered.length > 0)} title={d === 'approve' && unanswered.length ? `answer first: ${unanswered.join(', ')}` : undefined} onClick={() => respond(d)}>{label(d)}</button><small>{h.next[d]}</small></div>
+              <div className="act" key={d}><button className={['approve', 'answer', 'allow', 'retry'].includes(d) ? 'primary' : ''} disabled={locked} onClick={() => respond(d)}>{label(d)}</button><small>{h.next[d]}</small></div>
             ))}
-            <div className="act" style={{ marginLeft: 'auto' }}><ArmedAbort onClick={() => respond('abort')} disabled={busy} /><small>{h.next.abort}</small></div>
+            <div className="act" style={{ marginLeft: 'auto' }}><ArmedAbort onClick={() => respond('abort')} disabled={locked} /><small>{h.next.abort}</small></div>
           </div>
-          <div className="small muted" style={{ marginTop: 6 }}><span className="kbd">a</span> approve · <span className="kbd">r</span> comment · <span className="kbd">Ctrl+Enter</span> submit · <span className="kbd">j</span>/<span className="kbd">k</span> next/prev</div>
+          <div className="small muted" style={{ marginTop: 6, opacity: fresh ? .5 : 1 }}><span className="kbd">a</span> approve · <span className="kbd">r</span> comment · <span className="kbd">Ctrl+Enter</span> submit · <span className="kbd">j</span>/<span className="kbd">k</span> next/prev</div>
         </>
       )}
     </div>
@@ -193,7 +243,7 @@ function Payload({ p, edited, setEdited, answers, setAnswers, actions, setAction
           {p.clarifyError && <div className="small" style={{ color: 'var(--warn)', marginBottom: 6 }}>clarify failed: {p.clarifyError}. No questions or rewrite; the prompt below is the original.</div>}
           {p.questions.length > 0 && (
             <div className="card" style={{ background: 'var(--bg)' }}>
-              <b>Claude asks</b> <span className="small muted">— every question needs an answer; they are appended to the prompt</span>
+              <b>Claude asks</b> <span className="small muted">— answers are appended to the prompt; leave one blank to let the implementer decide it</span>
               {p.questions.map((q, i) => (
                 <div key={i} style={{ marginTop: 8 }}>
                   <div><b>{t(q.header)}:</b> {t(q.question)}</div>

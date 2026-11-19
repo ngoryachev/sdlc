@@ -44,7 +44,13 @@ export interface Task {
   prFeedbackCursor: string | null;
   /** Head commit of the PR the last review pass looked at (reviewer tasks re-review when it changes). */
   prHeadSha: string | null;
+  /** GitHub's review verdict for the PR, as sdlc trusts it: `APPROVED` only while the head has not moved since, else what GitHub reports (or null). */
+  reviewDecision: string | null;
+  /** PR head an `APPROVED` was first seen at; once the head differs the approval is treated as stale and dropped locally. */
+  reviewDecisionSha: string | null;
   modelOverrides: ModelOverrides | null;
+  /** Issue key found in the task prompt (`ABC-123`), used in the branch name, the PR title and commit subjects. */
+  jiraKey: string | null;
   createdAt: string;
   updatedAt: string;
 }

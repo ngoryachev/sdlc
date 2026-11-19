@@ -40,7 +40,8 @@ export class HilPhaseExecutor implements PhaseExecutor<HilPhaseSpec> {
       store.insertHil(hil);
       pr.resultText = auto.reason;
       events.emit('hil.answered', { hil }, { taskId: task.id, phaseRunId: pr.id });
-      events.emit('task.updated', { task, change: `${phase.name}: ${auto.reason}` }, { taskId: task.id, phaseRunId: pr.id });
+      // the reason also reaches the task log as `task.updated`, but from the engine: only there has the answer been
+      // applied, so the payload carries the refined title and the renamed branch rather than the values it replaced
       return { kind: 'wait_hil', hilId: hil.id, autoResponse: auto.response };
     }
     store.insertHil(hil);
@@ -64,7 +65,10 @@ function autoAnswer(payload: HilPayload, ctx: PhaseContext): { response: HilResp
     if (Object.values(findings).some((a) => a === 'fix' || a === 'post')) return null;
     // approving someone else's pull request is a published act: a task may be told not to do it on its own
     if (ctx.role === 'reviewer' && !ctx.task.approveOnClean) return null;
-    const reason = `auto-approved: no finding needs fixing or publishing${ctx.role === 'reviewer' ? '; approving the pull request' : ''}`;
+    // only a reviewer with a pull request publishes the approval; an author's `approve` is forced to COMMENT, and
+    // without a PR `publish` has nothing to post on, so neither may claim it in the reason a human reads
+    const approves = ctx.role === 'reviewer' && payload.canPost;
+    const reason = `auto-approved: no finding needs fixing or publishing${approves ? '; approving the pull request' : ''}`;
     return { response: { decision: 'approve', findings, reviewEvent }, reason };
   }
   if (payload.kind === 'refine_prompt') {

@@ -149,6 +149,28 @@ describe('checkpoints with nothing to decide answer themselves', () => {
     expect(app.store.getTask(task.id)!.status).toBe('waiting_hil');
   });
 
+  it('a reviewer task without a pull request does not claim it approved one', async () => {
+    const dir = tmpDir('sdlc-auto-no-pr-');
+    const repo = makeRepo(dir, { 'feature.txt': 'one\n' });
+    sh(repo, ['checkout', '-q', '-b', 'feature']);
+    fs.writeFileSync(path.join(repo, 'feature.txt'), 'one\ntwo\n');
+    sh(repo, ['commit', '-q', '-am', 'feature: work']);
+    sh(repo, ['checkout', '-q', 'main']);
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: CLEAN }) })));
+
+    // review only, on a local branch: nothing to approve on, since `publish` has no pull request
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'standard', baseRemote: null, branch: 'feature', startAt: 'review', stopAfter: 'publish' });
+    await app.engine.advance(task.id);
+
+    const hil = app.store.listHil({ taskId: task.id }).find((h) => h.kind === 'approve_result')!;
+    expect([hil.answeredVia, hil.payload.kind === 'approve_result' && hil.payload.canPost]).toEqual(['auto', false]);
+    expect(hil.summary).toContain('auto-approved: no finding needs fixing or publishing');
+    expect(hil.summary).not.toContain('approving the pull request');
+    const runs = Object.fromEntries(app.store.phaseRunsForTask(task.id).map((p) => [p.phaseName, p]));
+    expect(runs.approve_result!.resultText).toBe('auto-approved: no finding needs fixing or publishing');
+    expect([runs.publish!.status, runs.publish!.resultText]).toEqual(['skipped', 'no pull request; nothing to publish']);
+  });
+
   it('author, clean review: auto-passed, and the approve it carries is not published on its own PR', async () => {
     const dir = tmpDir('sdlc-auto-author-');
     const { repo, bare } = makeRemoteRepo(dir, { 'a.txt': 'x\n' });
@@ -203,6 +225,11 @@ describe('refine answers itself when clarify asked nothing', () => {
     const t = app.store.getTask(task.id)!;
     expect([t.refinedPrompt, t.title, t.branch, t.status]).toEqual(['Change a.txt from x to y', 'Flip a.txt to y', `sdlc/flip-a-txt-${task.id}`, 'succeeded']);
     expect(sh(t.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe(`sdlc/flip-a-txt-${task.id}`);
+
+    // the dashboard upserts the task from this payload: it has to be the refined one, not the task as it was
+    const updates = app.events.replay(0, task.id).filter((e) => e.type === 'task.updated').map((e) => e.payload as { task: typeof t; change: string });
+    expect(updates.map((u) => u.change)).toEqual(['refine: auto-approved: clarify had no questions']);
+    expect([updates[0]!.task.title, updates[0]!.task.branch, updates[0]!.task.refinedPrompt]).toEqual(['Flip a.txt to y', t.branch, t.refinedPrompt]);
   });
 
   it('a question keeps the checkpoint open', async () => {

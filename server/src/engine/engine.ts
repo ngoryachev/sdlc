@@ -4,16 +4,18 @@ import { promisify } from 'node:util';
 const execFileP = promisify(execFile);
 import path from 'node:path';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
-import type { AskUserQuestionItem, HilRequest, HilResponse, ModelOverrides, PhaseRun, PipelineRun, Task, TaskRole, TaskStatus } from '@sdlc/shared';
+import type { AskUserQuestionItem, ClarifyQuestion, HilRequest, HilResponse, ModelOverrides, PhaseRun, PipelineRun, Task, TaskRole, TaskStatus } from '@sdlc/shared';
 import { ACTIVE_STATUSES, FINISHED_STATUSES } from '@sdlc/shared';
 import type { SdlcConfig } from '../config/config.js';
 import { loadRepoConfig, parseDuration } from '../config/config.js';
+import { missingFileWarning, repoFileEnv } from '../config/repo-files.js';
 import type { ClaudeRunner } from '../claude/runner.js';
 import { findPipelineFile, loadPipeline, phaseIndex, resolvePipelineFile, roleOf, segmentOf, type LoadedPipeline } from '../pipeline/loader.js';
 import type { PhaseSpec, PipelineSpec, RepoConfig } from '../pipeline/schema.js';
 import { PipelineSchema } from '../pipeline/schema.js';
 import { evalExpr } from '../pipeline/expr.js';
 import { renderTemplate } from '../pipeline/template.js';
+import { jiraKeyFrom, withJiraKey } from './jira.js';
 import { adoptWorktree, branchNameFor, createWorktree, defaultBase, deleteLocalBranch, deleteRemoteBranch, diffAgainst, fetchBranch, git, isAncestor, isSdlcBranch, mergeLocally, push, pushBranch, recreateWorktree, refExists, remoteHasBranch, remotes, removeWorktree, renameBranch, repoToplevel, slugFromRemote, syncBranchWithRemote, syncLocalBase, taskCommitCount } from '../git/git.js';
 import { TRUSTED_ASSOCIATIONS, type GitHub, type MergeMethod, type PrInfo, type RepoAuth } from '../git/gh.js';
 import type { RepoAccounts } from '../git/accounts.js';
@@ -27,6 +29,9 @@ import { GitPhaseExecutor } from '../phases/git.js';
 import { HilPhaseExecutor, newHilRequest } from '../phases/hil.js';
 import { buildTemplateContext } from './context.js';
 import { HilBroker } from './hil-broker.js';
+
+/** Stands in for a clarifying answer the developer deliberately did not give. Defers to the prompt body: clarify writes `suggestedPrompt` so a question can be answered inline there instead. */
+export const NO_ANSWER = '(no separate answer — if the task text above does not settle it, decide it yourself and say what you chose)';
 
 export interface CreateTaskInput {
   /** May be omitted for a pull request (its title and body are used) or when starting after `implement` on an existing branch (a short summary of the branch is generated). */
@@ -126,11 +131,20 @@ export class Engine {
     const id = newId('t');
     const worktreesDir = config.worktrees_dir ?? path.join(path.dirname(repoPath), '.sdlc-worktrees', path.basename(repoPath));
     const wt = existingBranch
-      ? await adoptWorktree({ repo: repoPath, worktreesDir, taskId: id, branch: existingBranch, remote: baseRemote, auth })
+      ? await adoptWorktree({ repo: repoPath, worktreesDir, taskId: id, branch: existingBranch, remote: baseRemote, copyUntracked: repoConfig.copy_untracked, auth })
       : await createWorktree({ repo: repoPath, worktreesDir, taskId: id, baseRemote, baseBranch, copyUntracked: repoConfig.copy_untracked, auth });
-    try { await runSetup(repoConfig, wt.worktreePath); }
+    // the repository's configured files reach setup_command too (a build that needs a keystore)
+    const fileEnv = repoFileEnv(config, repoPath);
+    try { await runSetup(repoConfig, wt.worktreePath, fileEnv.env); }
     catch (e) { await removeWorktree(repoPath, wt.worktreePath, wt.branch, { deleteBranchIfEmpty: wt.baseRef }).catch(() => {}); throw e; }
     if (summarise) prompt = await this.describeBranch(wt.worktreePath, baseRef);
+    // the key goes on the branch at once: naming runs in the background, may fail, and may produce no slug at all
+    const jiraKey = jiraKeyFrom(prompt);
+    if (jiraKey && !existingBranch) {
+      const named = branchNameFor('', id, jiraKey);
+      try { await renameBranch(wt.worktreePath, named); wt.branch = named; }
+      catch { /* the branch simply stays sdlc/<id>; the key is still stored on the task */ }
+    }
     const slug = await slugFromRemote(repoPath);
     const now = nowIso();
     const title = input.title ?? pr?.title ?? titleFrom(prompt);
@@ -140,7 +154,8 @@ export class Engine {
       reviewMode: input.reviewMode ?? repoConfig.review_mode ?? 'conceptual', postReview: input.postReview ?? repoConfig.post_review ?? false,
       approveOnClean: input.approveOnClean ?? true,
       status: 'created', totalCostUsd: 0, prUrl: pr?.url ?? null, prNumber: pr?.number ?? null, prFeedbackCursor: null, prHeadSha: pr?.headRefOid ?? null,
-      modelOverrides: input.modelOverrides ?? null, createdAt: now, updatedAt: now,
+      reviewDecision: null, reviewDecisionSha: null,
+      modelOverrides: input.modelOverrides ?? null, jiraKey, createdAt: now, updatedAt: now,
     };
     const run: PipelineRun = { id: newId('r'), taskId: id, pipelineName: spec.name,
       pipelineSnapshot: { spec, baseDir: loaded.baseDir, filePath: loaded.filePath, from: spec.phases[seg.fromIdx]!.name, to: spec.phases[seg.toIdx]!.name },
@@ -150,6 +165,8 @@ export class Engine {
       for (const ph of spec.phases.slice(0, seg.fromIdx)) { const p = this.newPhaseRun(run, task, ph); p.status = 'skipped'; p.resultText = `skipped: task starts at ${spec.phases[seg.fromIdx]!.name}`; p.endedAt = now; store.insertPhaseRun(p); }
     });
     events.emit('task.created', { task }, { taskId: id });
+    // only now that the task exists can a warning be attached to it
+    for (const f of fileEnv.missing) events.emit('engine.warning', { taskId: id, message: missingFileWarning(f) }, { taskId: id });
     this.registerRepo(repoPath, slug);
     // a readable title and branch (sdlc/<english-slug>-<id>) come from a short haiku call in the background;
     // refine may rename them again later, as long as the branch has not been pushed
@@ -202,7 +219,7 @@ export class Engine {
       const into = task.baseRemote ? `${task.baseRemote}/${task.baseBranch}` : task.baseBranch;
       let via: 'pr' | 'local';
       if (task.prNumber) { await this.d.github.prMerge(task.repoPath, task.prNumber, m, auth); via = 'pr'; }
-      else { await mergeLocally({ repo: task.repoPath, base: task.baseBranch, baseRemote: task.baseRemote, head: task.branch, method: m, message: `${task.title}\n\nsdlc task ${task.id}`, author: config.git_author, auth }); via = 'local'; }
+      else { await mergeLocally({ repo: task.repoPath, base: task.baseBranch, baseRemote: task.baseRemote, head: task.branch, method: m, message: `${withJiraKey(task.title, task.jiraKey)}\n\nsdlc task ${task.id}`, author: config.git_author, auth }); via = 'local'; }
       events.emit('git.merged', { taskId: task.id, method: m, into, via }, { taskId: task.id });
       const re = await this.restack(task, children, auth);
       notes.push(...re.notes);
@@ -234,7 +251,8 @@ export class Engine {
       await push(task.repoPath, remote, task.branch, auth);
       events.emit('git.pushed', { taskId, branch: task.branch }, { taskId });
       const title = o.title?.trim() || task.title;
-      const created = await this.d.github.prCreate({ cwd: task.repoPath, head: task.branch, base: task.baseBranch, title, body: this.prBody(task), draft: !!o.draft }, auth);
+      // the issue key is a property of the published title, not of the task's own
+      const created = await this.d.github.prCreate({ cwd: task.repoPath, head: task.branch, base: task.baseBranch, title: withJiraKey(title, task.jiraKey), body: this.prBody(task), draft: !!o.draft }, auth);
       const fresh = this.mustTask(taskId);
       fresh.prUrl = created.url; fresh.prNumber = created.number; fresh.title = title; fresh.updatedAt = nowIso(); store.updateTask(fresh);
       events.emit('git.pr_created', { taskId, url: created.url, number: created.number }, { taskId });
@@ -322,15 +340,10 @@ export class Engine {
         this.d.events.emit('task.updated', { task: t, change: `base ${from} → ${pr.baseRefName} (changed on GitHub)` }, { taskId });
         return `base → ${pr.baseRefName}`;
       }
-      // the author side picks up new review comments, the reviewer side new commits
-      if (this.roleOfTask(taskId) === 'reviewer') {
-        if (!pr.headRefOid || pr.headRefOid === t.prHeadSha) return null;
-        await this.rereview(t, pr.headRefOid, auth);
-        return `new commits (${pr.headRefOid.slice(0, 7)}) → review`;
-      }
-      if (this.d.store.openHilForTask(taskId).some((h) => h.kind === 'pr_feedback')) return null;
-      const fb = await this.pollPrFeedbackInner(taskId);
-      return fb.new ? `${fb.new} new PR comment(s) → HIL` : null;
+      // every pr_open task keeps GitHub's review verdict, whichever side of the PR it is on
+      const approval = this.applyReviewDecision(t, pr);
+      const rest = await this.syncPrRole(t, pr, auth);
+      return [approval, rest].filter(Boolean).join('; ') || null;
     }
     // no PR: did the branch reach its base some other way (merged by hand, another tool)?
     if (!(await refExists(t.repoPath, `refs/heads/${t.branch}`))) return null;
@@ -340,6 +353,43 @@ export class Engine {
     if (!(await refExists(t.repoPath, baseRef)) || !(await isAncestor(t.repoPath, `refs/heads/${t.branch}`, baseRef))) return null;
     await this.markMerged(t, auth);
     return 'merged (branch found in its base)';
+  }
+
+  /** The side-specific half of a `pr_open` sync: the reviewer follows new commits, the author new review comments. */
+  private async syncPrRole(t: Task, pr: PrInfo, auth: RepoAuth): Promise<string | null> {
+    if (this.roleOfTask(t.id) === 'reviewer') {
+      if (!pr.headRefOid || pr.headRefOid === t.prHeadSha) return null;
+      await this.rereview(t, pr.headRefOid, auth);
+      return `new commits (${pr.headRefOid.slice(0, 7)}) → review`;
+    }
+    if (this.d.store.openHilForTask(t.id).some((h) => h.kind === 'pr_feedback')) return null;
+    const fb = await this.pollPrFeedbackInner(t.id);
+    return fb.new ? `${fb.new} new PR comment(s) → HIL` : null;
+  }
+
+  /**
+   * Keeps GitHub's review verdict on the task. An `APPROVED` is remembered together with the PR head it was seen at:
+   * GitHub keeps reporting `APPROVED` after new commits unless the repository dismisses stale reviews, so once the head
+   * moves the mark is dropped locally (the sha stays, so it stays dropped). Anything else from GitHub clears the mark
+   * and re-arms it for the next approval. Returns a note only when the visible mark appeared or disappeared.
+   */
+  private applyReviewDecision(t: Task, pr: PrInfo): string | null {
+    const raw = pr.reviewDecision || null;
+    // an approval with no head to anchor it to (or to compare against) decides nothing: leave what is stored alone,
+    // or the mark would flap between the syncs that do see a head sha
+    if (raw === 'APPROVED' && !pr.headRefOid) return null;
+    const stale = raw === 'APPROVED' && !!t.reviewDecisionSha && pr.headRefOid !== t.reviewDecisionSha;
+    const decision = raw !== 'APPROVED' ? raw : stale ? null : 'APPROVED';
+    const sha = raw !== 'APPROVED' ? null : t.reviewDecisionSha ?? pr.headRefOid ?? null;
+    if (decision === t.reviewDecision && sha === t.reviewDecisionSha) return null;
+    const wasMarked = t.reviewDecision === 'APPROVED';
+    const isMarked = decision === 'APPROVED';
+    t.reviewDecision = decision; t.reviewDecisionSha = sha; t.updatedAt = nowIso();
+    this.d.store.updateTask(t);
+    if (wasMarked === isMarked) return null;              // e.g. null → REVIEW_REQUIRED: persisted, but nothing to show
+    const note = isMarked ? 'approved on GitHub' : stale ? 'approval dropped (new commits)' : `approval dropped (${raw ?? 'no review'} on GitHub)`;
+    this.d.events.emit('task.updated', { task: t, change: note }, { taskId: t.id });
+    return note;
   }
 
   /**
@@ -467,7 +517,7 @@ export class Engine {
     const { config } = this.d;
     if (config.repos.some((r) => path.resolve(r.path) === path.resolve(repoPath))) return;
     const base = slug ?? path.basename(repoPath);
-    config.repos.push({ name: config.repos.some((r) => r.name === base) ? `${base} (${repoPath})` : base, path: repoPath });
+    config.repos.push({ name: config.repos.some((r) => r.name === base) ? `${base} (${repoPath})` : base, path: repoPath, files: [] });
     this.d.persistConfig();
   }
 
@@ -485,7 +535,7 @@ export class Engine {
       task.title = named.title; task.updatedAt = nowIso(); this.d.store.updateTask(task);
       this.d.events.emit('task.updated', { task, change: 'title' }, { taskId });
     }
-    if (want.branch && named.branch && task.branch === `sdlc/${task.id}`) await this.renameBranchTo(task, named.branch);
+    if (want.branch && named.branch && isUnnamedBranch(task)) await this.renameBranchTo(task, named.branch);
   }
 
   private bg = new Map<string, Promise<void>>();
@@ -513,7 +563,7 @@ export class Engine {
   private async renameBranchTo(task: Task, summary: string): Promise<void> {
     if (task.prNumber || !isSdlcBranch(task.branch, task.id) || !fs.existsSync(path.join(task.worktreePath, '.git'))) return;
     if (await refExists(task.repoPath, `refs/remotes/${task.baseRemote ?? 'origin'}/${task.branch}`)) return;   // already pushed
-    const to = branchNameFor(summary, task.id);
+    const to = branchNameFor(summary, task.id, task.jiraKey);
     if (to === task.branch) return;
     const from = task.branch;
     try { await renameBranch(task.worktreePath, to); }
@@ -658,9 +708,12 @@ export class Engine {
           // and go on to the next phase without ever stopping the task (see HilPhaseExecutor)
           if (outcome.autoResponse) {
             const hil = store.getHil(outcome.hilId)!;
-            const { done } = await this.applyHilResponse(hil, outcome.autoResponse, fresh, run, { resultText: pr.resultText ?? undefined });
+            const reason = pr.resultText ?? 'answered by the pipeline';
+            const { done } = await this.applyHilResponse(hil, outcome.autoResponse, fresh, run, { resultText: reason });
             this.saveRun(run);
             fresh.updatedAt = nowIso(); store.updateTask(fresh);
+            // after the answer was applied: refine renames the task and its branch, so the payload must carry the new ones
+            events.emit('task.updated', { task: fresh, change: `${phase.name}: ${reason}` }, { taskId, phaseRunId: pr.id });
             if (done) return;   // unreachable for the kinds that auto-answer; the task is settled either way
             continue;
           }
@@ -739,11 +792,6 @@ export class Engine {
     if (!hil.allowedDecisions.includes(response.decision)) throw new HttpError(400, `decision ${response.decision} not allowed for ${hil.kind}`);
     const fixKeys = Object.entries(response.findings ?? {}).filter(([, a]) => a === 'fix').map(([k]) => k);
     if (response.decision === 'request_changes' && !response.comment?.trim() && !fixKeys.length) throw new HttpError(400, 'request_changes needs a comment or at least one finding marked to fix');
-    if (hil.payload.kind === 'refine_prompt' && response.decision === 'approve') {
-      // every clarifying question needs an explicit answer: an unanswered one silently becomes the implementer's own choice
-      const unanswered = hil.payload.questions.filter((q) => !response.answers?.[q.question]?.trim());
-      if (unanswered.length) throw new HttpError(400, `answer the clarifying question(s) first: ${unanswered.map((q) => q.header).join(', ')}`);
-    }
 
     const task = store.getTask(hil.taskId)!;
     const run = store.latestRunForTask(task.id)!;
@@ -797,9 +845,13 @@ export class Engine {
       case 'refine_prompt': {
         const p = hil.payload as Extract<typeof hil.payload, { kind: 'refine_prompt' }>;
         const base = response.edited?.prompt?.trim() || p.suggestedPrompt || task.initialPrompt;
-        task.refinedPrompt = p.questions.length ? `${base}\n\n## Clarifying questions, answered by the developer\n${p.questions.map((q) => `- **${q.header}**: ${q.question}\n  → ${response.answers![q.question]!.trim()}`).join('\n')}` : base;
+        // an unanswered question is a legal answer in itself: the developer left that call to the implementer, so say so in the prompt
+        const asked = (q: ClarifyQuestion) => `- **${q.header}**: ${q.question}\n  → ${response.answers?.[q.question]?.trim() || NO_ANSWER}`;
+        task.refinedPrompt = p.questions.length ? `${base}\n\n## Clarifying questions\n${p.questions.map(asked).join('\n')}` : base;
         task.title = response.edited?.title?.trim() || p.suggestedTitle || task.title;
+        if (!task.jiraKey) task.jiraKey = jiraKeyFrom(task.refinedPrompt);
         if (p.suggestedBranch) await this.renameBranchTo(task, p.suggestedBranch);
+        else if (task.jiraKey && isUnnamedBranch(task)) await this.renameBranchTo(task, '');   // a key found only now still lands on the branch
         closePhase('succeeded', opts?.resultText ?? 'approved');
         run.cursor++;
         break;
@@ -1131,12 +1183,19 @@ You already went over this branch at commit \`${prev.headSha.slice(0, 12)}\`. Si
   /** Worktrees are removed by the cleanup policy; a PR feedback round needs it back. */
   private async ensureWorktree(task: Task): Promise<void> {
     if (fs.existsSync(path.join(task.worktreePath, '.git'))) return;
-    await recreateWorktree({ repo: task.repoPath, worktreePath: task.worktreePath, branch: task.branch, remote: task.baseRemote ?? (await defaultRemote(task.repoPath)), auth: await this.d.accounts.forRepo(task.repoPath) });
-    await runSetup(loadRepoConfig(task.repoPath), task.worktreePath);
+    const repoConfig = loadRepoConfig(task.repoPath);
+    await recreateWorktree({ repo: task.repoPath, worktreePath: task.worktreePath, branch: task.branch, remote: task.baseRemote ?? (await defaultRemote(task.repoPath)), copyUntracked: repoConfig.copy_untracked, auth: await this.d.accounts.forRepo(task.repoPath) });
+    await runSetup(repoConfig, task.worktreePath, this.fileEnvFor(task));
     this.d.events.emit('task.worktree', { taskId: task.id, action: 'recreated' }, { taskId: task.id });
   }
 
   // ------------------------------------------------------------------ helpers
+  /** Env variables for the repository's configured files; one that is gone from disk warns instead of failing. */
+  private fileEnvFor(task: Task): Record<string, string> {
+    const { env, missing } = repoFileEnv(this.d.config, task.repoPath);
+    for (const f of missing) this.d.events.emit('engine.warning', { taskId: task.id, message: missingFileWarning(f) }, { taskId: task.id });
+    return env;
+  }
   private newPhaseRun(run: PipelineRun, task: Task, phase: PhaseSpec): PhaseRun {
     return { id: newId('p'), runId: run.id, taskId: task.id, phaseName: phase.name, phaseType: phase.type, attempt: this.d.store.countAttempts(run.id, phase.name) + 1,
       status: 'pending', sessionId: null, resumedFromSessionId: null, costUsd: 0, numTurns: 0, resultText: null, structuredOutput: null, resultSubtype: null,
@@ -1183,10 +1242,10 @@ You already went over this branch at commit \`${prev.headSha.slice(0, 12)}\`. Si
   }
 }
 
-async function runSetup(repoConfig: RepoConfig, cwd: string): Promise<void> {
+async function runSetup(repoConfig: RepoConfig, cwd: string, fileEnv: Record<string, string> = {}): Promise<void> {
   if (!repoConfig.setup_command) return;
   try {
-    await execFileP('sh', ['-c', repoConfig.setup_command], { cwd, timeout: repoConfig.setup_timeout_sec * 1000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env } });
+    await execFileP('sh', ['-c', repoConfig.setup_command], { cwd, timeout: repoConfig.setup_timeout_sec * 1000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, ...fileEnv } });
   } catch (e) {
     const err = e as { stderr?: string; message: string };
     throw new HttpError(500, `setup_command failed in worktree: ${(err.stderr || err.message).slice(0, 2000)}`);
@@ -1234,6 +1293,11 @@ export function parseNaming(raw: string): { title?: string; branch?: string } {
   }
   const line = raw.trim().split('\n').pop()?.trim();
   return line && /^[a-z0-9-]+$/.test(line) ? { branch: line } : {};
+}
+
+/** The branch still carries nothing but the task id (and its issue key): naming or refine may rename it. */
+function isUnnamedBranch(task: Task): boolean {
+  return task.branch === branchNameFor('', task.id, task.jiraKey) || task.branch === branchNameFor('', task.id, null);
 }
 
 export function titleFrom(prompt: string): string {

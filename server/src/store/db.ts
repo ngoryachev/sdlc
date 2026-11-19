@@ -39,6 +39,9 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE tasks ADD COLUMN pr_head_sha TEXT;
    ALTER TABLE pipeline_runs ADD COLUMN return_to TEXT;
    ALTER TABLE phase_runs ADD COLUMN head_sha TEXT;`,
+  `ALTER TABLE tasks ADD COLUMN review_decision TEXT;
+   ALTER TABLE tasks ADD COLUMN review_decision_sha TEXT;`,
+  `ALTER TABLE tasks ADD COLUMN jira_key TEXT;`,
   `ALTER TABLE tasks ADD COLUMN approve_on_clean INTEGER NOT NULL DEFAULT 1;`,
 ];
 

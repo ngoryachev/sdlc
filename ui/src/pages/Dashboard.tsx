@@ -8,12 +8,15 @@ import { ModelPicker } from '../components/ModelPicker.js';
 import { RepoPicker, resolveRepoPath, type RepoChoice } from '../components/RepoPicker.js';
 
 const FINISHED = ['merged', 'closed', 'aborted'];
+/** reviewDecision is optional: child tasks on the task page carry a narrower shape than a full task. */
+type ChipTask = { status: string; prNumber: number | null; reviewDecision?: string | null };
 /** succeeded = the pipeline is done, not that the code is delivered: without a PR the branch still waits to be landed. */
-export function statusView(t: { status: string; prNumber: number | null }): { cls: string; label: string; title?: string } {
+export function statusView(t: ChipTask): { cls: string; label: string; title?: string } {
   if (t.status === 'succeeded' && !t.prNumber) return { cls: 'ready', label: 'ready to land', title: 'pipeline finished; the branch is not merged yet (Create PR or Land)' };
+  if (t.status === 'pr_open' && t.reviewDecision === 'APPROVED') return { cls: 'approved', label: 'approved', title: 'approved on GitHub; not merged yet (Land to merge it)' };
   return { cls: t.status, label: t.status };
 }
-export const StatusChip = ({ t }: { t: { status: string; prNumber: number | null } }) => { const v = statusView(t); return <span className={`chip ${v.cls}`} title={v.title}>{v.label}</span>; };
+export const StatusChip = ({ t }: { t: ChipTask }) => { const v = statusView(t); return <span className={`chip ${v.cls}`} title={v.title}>{v.label}</span>; };
 const parentOf = (t: TaskRow, all: TaskRow[]) => all.find((p) => p.id !== t.id && p.repoPath === t.repoPath && p.branch === t.baseBranch);
 
 export function Dashboard() {
