@@ -26,11 +26,8 @@ async function reviewerAtPrOpen(prefix: string) {
   const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: { verdict: 'approve', summary: 'fine', findings: [] } }) })), {}, gh);
 
   const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
-  await app.engine.advance(task.id);
+  await app.engine.advance(task.id);   // a clean review approves the PR on its own; no checkpoint to answer
   expect(app.engine.roleOfTask(task.id)).toBe('reviewer');
-  const hil = app.store.openHilForTask(task.id)[0]!;
-  await app.engine.respondHil(hil.id, { decision: 'approve', reviewEvent: 'approve' }, 'web');
-  await app.engine.advance(task.id);
   expect(app.store.getTask(task.id)!.status).toBe('pr_open');
 
   const hono = new Hono().route('/api', tasksRoutes(app));

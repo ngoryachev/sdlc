@@ -61,6 +61,7 @@ describe('openDb schema_version bookkeeping', () => {
     expect(columns(file, 'tasks')).toContain('model_overrides');
     expect(columns(file, 'pipeline_runs')).toContain('return_to');
     expect(columns(file, 'phase_runs')).toContain('head_sha');
+    expect(columns(file, 'tasks')).toContain('approve_on_clean');
   });
 
   it('migrates a broken multi-row DB that still has migrations pending', () => {
@@ -128,15 +129,17 @@ describe('openDb schema_version bookkeeping, further cases', () => {
         id: 't_1', title: 'x', initialPrompt: 'p', refinedPrompt: null, repoPath: '/r', repoSlug: null,
         baseRemote: 'origin', baseBranch: 'main', branch: 'sdlc/t_1', worktreePath: '/w', pipelineName: 'auto',
         reviewMode: 'conceptual', postReview: false, status: 'created', totalCostUsd: 0, prUrl: null,
-        prNumber: null, prFeedbackCursor: null, prHeadSha: null, modelOverrides: null,
+        prNumber: null, prFeedbackCursor: null, prHeadSha: null, modelOverrides: null, approveOnClean: true,
         createdAt: now, updatedAt: now,
       });
       // Columns added by the later migrations must be writable, not just present.
       const t = store.getTask('t_1')!;
       t.modelOverrides = { implement: { model: 'opus' } };
       t.prHeadSha = 'deadbeef';
+      t.approveOnClean = false;
       store.updateTask(t);
       expect(store.getTask('t_1')!.prHeadSha).toBe('deadbeef');
+      expect(store.getTask('t_1')!.approveOnClean).toBe(false);
       expect(store.getTask('t_1')!.modelOverrides).toEqual({ implement: { model: 'opus' } });
     } finally { db.close(); }
   });

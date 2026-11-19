@@ -35,11 +35,8 @@ describe('request changes by hand (fake runner + fake GitHub)', () => {
     })), { max_loops: 0 }, gh);
 
     const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'quick' });
-    await app.engine.advance(task.id);
-    await app.engine.respondHil(app.store.openHilForTask(task.id)[0]!.id, { decision: 'approve' }, 'web');   // refine
-    await app.engine.advance(task.id);
-    await app.engine.respondHil(app.store.openHilForTask(task.id)[0]!.id, { decision: 'approve' }, 'web');   // approve_result
-    await app.engine.advance(task.id);
+    await app.engine.advance(task.id);   // nothing to clarify and nothing to fix or post: both checkpoints answer themselves
+    expect(app.store.openHilForTask(task.id)).toEqual([]);
     expect(app.store.getTask(task.id)!.status).toBe('pr_open');
     expect(gh.prs.size).toBe(1);
     const prNumber = app.store.getTask(task.id)!.prNumber!;
@@ -51,7 +48,12 @@ describe('request changes by hand (fake runner + fake GitHub)', () => {
     expect(app.store.getTask(task.id)!.status).toBe('running');
     expect(gh.calls).toEqual(callsBefore);
     // the request itself is in the task's history, so the restart is not an unexplained new implement round
-    expect(app.events.replay(0, task.id).filter((e) => e.type === 'task.updated').map((e) => (e.payload as { change: string }).change)).toEqual(['changes requested → implement']);
+    // the auto-passed checkpoints say why in the same log the change request is written to
+    expect(app.events.replay(0, task.id).filter((e) => e.type === 'task.updated').map((e) => (e.payload as { change: string }).change)).toEqual([
+      'refine: auto-approved: clarify had no questions',
+      'approve_result: auto-approved: no finding needs fixing or publishing',
+      'changes requested → implement',
+    ]);
     // while it runs, the background sync keeps its hands off: the task is not idle any more
     expect((await app.engine.syncTasks()).changes).toEqual([]);
     expect(app.store.getTask(task.id)!.status).toBe('running');
@@ -63,16 +65,13 @@ describe('request changes by hand (fake runner + fake GitHub)', () => {
     expect(impl[1]!.resumedFromSessionId).toBe(implementSession);
     expect(prompts['fix#1']).toContain('also append a line about the flag');
     expect(prompts['fix#1']).not.toContain('Phase: implement');
-    // commit → test → push into the same PR → review → checkpoint again
-    expect(calls).toEqual(['implement', 'test', 'review', 'qa', 'fix', 'test', 'review']);
+    // commit → test → push into the same PR → review → the clean review passes its own checkpoint → QA again
+    expect(calls).toEqual(['implement', 'test', 'review', 'qa', 'fix', 'test', 'review', 'qa']);
     expect(gh.prs.size).toBe(1);
     expect(gh.calls.filter((c) => c.startsWith('create #'))).toHaveLength(1);   // the one from the first round, not a second PR
     expect(sh(bare, ['show', `${app.store.getTask(task.id)!.branch}:a.txt`])).toContain('handmade fix');
 
-    const hil = app.store.openHilForTask(task.id)[0]!;
-    expect(hil.kind).toBe('approve_result');
-    await app.engine.respondHil(hil.id, { decision: 'approve' }, 'web');
-    await app.engine.advance(task.id);
+    expect(app.store.openHilForTask(task.id)).toEqual([]);
     expect(app.store.getTask(task.id)!.status).toBe('pr_open');
     expect(app.store.getTask(task.id)!.prNumber).toBe(prNumber);
   });

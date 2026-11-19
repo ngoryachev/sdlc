@@ -138,7 +138,8 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     const n = someonesPr(repo, bare, gh);
     const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: { verdict: 'approve', summary: 'looks good', findings: [] } }) })), {}, gh);
 
-    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    // approveOnClean off: a clean review still stops at the checkpoint, and the human picks the event
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n, approveOnClean: false });
     await app.engine.advance(task.id);
     const hil = app.store.openHilForTask(task.id)[0]!;
     expect(hil.payload.kind === 'approve_result' && [hil.payload.review?.findings.length, hil.payload.canPost, hil.payload.role]).toEqual([0, true, 'reviewer']);
@@ -160,7 +161,7 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: { verdict: 'approve', summary: 'nothing to say', findings: [] } }) })), {}, gh);
 
     // request_changes is the human's own call: it is published even though the agent found nothing to report
-    const t1 = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: first });
+    const t1 = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: first, approveOnClean: false });
     await app.engine.advance(t1.id);
     await app.engine.respondHil(app.store.openHilForTask(t1.id)[0]!.id, { decision: 'approve', reviewEvent: 'request_changes' }, 'web');
     await app.engine.advance(t1.id);
@@ -168,7 +169,7 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     expect(app.store.phaseRunsForTask(t1.id).find((p) => p.phaseName === 'publish')!.status).toBe('succeeded');
 
     // a comment event with no findings and no text would be an empty review: still skipped
-    const t2 = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: second });
+    const t2 = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: second, approveOnClean: false });
     await app.engine.advance(t2.id);
     await app.engine.respondHil(app.store.openHilForTask(t2.id)[0]!.id, { decision: 'approve', reviewEvent: 'comment' }, 'web');
     await app.engine.advance(t2.id);
@@ -188,7 +189,7 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     ];
     const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: { verdict: 'approve', summary: 'good with nits', findings } }) })), {}, gh);
 
-    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n, approveOnClean: false });
     await app.engine.advance(task.id);
     const hil = app.store.openHilForTask(task.id)[0]!;
 
@@ -221,15 +222,12 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     })), {}, gh);
 
     const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'quick' });
-    await app.engine.advance(task.id);
-    await app.engine.respondHil(app.store.openHilForTask(task.id)[0]!.id, { decision: 'approve' }, 'web');   // refine
-    await app.engine.advance(task.id);
-    const hil = app.store.openHilForTask(task.id)[0]!;
+    await app.engine.advance(task.id);   // nothing to clarify and nothing to fix or post: both checkpoints answer themselves
+    const hil = app.store.listHil({ taskId: task.id }).find((h) => h.kind === 'approve_result')!;
     expect(hil.payload.kind === 'approve_result' && [hil.payload.review?.findings.length, hil.payload.canPost, hil.payload.role]).toEqual([0, true, 'author']);
 
-    // the UI hides the event selector for an author, but a stale or hand-made body must not approve the author's own PR
-    await app.engine.respondHil(hil.id, { decision: 'approve', reviewEvent: 'approve' }, 'web');
-    await app.engine.advance(task.id);
+    // the auto answer carries `approve` like a reviewer's would, but an author must not approve its own PR
+    expect([hil.status, hil.answeredVia, hil.response?.reviewEvent]).toEqual(['answered', 'auto', 'approve']);
     expect(gh.reviews).toEqual([]);
     const publish = app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'publish')!;
     expect([publish.status, publish.resultText]).toEqual(['skipped', 'nothing marked to publish']);
@@ -325,9 +323,7 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     })), { max_loops: 0 }, gh);
 
     const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'quick' });
-    await app.engine.advance(task.id);
-    await app.engine.respondHil(app.store.openHilForTask(task.id)[0]!.id, { decision: 'approve' }, 'web');   // refine
-    await app.engine.advance(task.id);
+    await app.engine.advance(task.id);   // refine answers itself: clarify had no questions
     const hil = app.store.openHilForTask(task.id)[0]!;
     expect([hil.kind, app.engine.roleOfTask(task.id), app.store.getTask(task.id)!.prNumber]).toEqual(['approve_result', 'author', 1]);
 
@@ -407,7 +403,7 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
           mark('review');
           return reviews++ === 0
             ? { structured: { verdict: 'request_changes', summary: 'two things', findings: [{ severity: 'blocking', title: 'Missing newline handling', description: 'handle it', file: 'a.txt', line: 1 }, { severity: 'should_fix', title: 'Document the change', description: 'say why', file: 'a.txt', line: 1 }] } }
-            : { structured: { verdict: 'approve', summary: 'good now', findings: [{ severity: 'nit', title: 'Could be shorter', description: 'optional', file: 'a.txt', line: 1 }] } };
+            : { structured: { verdict: 'request_changes', summary: 'one thing left', findings: [{ severity: 'should_fix', title: 'Could be shorter', description: 'optional', file: 'a.txt', line: 1 }] } };
         }
         if (p.includes('Phase: QA')) { mark('qa'); return { structured: qas++ === 0 ? { verdict: 'issues', summary: 'one problem', checks: [], issues: [{ severity: 'blocking', title: 'Crashes on empty input', description: 'boom' }, { severity: 'nit', title: 'Slow start', description: 'meh' }] } : QA_OK }; }
         throw new Error('unexpected prompt: ' + p.slice(0, 80));
@@ -415,9 +411,7 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     })), { max_loops: 0 }, gh);   // no automatic review → implement rounds: the human decides
 
     const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'quick' });
-    await app.engine.advance(task.id);
-    await app.engine.respondHil(app.store.openHilForTask(task.id)[0]!.id, { decision: 'approve' }, 'web');   // refine
-    await app.engine.advance(task.id);
+    await app.engine.advance(task.id);   // refine answers itself: clarify had no questions
 
     // checkpoint 1: fix the first finding, leave the second
     let hil = app.store.openHilForTask(task.id)[0]!;
@@ -432,7 +426,7 @@ describe('segments, roles, granular checkpoints (fake runner + fake GitHub)', ()
     expect(prompts['review#2']).toContain('Repeat pass: check only what changed');
     expect(prompts['review#1']).not.toContain('Repeat pass');
 
-    // checkpoint 2: post the nit to the PR and move on
+    // checkpoint 2: post the remaining finding to the PR and move on
     hil = app.store.openHilForTask(task.id)[0]!;
     expect(hil.payload.kind === 'approve_result' && hil.payload.review?.findings.map((f) => f.title)).toEqual(['Could be shorter']);
     await app.engine.respondHil(hil.id, { decision: 'approve', findings: { 'review:0': 'post' }, reviewEvent: 'approve' }, 'web');

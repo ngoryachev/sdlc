@@ -35,6 +35,8 @@ export interface Task {
   pipelineName: string;
   reviewMode: ReviewMode;
   postReview: boolean;
+  /** A reviewer task whose review came out clean approves the pull request without asking the human first. */
+  approveOnClean: boolean;
   status: TaskStatus;
   totalCostUsd: number;
   prUrl: string | null;
@@ -191,7 +193,8 @@ export interface HilRequest {
   next: Partial<Record<HilDecision, string>>;
   status: HilStatus;
   response: HilResponse | null;
-  answeredVia: 'web' | 'telegram' | 'cli' | 'timeout' | null;
+  /** `auto`: the pipeline answered it itself, because the checkpoint had nothing to decide. */
+  answeredVia: 'web' | 'telegram' | 'cli' | 'timeout' | 'auto' | null;
   expiresAt: string | null;
   createdAt: string;
   answeredAt: string | null;
