@@ -38,6 +38,7 @@ export function registerTaskCommands(program: Command) {
     .option('--base <remote/branch>', 'base ref, e.g. origin/main')
     .option('--review-mode <mode>', 'conceptual|line')
     .option('--post-review', 'post line review to GitHub')
+    .option('--no-approve-on-clean', 'ask at the checkpoint even when the review is clean, instead of approving the PR')
     .option('--branch <name>', 'work on an existing branch instead of creating one')
     .option('--pr <number>', 'work on an existing pull request: its head branch becomes the task branch (prompt optional)')
     .option('--from <phase>', 'first phase to run (earlier phases are skipped)')
@@ -50,7 +51,7 @@ export function registerTaskCommands(program: Command) {
       if (o.base) { const [r, ...rest] = String(o.base).split('/'); if (rest.length) { baseRemote = r; baseBranch = rest.join('/'); } else { baseRemote = null; baseBranch = r; } }
       const remote = await ServerClient.detect();
       if (remote) {
-        const task = await remote.call<Task>('POST', '/tasks', { prompt, repoPath: require_resolve(o.repo), pipeline: o.pipeline, baseRemote, baseBranch, reviewMode: o.reviewMode, postReview: o.postReview, branch: o.branch, ...seg });
+        const task = await remote.call<Task>('POST', '/tasks', { prompt, repoPath: require_resolve(o.repo), pipeline: o.pipeline, baseRemote, baseBranch, reviewMode: o.reviewMode, postReview: o.postReview, approveOnClean: o.approveOnClean, branch: o.branch, ...seg });
         console.log(`[server ${remote.base}] task ${task.id} branch ${task.branch}`);
         await remote.tail(task.id, printEvent, (m) => { if (!o.quiet) { const s = summarize(m.sdk as SDKMessage); if (s) console.log(s); } }, untilTaskSettles);
         const t = await remote.call<{ task: Task; openHil: Hil[] }>('GET', `/tasks/${task.id}`);
@@ -61,7 +62,7 @@ export function registerTaskCommands(program: Command) {
       const app = createApp();
       app.events.on(printEvent);
       if (!o.quiet) app.events.onMessage((m) => { const s = summarize(m.sdk as SDKMessage); if (s) console.log(s); });
-      const task = await app.engine.createTask({ prompt, repoPath: o.repo, pipeline: o.pipeline, baseRemote, baseBranch, reviewMode: o.reviewMode, postReview: o.postReview, branch: o.branch, ...seg });
+      const task = await app.engine.createTask({ prompt, repoPath: o.repo, pipeline: o.pipeline, baseRemote, baseBranch, reviewMode: o.reviewMode, postReview: o.postReview, approveOnClean: o.approveOnClean, branch: o.branch, ...seg });
       console.log(`task ${task.id} branch ${task.branch}\nworktree ${task.worktreePath}`);
       await app.engine.advance(task.id);
       const t = app.store.getTask(task.id)!;

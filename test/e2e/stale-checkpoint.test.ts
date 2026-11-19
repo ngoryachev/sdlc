@@ -195,7 +195,8 @@ describe('a reviewer checkpoint that goes stale when the PR gets new commits', (
       },
     })), {}, gh);
 
-    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'standard', prNumber: n, startAt: 'review', stopAfter: 'qa_gate' });
+    // approveOnClean off: the clean review stops at its own checkpoint, so the gate is reached the same way twice
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'standard', prNumber: n, startAt: 'review', stopAfter: 'qa_gate', approveOnClean: false });
     expect(app.engine.roleOfTask(task.id)).toBe('reviewer');
     await app.engine.advance(task.id);
     await app.engine.respondHil(app.store.openHilForTask(task.id)[0]!.id, { decision: 'approve' }, 'web');

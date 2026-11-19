@@ -87,9 +87,7 @@ describe('GitHub approval on a task with an open PR', () => {
     const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: { verdict: 'approve', summary: 'looks good', findings: [] } }) })), {}, gh);
 
     const t = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
-    await app.engine.advance(t.id);
-    await app.engine.respondHil(app.store.openHilForTask(t.id)[0]!.id, { decision: 'approve', reviewEvent: 'approve' }, 'web');
-    await app.engine.advance(t.id);
+    await app.engine.advance(t.id);   // the clean review passes its own checkpoint and approves the PR
     expect(app.store.getTask(t.id)!.status).toBe('pr_open');
 
     gh.setReviewDecision(n, 'APPROVED');
@@ -172,9 +170,7 @@ describe('GitHub approval on a reviewer-role task', () => {
     const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: { verdict: 'approve', summary: 'looks good', findings: [] } }) })), {}, gh);
 
     const t = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
-    await app.engine.advance(t.id);
-    await app.engine.respondHil(app.store.openHilForTask(t.id)[0]!.id, { decision: 'approve', reviewEvent: 'approve' }, 'web');
-    await app.engine.advance(t.id);
+    await app.engine.advance(t.id);   // the clean review passes its own checkpoint and approves the PR
 
     gh.setReviewDecision(n, 'APPROVED');
     expect((await app.engine.syncTasks()).changes.map((c) => c.change)).toEqual(['approved on GitHub']);

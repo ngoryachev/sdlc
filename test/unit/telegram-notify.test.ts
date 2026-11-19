@@ -94,11 +94,8 @@ describe('telegram pr_open message follows who owns the PR', () => {
     const app = testApp(dir, phaseRunner(), {}, gh);
 
     const t = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
-    await app.engine.advance(t.id);
+    await app.engine.advance(t.id);   // the clean review passes its own checkpoint and approves the PR
     expect(app.engine.roleOfTask(t.id)).toBe('reviewer');
-    const hil = app.store.openHilForTask(t.id)[0]!;
-    await app.engine.respondHil(hil.id, { decision: 'approve', reviewEvent: 'approve' }, 'web');
-    await app.engine.advance(t.id);
     const task = app.store.getTask(t.id)!;
     expect(task.status).toBe('pr_open');
 

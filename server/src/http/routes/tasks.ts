@@ -14,7 +14,7 @@ const ModelOverrides = z.record(z.string(), z.object({ model: z.string().optiona
 const CreateTask = z.object({
   prompt: z.string().optional(), repoPath: z.string().min(1), pipeline: z.string().optional(), title: z.string().optional(),
   baseRemote: z.string().nullable().optional(), baseBranch: z.string().optional(),
-  reviewMode: z.enum(['conceptual', 'line']).optional(), postReview: z.boolean().optional(),
+  reviewMode: z.enum(['conceptual', 'line']).optional(), postReview: z.boolean().optional(), approveOnClean: z.boolean().optional(),
   branch: z.string().optional(), prNumber: z.number().int().positive().optional(), startAt: z.string().optional(), stopAfter: z.string().optional(), modelOverrides: ModelOverrides,
 });
 export function tasksRoutes(app: App) {

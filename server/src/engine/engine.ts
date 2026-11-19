@@ -37,6 +37,8 @@ export interface CreateTaskInput {
   /** May be omitted for a pull request (its title and body are used) or when starting after `implement` on an existing branch (a short summary of the branch is generated). */
   prompt?: string; repoPath: string; pipeline?: string; baseRemote?: string | null; baseBranch?: string;
   reviewMode?: 'conceptual' | 'line'; postReview?: boolean; title?: string;
+  /** Reviewer tasks: approve the pull request without asking when the review came out clean. Default: true. */
+  approveOnClean?: boolean;
   /** Work on an existing branch instead of creating one ("start from this branch"). */
   branch?: string;
   /** An open pull request as the source: its head branch becomes the task branch, its base the task base. */
@@ -152,6 +154,7 @@ export class Engine {
       id, title, initialPrompt: prompt, refinedPrompt: null, repoPath, repoSlug: slug,
       baseRemote, baseBranch, branch: wt.branch, worktreePath: wt.worktreePath, pipelineName: spec.name,
       reviewMode: input.reviewMode ?? repoConfig.review_mode ?? 'conceptual', postReview: input.postReview ?? repoConfig.post_review ?? false,
+      approveOnClean: input.approveOnClean ?? true,
       status: 'created', totalCostUsd: 0, prUrl: pr?.url ?? null, prNumber: pr?.number ?? null, prFeedbackCursor: null, prHeadSha: pr?.headRefOid ?? null,
       reviewDecision: null, reviewDecisionSha: null,
       modelOverrides: input.modelOverrides ?? null, jiraKey, createdAt: now, updatedAt: now,
@@ -788,6 +791,19 @@ export class Engine {
         case 'skipped':
           pr.status = 'skipped'; pr.endedAt = nowIso(); store.updatePhaseRun(pr); run.cursor++; this.saveRun(run); continue;
         case 'wait_hil':
+          // a checkpoint with nothing to decide answered itself: apply that answer here, inside this loop,
+          // and go on to the next phase without ever stopping the task (see HilPhaseExecutor)
+          if (outcome.autoResponse) {
+            const hil = store.getHil(outcome.hilId)!;
+            const reason = pr.resultText ?? 'answered by the pipeline';
+            const { done } = await this.applyHilResponse(hil, outcome.autoResponse, fresh, run, { resultText: reason });
+            this.saveRun(run);
+            fresh.updatedAt = nowIso(); store.updateTask(fresh);
+            // after the answer was applied: refine renames the task and its branch, so the payload must carry the new ones
+            events.emit('task.updated', { task: fresh, change: `${phase.name}: ${reason}` }, { taskId, phaseRunId: pr.id });
+            if (done) return;   // unreachable for the kinds that auto-answer; the task is settled either way
+            continue;
+          }
           pr.status = 'waiting_hil'; store.updatePhaseRun(pr);
           run.status = 'waiting_hil'; this.saveRun(run);
           this.setTaskStatus(fresh, 'waiting_hil');
@@ -878,7 +894,6 @@ export class Engine {
 
     const task = store.getTask(hil.taskId)!;
     const run = store.latestRunForTask(task.id)!;
-    const { spec, seg } = snapshot(run);
     if (hil.payload.kind === 'approve_result' && (response.decision === 'request_changes' || fixKeys.length) && !hil.payload.canFix) throw new HttpError(400, 'this task has no implementing phase in its segment: findings can be published or skipped, not fixed');
     hil.status = 'answered'; hil.response = response; hil.answeredVia = via; hil.answeredAt = nowIso();
     store.updateHil(hil);
@@ -886,6 +901,24 @@ export class Engine {
 
     if (response.decision === 'abort') { await this.abort(task.id, 'aborted from HIL'); return hil; }
 
+    const { done } = await this.applyHilResponse(hil, response, task, run);
+    if (done) return hil;
+    run.status = 'running'; this.saveRun(run);
+    task.updatedAt = nowIso(); store.updateTask(task);
+    this.setTaskStatus(task, 'running');
+    void this.advance(task.id);
+    return hil;
+  }
+
+  /**
+   * The effects of an answer: close the checkpoint's phase run and move the cursor the way its kind prescribes.
+   * Shared by a human answer (respondHilInner) and by one the pipeline gave itself (an auto-passed checkpoint).
+   * `done`: the task is already settled, the caller must not keep advancing it.
+   */
+  private async applyHilResponse(hil: HilRequest, response: HilResponse, task: Task, run: PipelineRun, opts?: { resultText?: string }): Promise<{ done: boolean }> {
+    const { store, events } = this.d;
+    const { spec } = snapshot(run);
+    const fixKeys = Object.entries(response.findings ?? {}).filter(([, a]) => a === 'fix').map(([k]) => k);
     const phaseRun = hil.phaseRunId ? store.getPhaseRun(hil.phaseRunId) : null;
     const closePhase = (status: PhaseRun['status'], text: string) => {
       if (!phaseRun) return;
@@ -918,7 +951,7 @@ export class Engine {
         if (!task.jiraKey) task.jiraKey = jiraKeyFrom(task.refinedPrompt);
         if (p.suggestedBranch) await this.renameBranchTo(task, p.suggestedBranch);
         else if (task.jiraKey && isUnnamedBranch(task)) await this.renameBranchTo(task, '');   // a key found only now still lands on the branch
-        closePhase('succeeded', 'approved');
+        closePhase('succeeded', opts?.resultText ?? 'approved');
         run.cursor++;
         break;
       }
@@ -928,13 +961,13 @@ export class Engine {
             const planPath = latestArtifact(store, run.id, 'plan_md');
             if (planPath) fs.writeFileSync(planPath, response.edited.planMd);
           }
-          closePhase('succeeded', 'approved'); run.cursor++;
+          closePhase('succeeded', opts?.resultText ?? 'approved'); run.cursor++;
         } else { closePhase('succeeded', 'request_changes'); goBack(backTarget(['plan']), `The human reviewed your plan and requested changes:\n\n${response.comment}\n\nUpdate .sdlc/plan.md accordingly and reply with a short summary of what changed.`); }
         break;
       }
       case 'approve_result': {
         const p = hil.payload as Extract<typeof hil.payload, { kind: 'approve_result' }>;
-        if (response.decision === 'approve' && !fixKeys.length) { closePhase('succeeded', 'approved'); run.cursor++; break; }
+        if (response.decision === 'approve' && !fixKeys.length) { closePhase('succeeded', opts?.resultText ?? 'approved'); run.cursor++; break; }
         // the human picked what to fix: only those items go back to the implementer, the rest was deliberately left out
         const picked = fixKeys.map((k) => { const [list, i] = k.split(':'); return list === 'qa' ? p.qa?.issues[Number(i)] : p.review?.findings[Number(i)]; }).filter(Boolean);
         const parts = ['The human reviewed the result and requested changes.'];
@@ -952,14 +985,14 @@ export class Engine {
           task.prFeedbackCursor = p.comments.at(-1)?.id ?? task.prFeedbackCursor;
           // per comment: fix (default) or skip; skipped ones are marked read and never come back
           const picked = p.comments.filter((c) => response.comments?.[c.id] !== 'skip');
-          if (!picked.length) { closePhase('skipped', 'skipped'); store.updateTask(task); run.status = 'succeeded'; this.saveRun(run); this.setTaskStatus(task, 'pr_open'); return hil; }
+          if (!picked.length) { closePhase('skipped', 'skipped'); store.updateTask(task); run.status = 'succeeded'; this.saveRun(run); this.setTaskStatus(task, 'pr_open'); return { done: true }; }
           const text = picked.map((c) => `- ${c.author}${c.path ? ` (${c.path}${c.line ? `:${c.line}` : ''})` : ''}: ${c.body}`).join('\n');
           goBack(backTarget(['implement']), `Reviewers left comments on the pull request. Address each one, keep changes minimal, then stop.\n\n${text}${response.comment ? `\n\nAdditional guidance: ${response.comment}` : ''}`);
         } else { // skip: stay idle with the PR open
           closePhase('skipped', 'skipped');
           run.status = 'succeeded'; this.saveRun(run);
           this.setTaskStatus(task, 'pr_open');
-          return hil;
+          return { done: true };
         }
         break;
       }
@@ -973,7 +1006,7 @@ export class Engine {
           if (target) goBack(target, `Answers to your questions:\n\n${answers || p.questions.map((q) => q.question).join('\n')}`);
         }
         task.updatedAt = nowIso(); store.updateTask(task);
-        if (consumed) return hil; // phase is still running; nothing else to do
+        if (consumed) return { done: true }; // phase is still running; nothing else to do
         break;
       }
       case 'escalation': {
@@ -984,11 +1017,7 @@ export class Engine {
         break;
       }
     }
-    run.status = 'running'; this.saveRun(run);
-    task.updatedAt = nowIso(); store.updateTask(task);
-    this.setTaskStatus(task, 'running');
-    void this.advance(task.id);
-    return hil;
+    return { done: false };
   }
 
   /**

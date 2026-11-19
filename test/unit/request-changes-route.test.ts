@@ -85,9 +85,7 @@ describe('POST /tasks/:id/request-changes', () => {
     const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: APPROVE }) })), {}, gh);
 
     const reviewer = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
-    await app.engine.advance(reviewer.id);
-    await app.engine.respondHil(app.store.openHilForTask(reviewer.id)[0]!.id, { decision: 'approve', reviewEvent: 'approve' }, 'web');
-    await app.engine.advance(reviewer.id);
+    await app.engine.advance(reviewer.id);   // a clean review approves the PR on its own; no checkpoint to answer
     expect(app.store.getTask(reviewer.id)!.status).toBe('pr_open');
 
     const res = await post(mount(app), reviewer.id, { text: 'fix it yourself' });

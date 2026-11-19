@@ -33,7 +33,7 @@ const blankTask = (id: string): Task => ({
   baseRemote: 'origin', baseBranch: 'main', branch: `sdlc/${id}`, worktreePath: '/w', pipelineName: 'auto',
   reviewMode: 'conceptual', postReview: false, status: 'created', totalCostUsd: 0, prUrl: null,
   prNumber: null, prFeedbackCursor: null, prHeadSha: null, reviewDecision: null, reviewDecisionSha: null,
-  modelOverrides: null, jiraKey: null, createdAt: '', updatedAt: '',
+  modelOverrides: null, jiraKey: null, approveOnClean: true, createdAt: '', updatedAt: '',
 });
 
 describe('openDb schema_version bookkeeping', () => {
@@ -73,6 +73,7 @@ describe('openDb schema_version bookkeeping', () => {
     expect(columns(file, 'phase_runs')).toContain('head_sha');
     expect(columns(file, 'tasks')).toContain('review_decision');
     expect(columns(file, 'tasks')).toContain('jira_key');
+    expect(columns(file, 'tasks')).toContain('approve_on_clean');
   });
 
   it('migrates a DB from before the review decision columns and loads its old rows with no decision', () => {
@@ -106,8 +107,8 @@ describe('openDb schema_version bookkeeping', () => {
 
     const db = openDb(file);
     try {
-      // `insertTask` is positional, so the new column has to be the physical last one of a migrated DB
-      expect(columns(file, 'tasks').at(-1)).toBe('jira_key');
+      // `insertTask` is positional, so each new column has to come last, in the order the migrations added them
+      expect(columns(file, 'tasks').slice(-2)).toEqual(['jira_key', 'approve_on_clean']);
       const store = new Store(db);
       const now = new Date().toISOString();
       store.insertTask({ ...blankTask('t_j'), jiraKey: 'ABC-1', createdAt: now, updatedAt: now });
@@ -185,7 +186,7 @@ describe('openDb schema_version bookkeeping, further cases', () => {
         id: 't_1', title: 'x', initialPrompt: 'p', refinedPrompt: null, repoPath: '/r', repoSlug: null,
         baseRemote: 'origin', baseBranch: 'main', branch: 'sdlc/t_1', worktreePath: '/w', pipelineName: 'auto',
         reviewMode: 'conceptual', postReview: false, status: 'created', totalCostUsd: 0, prUrl: null,
-        prNumber: null, prFeedbackCursor: null, prHeadSha: null, reviewDecision: null, reviewDecisionSha: null, modelOverrides: null, jiraKey: null,
+        prNumber: null, prFeedbackCursor: null, prHeadSha: null, reviewDecision: null, reviewDecisionSha: null, modelOverrides: null, jiraKey: null, approveOnClean: true,
         createdAt: now, updatedAt: now,
       });
       // Columns added by the later migrations must be writable, not just present.
@@ -194,10 +195,26 @@ describe('openDb schema_version bookkeeping, further cases', () => {
       t.prHeadSha = 'deadbeef';
       t.reviewDecision = 'APPROVED'; t.reviewDecisionSha = 'cafe';
       t.jiraKey = 'ABC-1';
+      t.approveOnClean = false;
       store.updateTask(t);
       expect(store.getTask('t_1')!.prHeadSha).toBe('deadbeef');
-      expect(store.getTask('t_1')).toMatchObject({ reviewDecision: 'APPROVED', reviewDecisionSha: 'cafe', jiraKey: 'ABC-1' });
+      expect(store.getTask('t_1')).toMatchObject({ reviewDecision: 'APPROVED', reviewDecisionSha: 'cafe', jiraKey: 'ABC-1', approveOnClean: false });
       expect(store.getTask('t_1')!.modelOverrides).toEqual({ implement: { model: 'opus' } });
+    } finally { db.close(); }
+  });
+
+  it('a task written before the last migration keeps approving a clean review', () => {
+    const file = dbFile('sdlc-db-backfill-');
+    handBuiltDb(file, MIGRATIONS.length - 1, [MIGRATIONS.length - 1]);
+    expect(columns(file, 'tasks')).not.toContain('approve_on_clean');
+    const now = new Date().toISOString();
+    read(file, (db) => db.prepare('INSERT INTO tasks (id,title,initial_prompt,repo_path,base_branch,branch,worktree_path,pipeline_name,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run('t_old', 'x', 'p', '/r', 'main', 'sdlc/t_old', '/w', 'standard', 'pr_open', now, now));
+
+    const db = openDb(file);
+    try {
+      // the new column is backfilled with DEFAULT 1, so an existing task is not silently switched off
+      expect(new Store(db).getTask('t_old')!.approveOnClean).toBe(true);
     } finally { db.close(); }
   });
 
