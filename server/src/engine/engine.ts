@@ -137,6 +137,7 @@ export class Engine {
       baseRemote, baseBranch, branch: wt.branch, worktreePath: wt.worktreePath, pipelineName: spec.name,
       reviewMode: input.reviewMode ?? repoConfig.review_mode ?? 'conceptual', postReview: input.postReview ?? repoConfig.post_review ?? false,
       status: 'created', totalCostUsd: 0, prUrl: pr?.url ?? null, prNumber: pr?.number ?? null, prFeedbackCursor: null, prHeadSha: pr?.headRefOid ?? null,
+      reviewDecision: null, reviewDecisionSha: null,
       modelOverrides: input.modelOverrides ?? null, createdAt: now, updatedAt: now,
     };
     const run: PipelineRun = { id: newId('r'), taskId: id, pipelineName: spec.name,
@@ -319,15 +320,10 @@ export class Engine {
         this.d.events.emit('task.updated', { task: t, change: `base ${from} → ${pr.baseRefName} (changed on GitHub)` }, { taskId });
         return `base → ${pr.baseRefName}`;
       }
-      // the author side picks up new review comments, the reviewer side new commits
-      if (this.roleOfTask(taskId) === 'reviewer') {
-        if (!pr.headRefOid || pr.headRefOid === t.prHeadSha) return null;
-        await this.rereview(t, pr.headRefOid, auth);
-        return `new commits (${pr.headRefOid.slice(0, 7)}) → review`;
-      }
-      if (this.d.store.openHilForTask(taskId).some((h) => h.kind === 'pr_feedback')) return null;
-      const fb = await this.pollPrFeedbackInner(taskId);
-      return fb.new ? `${fb.new} new PR comment(s) → HIL` : null;
+      // every pr_open task keeps GitHub's review verdict, whichever side of the PR it is on
+      const approval = this.applyReviewDecision(t, pr);
+      const rest = await this.syncPrRole(t, pr, auth);
+      return [approval, rest].filter(Boolean).join('; ') || null;
     }
     // no PR: did the branch reach its base some other way (merged by hand, another tool)?
     if (!(await refExists(t.repoPath, `refs/heads/${t.branch}`))) return null;
@@ -337,6 +333,40 @@ export class Engine {
     if (!(await refExists(t.repoPath, baseRef)) || !(await isAncestor(t.repoPath, `refs/heads/${t.branch}`, baseRef))) return null;
     await this.markMerged(t, auth);
     return 'merged (branch found in its base)';
+  }
+
+  /** The side-specific half of a `pr_open` sync: the reviewer follows new commits, the author new review comments. */
+  private async syncPrRole(t: Task, pr: PrInfo, auth: RepoAuth): Promise<string | null> {
+    if (this.roleOfTask(t.id) === 'reviewer') {
+      if (!pr.headRefOid || pr.headRefOid === t.prHeadSha) return null;
+      await this.rereview(t, pr.headRefOid, auth);
+      return `new commits (${pr.headRefOid.slice(0, 7)}) → review`;
+    }
+    if (this.d.store.openHilForTask(t.id).some((h) => h.kind === 'pr_feedback')) return null;
+    const fb = await this.pollPrFeedbackInner(t.id);
+    return fb.new ? `${fb.new} new PR comment(s) → HIL` : null;
+  }
+
+  /**
+   * Keeps GitHub's review verdict on the task. An `APPROVED` is remembered together with the PR head it was seen at:
+   * GitHub keeps reporting `APPROVED` after new commits unless the repository dismisses stale reviews, so once the head
+   * moves the mark is dropped locally (the sha stays, so it stays dropped). Anything else from GitHub clears the mark
+   * and re-arms it for the next approval. Returns a note only when the visible mark appeared or disappeared.
+   */
+  private applyReviewDecision(t: Task, pr: PrInfo): string | null {
+    const raw = pr.reviewDecision || null;
+    const stale = raw === 'APPROVED' && !!t.reviewDecisionSha && !!pr.headRefOid && pr.headRefOid !== t.reviewDecisionSha;
+    const decision = raw !== 'APPROVED' ? raw : stale ? null : 'APPROVED';
+    const sha = raw !== 'APPROVED' ? null : t.reviewDecisionSha ?? pr.headRefOid ?? null;
+    if (decision === t.reviewDecision && sha === t.reviewDecisionSha) return null;
+    const wasMarked = t.reviewDecision === 'APPROVED';
+    const isMarked = decision === 'APPROVED';
+    t.reviewDecision = decision; t.reviewDecisionSha = sha; t.updatedAt = nowIso();
+    this.d.store.updateTask(t);
+    if (wasMarked === isMarked) return null;              // e.g. null → REVIEW_REQUIRED: persisted, but nothing to show
+    const note = isMarked ? 'approved on GitHub' : stale ? 'approval dropped (new commits)' : `approval dropped (${raw ?? 'no review'} on GitHub)`;
+    this.d.events.emit('task.updated', { task: t, change: note }, { taskId: t.id });
+    return note;
   }
 
   /**
