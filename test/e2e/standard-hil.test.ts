@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { FakeRunner } from '../fakes/fake-runner.js';
 import { makeRemoteRepo, makeRepo, remoteFile, sh, testApp, tmpDir } from '../helpers.js';
 import { FakeGitHub } from '../fakes/fake-github.js';
+import { NO_ANSWER } from '../../server/src/engine/engine.js';
 
 describe('standard pipeline with HIL (fake runner)', () => {
   it('refine → plan → approve_plan(request_changes resumes plan) → implement → test → PR → review → approve_result(request_changes → implement → review) → approve → qa', async () => {
@@ -36,11 +37,10 @@ describe('standard pipeline with HIL (fake runner)', () => {
     expect(hil.kind).toBe('refine_prompt');
     expect(hil.payload.kind === 'refine_prompt' && hil.payload.questions.length).toBe(1);
     expect(task.branch).toBe(`sdlc/${task.id}`); // fake runner has no brief(): no slug at creation
-    // an unanswered clarifying question blocks approve: it must not silently become the implementer's own choice
-    await expect(app.engine.respondHil(hil.id, { decision: 'approve', edited: { prompt: 'Change a.txt from x to y (file: a.txt)' } }, 'web')).rejects.toThrow(/answer the clarifying question/);
-    await app.engine.respondHil(hil.id, { decision: 'approve', edited: { prompt: 'Change a.txt from x to y (file: a.txt)', title: 'Flip a.txt to y' }, answers: { 'Which file?': 'a.txt' } }, 'web');
+    // a blank answer is a legal answer: approve goes through and the prompt tells the implementer the call is its own (answered questions: clarify-questions.test.ts)
+    await app.engine.respondHil(hil.id, { decision: 'approve', edited: { prompt: 'Change a.txt from x to y (file: a.txt)', title: 'Flip a.txt to y' }, answers: { 'Which file?': '  ' } }, 'web');
     await app.engine.advance(task.id);
-    expect(app.store.getTask(task.id)!.refinedPrompt).toBe('Change a.txt from x to y (file: a.txt)\n\n## Clarifying questions, answered by the developer\n- **File**: Which file?\n  → a.txt');
+    expect(app.store.getTask(task.id)!.refinedPrompt).toBe(`Change a.txt from x to y (file: a.txt)\n\n## Clarifying questions\n- **File**: Which file?\n  → ${NO_ANSWER}`);
     expect(app.store.getTask(task.id)!.branch).toBe(`sdlc/flip-a-txt-${task.id}`);
     expect(execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: task.worktreePath }).toString().trim()).toBe(`sdlc/flip-a-txt-${task.id}`);
 

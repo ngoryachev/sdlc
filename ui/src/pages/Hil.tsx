@@ -78,13 +78,11 @@ export function HilPage() {
   /** Translated text where there is one, the English original otherwise; identity before Translate is pressed. */
   const t = (s: string) => (tr && !showOriginal ? tr[s] ?? s : s);
 
-  const unanswered = h?.payload.kind === 'refine_prompt' ? h.payload.questions.filter((q) => !answers[q.question]?.trim()).map((q) => q.header) : [];
   const counts = { fix: 0, post: 0, skip: 0 };
   for (const a of Object.values(actions)) counts[a]++;
   const granular = h?.payload.kind === 'approve_result';
   const respond = async (decision: HilDecision) => {
     if (!h) return;
-    if (decision === 'approve' && unanswered.length) { toast(`answer first: ${unanswered.join(', ')}`, 'error'); return; }
     // at a result checkpoint the items decide: anything marked fix sends the run back, otherwise it goes on
     if (granular && decision !== 'abort') decision = counts.fix ? 'request_changes' : 'approve';
     if (decision === 'request_changes' && !comment.trim() && !counts.fix) { toast('a comment is required for request changes', 'error'); return; }
@@ -149,7 +147,7 @@ export function HilPage() {
               <div className="act"><button className="primary" disabled={busy} onClick={() => respond('approve')}>{counts.fix ? `Send ${counts.fix} to fix${counts.post ? `, post ${counts.post} later` : ''}${counts.skip ? `, skip ${counts.skip}` : ''}` : counts.post ? `Continue, post ${counts.post}${counts.skip ? `, skip ${counts.skip}` : ''}` : `Continue${counts.skip ? `, skip ${counts.skip}` : ''}`}</button><small>{counts.fix ? h.next.request_changes : h.next.approve}</small></div>
             )}
             {h.allowedDecisions.filter((d) => d !== 'abort' && !(granular && (d === 'approve' || d === 'request_changes'))).map((d) => (
-              <div className="act" key={d}><button className={['approve', 'answer', 'allow', 'retry'].includes(d) ? 'primary' : ''} disabled={busy || (d === 'approve' && unanswered.length > 0)} title={d === 'approve' && unanswered.length ? `answer first: ${unanswered.join(', ')}` : undefined} onClick={() => respond(d)}>{label(d)}</button><small>{h.next[d]}</small></div>
+              <div className="act" key={d}><button className={['approve', 'answer', 'allow', 'retry'].includes(d) ? 'primary' : ''} disabled={busy} onClick={() => respond(d)}>{label(d)}</button><small>{h.next[d]}</small></div>
             ))}
             <div className="act" style={{ marginLeft: 'auto' }}><ArmedAbort onClick={() => respond('abort')} disabled={busy} /><small>{h.next.abort}</small></div>
           </div>
@@ -193,7 +191,7 @@ function Payload({ p, edited, setEdited, answers, setAnswers, actions, setAction
           {p.clarifyError && <div className="small" style={{ color: 'var(--warn)', marginBottom: 6 }}>clarify failed: {p.clarifyError}. No questions or rewrite; the prompt below is the original.</div>}
           {p.questions.length > 0 && (
             <div className="card" style={{ background: 'var(--bg)' }}>
-              <b>Claude asks</b> <span className="small muted">— every question needs an answer; they are appended to the prompt</span>
+              <b>Claude asks</b> <span className="small muted">— answers are appended to the prompt; leave one blank to let the implementer decide it</span>
               {p.questions.map((q, i) => (
                 <div key={i} style={{ marginTop: 8 }}>
                   <div><b>{t(q.header)}:</b> {t(q.question)}</div>

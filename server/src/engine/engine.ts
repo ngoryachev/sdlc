@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 const execFileP = promisify(execFile);
 import path from 'node:path';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
-import type { AskUserQuestionItem, HilRequest, HilResponse, ModelOverrides, PhaseRun, PipelineRun, Task, TaskRole, TaskStatus } from '@sdlc/shared';
+import type { AskUserQuestionItem, ClarifyQuestion, HilRequest, HilResponse, ModelOverrides, PhaseRun, PipelineRun, Task, TaskRole, TaskStatus } from '@sdlc/shared';
 import { ACTIVE_STATUSES, FINISHED_STATUSES } from '@sdlc/shared';
 import type { SdlcConfig } from '../config/config.js';
 import { loadRepoConfig, parseDuration } from '../config/config.js';
@@ -27,6 +27,9 @@ import { GitPhaseExecutor } from '../phases/git.js';
 import { HilPhaseExecutor, newHilRequest } from '../phases/hil.js';
 import { buildTemplateContext } from './context.js';
 import { HilBroker } from './hil-broker.js';
+
+/** Stands in for a clarifying answer the developer deliberately did not give. Defers to the prompt body: clarify writes `suggestedPrompt` so a question can be answered inline there instead. */
+export const NO_ANSWER = '(no separate answer — if the task text above does not settle it, decide it yourself and say what you chose)';
 
 export interface CreateTaskInput {
   /** May be omitted for a pull request (its title and body are used) or when starting after `implement` on an existing branch (a short summary of the branch is generated). */
@@ -726,11 +729,6 @@ export class Engine {
     if (!hil.allowedDecisions.includes(response.decision)) throw new HttpError(400, `decision ${response.decision} not allowed for ${hil.kind}`);
     const fixKeys = Object.entries(response.findings ?? {}).filter(([, a]) => a === 'fix').map(([k]) => k);
     if (response.decision === 'request_changes' && !response.comment?.trim() && !fixKeys.length) throw new HttpError(400, 'request_changes needs a comment or at least one finding marked to fix');
-    if (hil.payload.kind === 'refine_prompt' && response.decision === 'approve') {
-      // every clarifying question needs an explicit answer: an unanswered one silently becomes the implementer's own choice
-      const unanswered = hil.payload.questions.filter((q) => !response.answers?.[q.question]?.trim());
-      if (unanswered.length) throw new HttpError(400, `answer the clarifying question(s) first: ${unanswered.map((q) => q.header).join(', ')}`);
-    }
 
     const task = store.getTask(hil.taskId)!;
     const run = store.latestRunForTask(task.id)!;
@@ -767,7 +765,9 @@ export class Engine {
       case 'refine_prompt': {
         const p = hil.payload as Extract<typeof hil.payload, { kind: 'refine_prompt' }>;
         const base = response.edited?.prompt?.trim() || p.suggestedPrompt || task.initialPrompt;
-        task.refinedPrompt = p.questions.length ? `${base}\n\n## Clarifying questions, answered by the developer\n${p.questions.map((q) => `- **${q.header}**: ${q.question}\n  → ${response.answers![q.question]!.trim()}`).join('\n')}` : base;
+        // an unanswered question is a legal answer in itself: the developer left that call to the implementer, so say so in the prompt
+        const asked = (q: ClarifyQuestion) => `- **${q.header}**: ${q.question}\n  → ${response.answers?.[q.question]?.trim() || NO_ANSWER}`;
+        task.refinedPrompt = p.questions.length ? `${base}\n\n## Clarifying questions\n${p.questions.map(asked).join('\n')}` : base;
         task.title = response.edited?.title?.trim() || p.suggestedTitle || task.title;
         if (p.suggestedBranch) await this.renameBranchTo(task, p.suggestedBranch);
         closePhase('succeeded', 'approved');
