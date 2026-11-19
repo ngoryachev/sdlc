@@ -28,8 +28,8 @@ import { HilPhaseExecutor, newHilRequest } from '../phases/hil.js';
 import { buildTemplateContext } from './context.js';
 import { HilBroker } from './hil-broker.js';
 
-/** Stands in for a clarifying answer the developer deliberately did not give. */
-export const NO_ANSWER = '(no answer: the developer left this to your judgement — decide it yourself and say what you chose)';
+/** Stands in for a clarifying answer the developer deliberately did not give. Defers to the prompt body: clarify writes `suggestedPrompt` so a question can be answered inline there instead. */
+export const NO_ANSWER = '(no separate answer — if the task text above does not settle it, decide it yourself and say what you chose)';
 
 export interface CreateTaskInput {
   /** May be omitted for a pull request (its title and body are used) or when starting after `implement` on an existing branch (a short summary of the branch is generated). */
