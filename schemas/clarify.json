@@ -20,7 +20,6 @@
     },
     "questions": {
       "type": "array",
-      "maxItems": 4,
       "items": {
         "type": "object",
         "required": [
