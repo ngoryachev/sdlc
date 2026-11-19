@@ -323,3 +323,95 @@ describe('refine answers itself when clarify asked nothing', () => {
     expect(hil.payload.kind === 'refine_prompt' && hil.payload.clarifyError).toBe('fake failure');
   });
 });
+
+describe('an auto-approve GitHub may refuse', () => {
+  /** A GitHub whose `pr view` does not say who opened the PR (an older `gh`, or a reply without the field). */
+  class AuthorlessGitHub extends FakeGitHub {
+    async prView(cwd: string, n: number) { const p = await super.prView(cwd, n); return { ...p, author: undefined }; }
+  }
+  /** A GitHub that is simply broken: nothing to do with who opened the pull request. */
+  class BrokenReviewGitHub extends FakeGitHub {
+    async postReview(): Promise<void> { throw new Error('gh api repos/test/repo/pulls/1/reviews failed: HTTP 503: Service unavailable'); }
+  }
+
+  it('an unknown PR author still auto-approves, and the refusal degrades to a comment instead of failing the task', async () => {
+    const dir = tmpDir('sdlc-auto-own-unknown-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new AuthorlessGitHub(bare);
+    const n = someonesPr(repo, gh, 'feature', 'tester');          // sdlc's own account, but `prView` does not say so
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: CLEAN }) })), { repos: [{ name: 'r', path: repo, gh_user: 'tester' }] }, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+
+    // the checkpoint is skipped as usual, and the approval nobody is watching is not allowed to break the run
+    expect(app.store.openHilForTask(task.id)).toEqual([]);
+    expect(app.store.listHil({ taskId: task.id }).map((h) => h.answeredVia)).toEqual(['auto']);
+    expect(requested(app, task.id)).toEqual([]);
+    expect(gh.reviews).toEqual([{ number: n, event: 'COMMENT', body: expect.stringContaining('cannot be submitted on a pull request opened by the same account'), comments: [] }]);
+    const publish = app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'publish')!;
+    expect([publish.status, publish.error]).toEqual(['succeeded', null]);
+    expect(app.events.replay(0, task.id).filter((e) => e.type === 'engine.warning').length).toBe(1);
+    expect(app.store.getTask(task.id)!.status).toBe('pr_open');
+  });
+
+  it('the account and the PR author are matched the way GitHub compares logins, whatever their case', async () => {
+    const dir = tmpDir('sdlc-auto-own-case-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, gh, 'feature', 'tester');
+    // the same account, written as GitHub displays it: the fake would accept the approval, the checkpoint must still open
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: CLEAN }) })), { repos: [{ name: 'r', path: repo, gh_user: 'Tester' }] }, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    expect([hil.kind, hil.status, hil.answeredVia]).toEqual(['approve_result', 'open', null]);
+    expect(gh.reviews).toEqual([]);
+    expect(app.store.getTask(task.id)!.status).toBe('waiting_hil');
+  });
+
+  it('a refused request_changes degrades to a comment too, with its findings', async () => {
+    const dir = tmpDir('sdlc-auto-own-rc-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, gh, 'feature', 'tester');
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: FINDING }) })), { repos: [{ name: 'r', path: repo, gh_user: 'tester' }] }, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    // a finding always asks the human; they keep the proposed verdict, which GitHub refuses on sdlc's own PR
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    await app.engine.respondHil(hil.id, { decision: 'approve', findings: { 'review:0': 'post' }, reviewEvent: 'request_changes' }, 'web');
+    await app.engine.advance(task.id);
+
+    expect(gh.reviews).toEqual([{ number: n, event: 'COMMENT', body: expect.stringContaining('the `request_changes` verdict cannot be submitted'), comments: [{ path: 'feature.txt', line: 2, body: expect.stringContaining('Wrong second line') }] }]);
+    const publish = app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'publish')!;
+    expect([publish.status, publish.resultText]).toEqual(['succeeded', expect.stringContaining('as COMMENT (REQUEST_CHANGES refused: own pull request)')]);
+    expect(app.events.replay(0, task.id).filter((e) => e.type === 'engine.warning').map((e) => (e.payload as { message: string }).message))
+      .toEqual([`GitHub refused REQUEST_CHANGES on PR #${n} (sdlc opened it itself); posted the review as a comment instead`]);
+  });
+
+  it('any other GitHub failure still fails the phase: only the own-PR refusal is forgiven', async () => {
+    const dir = tmpDir('sdlc-auto-publish-broken-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new BrokenReviewGitHub(bare);
+    const n = someonesPr(repo, gh);                               // somebody else's PR: the auto-approve goes ahead
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: CLEAN }) })), {}, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+
+    expect(app.store.listHil({ taskId: task.id }).filter((h) => h.kind === 'approve_result').map((h) => h.answeredVia)).toEqual(['auto']);
+    const publish = app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'publish')!;
+    expect(publish.status).toBe('failed');
+    expect(publish.error).toContain('HTTP 503');
+    expect(gh.reviews).toEqual([]);
+    expect(app.events.replay(0, task.id).filter((e) => e.type === 'engine.warning')).toEqual([]);
+    // the failure is not degraded and not swallowed: it reaches the human as the escalation of the failed phase
+    const esc = app.store.openHilForTask(task.id)[0]!;
+    expect([esc.kind, esc.phaseRunId]).toEqual(['escalation', publish.id]);
+    expect(app.store.getTask(task.id)!.status).toBe('waiting_hil');
+  });
+});
