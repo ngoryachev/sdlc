@@ -143,7 +143,7 @@ function RepoFiles({ repo, onChanged }: { repo: string; onChanged: () => void })
   };
   return (
     <div style={{ padding: '4px 0 10px' }}>
-      <div className="small muted">Every Claude phase, shell phase and <span className="mono">setup_command</span> of a task in this repository runs with these variables set to the file's path on the server (max 10 MB each, stored outside the repo with mode 0600). Names starting with <span className="mono">SDLC_</span> are refused: they never reach a phase. The contents are never shown or downloaded.</div>
+      <div className="small muted">Every Claude phase, shell phase and <span className="mono">setup_command</span> of a task in this repository runs with these variables set to the file's path on the server (max 10 MB each, stored outside the repo with mode 0600). Names starting with <span className="mono">SDLC_</span> are refused (they never reach a phase), as are names the phase itself needs (<span className="mono">PATH</span>, <span className="mono">HOME</span>, …). The contents are never shown or downloaded.</div>
       <table style={{ marginTop: 6 }}><tbody>
         {(files ?? []).map((f) => (
           <tr key={f.env}>

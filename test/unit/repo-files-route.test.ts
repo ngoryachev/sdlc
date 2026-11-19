@@ -89,11 +89,12 @@ describe('per-repository files', () => {
 
   it('refuses an env name a phase could never see, and writes nothing in the process', async () => {
     const { app, filesDir, hono } = setup('sdlc-repo-files-names-');
-    for (const bad of ['SDLC_SECRET', '1BAD', 'a-b', '', '  ']) {
+    for (const bad of ['SDLC_SECRET', '1BAD', 'a-b', '', '  ', 'PATH', 'HOME', 'NODE_OPTIONS']) {
       const res = await upload(hono, bad, 'key.json', SECRET);
       expect(res.status, bad).toBe(400);
     }
     expect((await (await upload(hono, 'SDLC_SECRET', 'k', 'x')).json() as { error: string }).error).toMatch(/SDLC_/);
+    expect((await (await upload(hono, 'PATH', 'k', 'x')).json() as { error: string }).error).toMatch(/needs this variable/);
     expect(app.config.repos[0]!.files).toEqual([]);
     expect(fs.existsSync(filesDir)).toBe(false);
   });
@@ -160,6 +161,7 @@ describe('repos[].files in config.yaml', () => {
   it('rejects a hand-written entry a phase could never use', () => {
     const entry = (files: unknown) => () => ConfigSchema.parse({ repos: [{ name: 'shop', path: '/srv/shop', files }] });
     expect(entry([{ env: 'SDLC_X', path: '/a' }])).toThrow(/SDLC_/);
+    expect(entry([{ env: 'PATH', path: '/a' }])).toThrow(/needs this variable/);
     expect(entry([{ env: 'a-b', path: '/a' }])).toThrow(/not a valid environment variable name/);
     expect(entry([{ env: 'A', path: 'relative/key' }])).toThrow(/absolute/);
     expect(entry([{ env: 'A', path: '/a' }, { env: 'A', path: '/b' }])).toThrow(/configured twice/);

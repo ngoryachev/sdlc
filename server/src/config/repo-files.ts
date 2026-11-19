@@ -9,11 +9,14 @@ export const MAX_REPO_FILE_BYTES = 10 * 1024 * 1024;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** filteredEnv() strips SDLC_* (sdlc's own settings), so such a variable would never reach a phase. */
 const ENV_RESERVED_PREFIX = 'SDLC_';
+/** The file env is merged last (filteredEnv), so one of these would replace what the phase itself needs to run. */
+const ENV_RESERVED = new Set(['PATH', 'HOME', 'SHELL', 'PWD', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'NODE_OPTIONS']);
 
 /** Why this env variable name cannot be used, or null. */
 export function envNameError(env: string): string | null {
   if (!ENV_NAME.test(env)) return `"${env}" is not a valid environment variable name (${ENV_NAME.source})`;
   if (env.startsWith(ENV_RESERVED_PREFIX)) return `${env}: names starting with ${ENV_RESERVED_PREFIX} are reserved for sdlc and never reach a phase`;
+  if (ENV_RESERVED.has(env)) return `${env}: a phase's own environment needs this variable; setting it to a file would break every phase of this repository`;
   return null;
 }
 
