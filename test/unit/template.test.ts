@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { renderBody, renderTemplate } from '../../server/src/pipeline/template.js';
 import { evalExpr } from '../../server/src/pipeline/expr.js';
@@ -83,6 +84,26 @@ describe('renderBody', () => {
     // text follows straight after the block: the blank line before it belongs to that paragraph, not to the block
     expect(renderBody(['head', '', '{{task.jira_url?}}', 'footer'].join('\n'), ctx('', ''), OWN)).toBe(['head', '', 'footer'].join('\n'));
     expect(renderBody(['head', '', '{{task.jira_url?}}', 'footer'].join('\n'), ctx('J', ''), OWN)).toBe(['head', '', 'J', 'footer'].join('\n'));
+  });
+
+  /** The other positions a block can sit in, which the shipped template does not exercise. */
+  it('drops the block wherever it sits: first line, only line, alone before a blank line', () => {
+    expect(renderBody(['{{task.jira_url?}}', 'footer'].join('\n'), ctx('', ''), OWN)).toBe('footer');
+    expect(renderBody(['{{task.jira_url?}}', '', 'footer'].join('\n'), ctx('', ''), OWN)).toBe('footer');
+    expect(renderBody('{{task.jira_url?}}', ctx('', ''), OWN)).toBe('');
+    // a template file ends with a newline: the trailing empty line is the separator, the blank line before stays
+    expect(renderBody(['a', '', '{{task.jira_url?}}', ''].join('\n'), ctx('', ''), OWN)).toBe('a\n');
+  });
+
+  /** The template actually shipped, rather than a stand-in for it: without links its body must not move a byte. */
+  it('leaves the shipped prompts/pr_body.md identical to today when neither link exists', () => {
+    const shipped = fs.readFileSync(new URL('../../prompts/pr_body.md', import.meta.url), 'utf8');
+    const c = { task: { id: 't_1', branch: 'sdlc/x', cost_usd: '0.10', prompt: 'do x', jira_url: '', branch_url: '' }, phases: {}, artifacts: {} };
+    const asBefore = shipped.replace('{{task.jira_url?}}\n{{task.branch_url?}}\n\n', '');
+    expect(renderBody(shipped, c, OWN)).toBe(renderTemplate(asBefore, c));
+    // and with both it carries them on their own lines, right above the footer rule
+    const both = { task: { ...c.task, jira_url: 'https://j/browse/ABC-1', branch_url: 'https://gh/o/r/tree/b' } };
+    expect(renderBody(shipped, both, OWN)).toContain('\nhttps://j/browse/ABC-1\nhttps://gh/o/r/tree/b\n\n---\n');
   });
 });
 
