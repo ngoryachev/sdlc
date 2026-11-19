@@ -26,5 +26,19 @@ describe('branchNameFor', () => {
     expect(branchNameFor('play-lines-to-end', 't_2')).toBe('sdlc/play-lines-to-end-t_2');
     expect(branchNameFor('Сделать до конца', 't_3')).toBe('sdlc/t_3');
     expect(isSdlcBranch('sdlc/t_3', 't_3')).toBe(true); expect(isSdlcBranch('sdlc/x-t_3', 't_3')).toBe(true); expect(isSdlcBranch('feature/x', 't_3')).toBe(false);
+    expect(branchNameFor('Add playToEnd flag', 't_1', null)).toBe('sdlc/add-playtoend-flag-t_1');
+  });
+
+  it('puts an issue key in front of the slug, with its case, and leaves the 40-char cap on the slug', () => {
+    expect(branchNameFor('Add a flag so traps play to the end', 't_1', 'ABC-123')).toBe('sdlc/ABC-123-add-a-flag-so-traps-t_1');
+    expect(branchNameFor('Сделать до конца', 't_3', 'ABC-123')).toBe('sdlc/ABC-123-t_3');
+    expect(branchNameFor('', 't_3', 'ABC-123')).toBe('sdlc/ABC-123-t_3');
+    // the cap counts the slug only: the same five long words are cut at the same word with and without a key
+    const long = 'extraordinarily verbose summary describing everything precisely';
+    expect(branchNameFor(long, 't_9')).toBe('sdlc/extraordinarily-verbose-summary-t_9');
+    expect(branchNameFor(long, 't_9', 'PROJ-1')).toBe('sdlc/PROJ-1-extraordinarily-verbose-summary-t_9');
+    expect(isSdlcBranch('sdlc/ABC-123-some-slug-t_x', 't_x')).toBe(true);
+    expect(isSdlcBranch('sdlc/ABC-123-t_x', 't_x')).toBe(true);
+    expect(isSdlcBranch('sdlc/ABC-123-some-slug-t_y', 't_x')).toBe(false);
   });
 });

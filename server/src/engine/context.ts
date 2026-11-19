@@ -35,7 +35,7 @@ export function buildTemplateContext(o: {
       id: task.id, title: task.title, prompt: task.refinedPrompt ?? task.initialPrompt, initial_prompt: task.initialPrompt,
       branch: task.branch, base_branch: task.baseBranch, base_remote: task.baseRemote ?? '', base_ref: task.baseRemote ? `${task.baseRemote}/${task.baseBranch}` : task.baseBranch,
       worktree: task.worktreePath, repo: task.repoPath, review_mode: task.reviewMode, post_review: String(task.postReview),
-      cost_usd: task.totalCostUsd.toFixed(2), pr_url: task.prUrl ?? '',
+      cost_usd: task.totalCostUsd.toFixed(2), pr_url: task.prUrl ?? '', jira_key: task.jiraKey ?? '',
     },
     phases, artifacts, hil,
     loop: o.loop ?? { feedback: '', count: 0 },

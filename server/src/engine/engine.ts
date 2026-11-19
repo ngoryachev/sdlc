@@ -14,6 +14,7 @@ import type { PhaseSpec, PipelineSpec, RepoConfig } from '../pipeline/schema.js'
 import { PipelineSchema } from '../pipeline/schema.js';
 import { evalExpr } from '../pipeline/expr.js';
 import { renderTemplate } from '../pipeline/template.js';
+import { jiraKeyFrom, withJiraKey } from './jira.js';
 import { adoptWorktree, branchNameFor, createWorktree, defaultBase, deleteLocalBranch, deleteRemoteBranch, diffAgainst, fetchBranch, git, isAncestor, isSdlcBranch, mergeLocally, push, pushBranch, recreateWorktree, refExists, remoteHasBranch, remotes, removeWorktree, renameBranch, repoToplevel, slugFromRemote, syncBranchWithRemote, syncLocalBase, taskCommitCount } from '../git/git.js';
 import { TRUSTED_ASSOCIATIONS, type GitHub, type MergeMethod, type PrInfo, type RepoAuth } from '../git/gh.js';
 import type { RepoAccounts } from '../git/accounts.js';
@@ -132,6 +133,13 @@ export class Engine {
     try { await runSetup(repoConfig, wt.worktreePath); }
     catch (e) { await removeWorktree(repoPath, wt.worktreePath, wt.branch, { deleteBranchIfEmpty: wt.baseRef }).catch(() => {}); throw e; }
     if (summarise) prompt = await this.describeBranch(wt.worktreePath, baseRef);
+    // the key goes on the branch at once: naming runs in the background, may fail, and may produce no slug at all
+    const jiraKey = jiraKeyFrom(prompt);
+    if (jiraKey && !existingBranch) {
+      const named = branchNameFor('', id, jiraKey);
+      try { await renameBranch(wt.worktreePath, named); wt.branch = named; }
+      catch { /* the branch simply stays sdlc/<id>; the key is still stored on the task */ }
+    }
     const slug = await slugFromRemote(repoPath);
     const now = nowIso();
     const title = input.title ?? pr?.title ?? titleFrom(prompt);
@@ -141,7 +149,7 @@ export class Engine {
       reviewMode: input.reviewMode ?? repoConfig.review_mode ?? 'conceptual', postReview: input.postReview ?? repoConfig.post_review ?? false,
       status: 'created', totalCostUsd: 0, prUrl: pr?.url ?? null, prNumber: pr?.number ?? null, prFeedbackCursor: null, prHeadSha: pr?.headRefOid ?? null,
       reviewDecision: null, reviewDecisionSha: null,
-      modelOverrides: input.modelOverrides ?? null, createdAt: now, updatedAt: now,
+      modelOverrides: input.modelOverrides ?? null, jiraKey, createdAt: now, updatedAt: now,
     };
     const run: PipelineRun = { id: newId('r'), taskId: id, pipelineName: spec.name,
       pipelineSnapshot: { spec, baseDir: loaded.baseDir, filePath: loaded.filePath, from: spec.phases[seg.fromIdx]!.name, to: spec.phases[seg.toIdx]!.name },
@@ -203,7 +211,7 @@ export class Engine {
       const into = task.baseRemote ? `${task.baseRemote}/${task.baseBranch}` : task.baseBranch;
       let via: 'pr' | 'local';
       if (task.prNumber) { await this.d.github.prMerge(task.repoPath, task.prNumber, m, auth); via = 'pr'; }
-      else { await mergeLocally({ repo: task.repoPath, base: task.baseBranch, baseRemote: task.baseRemote, head: task.branch, method: m, message: `${task.title}\n\nsdlc task ${task.id}`, author: config.git_author, auth }); via = 'local'; }
+      else { await mergeLocally({ repo: task.repoPath, base: task.baseBranch, baseRemote: task.baseRemote, head: task.branch, method: m, message: `${withJiraKey(task.title, task.jiraKey)}\n\nsdlc task ${task.id}`, author: config.git_author, auth }); via = 'local'; }
       events.emit('git.merged', { taskId: task.id, method: m, into, via }, { taskId: task.id });
       const re = await this.restack(task, children, auth);
       notes.push(...re.notes);
@@ -235,7 +243,8 @@ export class Engine {
       await push(task.repoPath, remote, task.branch, auth);
       events.emit('git.pushed', { taskId, branch: task.branch }, { taskId });
       const title = o.title?.trim() || task.title;
-      const created = await this.d.github.prCreate({ cwd: task.repoPath, head: task.branch, base: task.baseBranch, title, body: this.prBody(task), draft: !!o.draft }, auth);
+      // the issue key is a property of the published title, not of the task's own
+      const created = await this.d.github.prCreate({ cwd: task.repoPath, head: task.branch, base: task.baseBranch, title: withJiraKey(title, task.jiraKey), body: this.prBody(task), draft: !!o.draft }, auth);
       const fresh = this.mustTask(taskId);
       fresh.prUrl = created.url; fresh.prNumber = created.number; fresh.title = title; fresh.updatedAt = nowIso(); store.updateTask(fresh);
       events.emit('git.pr_created', { taskId, url: created.url, number: created.number }, { taskId });
@@ -518,7 +527,7 @@ export class Engine {
       task.title = named.title; task.updatedAt = nowIso(); this.d.store.updateTask(task);
       this.d.events.emit('task.updated', { task, change: 'title' }, { taskId });
     }
-    if (want.branch && named.branch && task.branch === `sdlc/${task.id}`) await this.renameBranchTo(task, named.branch);
+    if (want.branch && named.branch && isUnnamedBranch(task)) await this.renameBranchTo(task, named.branch);
   }
 
   private bg = new Map<string, Promise<void>>();
@@ -546,7 +555,7 @@ export class Engine {
   private async renameBranchTo(task: Task, summary: string): Promise<void> {
     if (task.prNumber || !isSdlcBranch(task.branch, task.id) || !fs.existsSync(path.join(task.worktreePath, '.git'))) return;
     if (await refExists(task.repoPath, `refs/remotes/${task.baseRemote ?? 'origin'}/${task.branch}`)) return;   // already pushed
-    const to = branchNameFor(summary, task.id);
+    const to = branchNameFor(summary, task.id, task.jiraKey);
     if (to === task.branch) return;
     const from = task.branch;
     try { await renameBranch(task.worktreePath, to); }
@@ -802,7 +811,9 @@ export class Engine {
         const asked = (q: ClarifyQuestion) => `- **${q.header}**: ${q.question}\n  → ${response.answers?.[q.question]?.trim() || NO_ANSWER}`;
         task.refinedPrompt = p.questions.length ? `${base}\n\n## Clarifying questions\n${p.questions.map(asked).join('\n')}` : base;
         task.title = response.edited?.title?.trim() || p.suggestedTitle || task.title;
+        if (!task.jiraKey) task.jiraKey = jiraKeyFrom(task.refinedPrompt);
         if (p.suggestedBranch) await this.renameBranchTo(task, p.suggestedBranch);
+        else if (task.jiraKey && isUnnamedBranch(task)) await this.renameBranchTo(task, '');   // a key found only now still lands on the branch
         closePhase('succeeded', 'approved');
         run.cursor++;
         break;
@@ -1241,6 +1252,11 @@ export function parseNaming(raw: string): { title?: string; branch?: string } {
   }
   const line = raw.trim().split('\n').pop()?.trim();
   return line && /^[a-z0-9-]+$/.test(line) ? { branch: line } : {};
+}
+
+/** The branch still carries nothing but the task id (and its issue key): naming or refine may rename it. */
+function isUnnamedBranch(task: Task): boolean {
+  return task.branch === branchNameFor('', task.id, task.jiraKey) || task.branch === branchNameFor('', task.id, null);
 }
 
 export function titleFrom(prompt: string): string {

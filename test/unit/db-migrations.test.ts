@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { openDb, MIGRATIONS, CURRENT_SCHEMA_VERSION } from '../../server/src/store/db.js';
 import { tmpDir } from '../helpers.js';
 import { Store } from '../../server/src/store/repo.js';
+import type { Task } from '@sdlc/shared';
 
 const dbFile = (prefix: string) => path.join(tmpDir(prefix), 'sdlc.db');
 
@@ -27,6 +28,14 @@ const handBuiltDb = (file: string, applied: number, rows: number[]): void => {
   db.close();
 };
 
+const blankTask = (id: string): Task => ({
+  id, title: 'x', initialPrompt: 'p', refinedPrompt: null, repoPath: '/r', repoSlug: null,
+  baseRemote: 'origin', baseBranch: 'main', branch: `sdlc/${id}`, worktreePath: '/w', pipelineName: 'auto',
+  reviewMode: 'conceptual', postReview: false, status: 'created', totalCostUsd: 0, prUrl: null,
+  prNumber: null, prFeedbackCursor: null, prHeadSha: null, reviewDecision: null, reviewDecisionSha: null,
+  modelOverrides: null, jiraKey: null, createdAt: '', updatedAt: '',
+});
+
 describe('openDb schema_version bookkeeping', () => {
   it('opens a fresh DB twice and keeps exactly one version row', () => {
     const file = dbFile('sdlc-db-fresh-');
@@ -49,6 +58,7 @@ describe('openDb schema_version bookkeeping', () => {
     expect(versions(file)).toEqual([CURRENT_SCHEMA_VERSION]);
     expect(columns(file, 'tasks')).toContain('model_overrides');
     expect(columns(file, 'tasks')).toContain('pr_head_sha');
+    expect(columns(file, 'tasks')).toContain('jira_key');
   });
 
   it('migrates a single-row DB that is behind forward to the latest version', () => {
@@ -62,11 +72,12 @@ describe('openDb schema_version bookkeeping', () => {
     expect(columns(file, 'pipeline_runs')).toContain('return_to');
     expect(columns(file, 'phase_runs')).toContain('head_sha');
     expect(columns(file, 'tasks')).toContain('review_decision');
+    expect(columns(file, 'tasks')).toContain('jira_key');
   });
 
   it('migrates a DB from before the review decision columns and loads its old rows with no decision', () => {
     const file = dbFile('sdlc-db-pre-review-');
-    const before = MIGRATIONS.length - 1;                 // the build that did not know about review_decision yet
+    const before = 3;                                     // migrations are append-only: 3 is the build before review_decision
     handBuiltDb(file, before, [before]);
     const old = new DatabaseSync(file);
     const now = new Date().toISOString();
@@ -86,6 +97,28 @@ describe('openDb schema_version bookkeeping', () => {
     expect(versions(file)).toEqual([CURRENT_SCHEMA_VERSION]);
   });
 
+  it('migrates a DB left at the schema version before jira_key: the column is added, last, and the key persists', () => {
+    const file = dbFile('sdlc-db-pre-jira-');
+    const before = 4;                                     // the build that had review_decision but not jira_key yet
+    handBuiltDb(file, before, [before]);
+    expect(columns(file, 'tasks')).toContain('review_decision_sha');
+    expect(columns(file, 'tasks')).not.toContain('jira_key');
+
+    const db = openDb(file);
+    try {
+      // `insertTask` is positional, so the new column has to be the physical last one of a migrated DB
+      expect(columns(file, 'tasks').at(-1)).toBe('jira_key');
+      const store = new Store(db);
+      const now = new Date().toISOString();
+      store.insertTask({ ...blankTask('t_j'), jiraKey: 'ABC-1', createdAt: now, updatedAt: now });
+      expect(store.getTask('t_j')).toMatchObject({ id: 't_j', title: 'x', jiraKey: 'ABC-1' });
+      const t = store.getTask('t_j')!;
+      t.jiraKey = 'ABC-2'; store.updateTask(t);
+      expect(store.getTask('t_j')!.jiraKey).toBe('ABC-2');
+    } finally { db.close(); }
+    expect(versions(file)).toEqual([CURRENT_SCHEMA_VERSION]);
+  });
+
   it('migrates a broken multi-row DB that still has migrations pending', () => {
     const file = dbFile('sdlc-db-broken-old-');
     handBuiltDb(file, 2, [1, 2]);
@@ -93,6 +126,7 @@ describe('openDb schema_version bookkeeping', () => {
     openDb(file).close();
     expect(versions(file)).toEqual([CURRENT_SCHEMA_VERSION]);
     expect(columns(file, 'phase_runs')).toContain('head_sha');
+    expect(columns(file, 'tasks')).toContain('jira_key');
   });
 
   it('keeps existing rows when it repairs the version table', () => {
@@ -151,7 +185,7 @@ describe('openDb schema_version bookkeeping, further cases', () => {
         id: 't_1', title: 'x', initialPrompt: 'p', refinedPrompt: null, repoPath: '/r', repoSlug: null,
         baseRemote: 'origin', baseBranch: 'main', branch: 'sdlc/t_1', worktreePath: '/w', pipelineName: 'auto',
         reviewMode: 'conceptual', postReview: false, status: 'created', totalCostUsd: 0, prUrl: null,
-        prNumber: null, prFeedbackCursor: null, prHeadSha: null, reviewDecision: null, reviewDecisionSha: null, modelOverrides: null,
+        prNumber: null, prFeedbackCursor: null, prHeadSha: null, reviewDecision: null, reviewDecisionSha: null, modelOverrides: null, jiraKey: null,
         createdAt: now, updatedAt: now,
       });
       // Columns added by the later migrations must be writable, not just present.
@@ -159,9 +193,10 @@ describe('openDb schema_version bookkeeping, further cases', () => {
       t.modelOverrides = { implement: { model: 'opus' } };
       t.prHeadSha = 'deadbeef';
       t.reviewDecision = 'APPROVED'; t.reviewDecisionSha = 'cafe';
+      t.jiraKey = 'ABC-1';
       store.updateTask(t);
       expect(store.getTask('t_1')!.prHeadSha).toBe('deadbeef');
-      expect(store.getTask('t_1')).toMatchObject({ reviewDecision: 'APPROVED', reviewDecisionSha: 'cafe' });
+      expect(store.getTask('t_1')).toMatchObject({ reviewDecision: 'APPROVED', reviewDecisionSha: 'cafe', jiraKey: 'ABC-1' });
       expect(store.getTask('t_1')!.modelOverrides).toEqual({ implement: { model: 'opus' } });
     } finally { db.close(); }
   });
