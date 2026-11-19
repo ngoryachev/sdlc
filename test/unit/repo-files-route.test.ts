@@ -134,6 +134,22 @@ describe('per-repository files', () => {
     expect(fs.readFileSync(dev!.path, 'utf8')).toBe('dev');
   });
 
+  it('keeps the disambiguated name apart too, for env names that sanitise to one another', async () => {
+    const { app, repoDir, hono } = setup('sdlc-repo-files-collide2-');
+    // `_X` and `X` sanitise to the same thing, so naming the fallback after the env name would collapse them
+    for (const [env, body] of [['A', 'first'], ['_X', 'second'], ['X', 'third']]) {
+      expect((await upload(hono, env!, 'key', body!)).status, env).toBe(201);
+    }
+    const files = app.config.repos[0]!.files;
+    expect(new Set(files.map((f) => f.path)).size).toBe(3);
+    expect(files.map((f) => fs.readFileSync(f.path, 'utf8'))).toEqual(['first', 'second', 'third']);
+    expect(fs.readdirSync(repoDir)).toHaveLength(3);
+
+    // and deleting the last one leaves the other two on disk
+    expect((await hono.request(`/api/repos/${id}/files/X`, { method: 'DELETE' })).status).toBe(200);
+    expect((await list(hono)).map((f) => f.missing)).toEqual([false, false]);
+  });
+
   it('reports a file that is gone from disk as missing instead of pretending it is there', async () => {
     const { app, hono } = setup('sdlc-repo-files-missing-');
     await upload(hono, 'KEYSTORE', 'key.jks', 'x');

@@ -42,14 +42,22 @@ export function repoFilesDir(config: SdlcConfig, repoName: string): string {
 
 /**
  * Where a file uploaded for `env` is stored: one filename component inside the repository's own directory. Two env
- * variables must never end up at one file — `.env` for both of them sanitises to the same name — so a name one of the
- * repository's other variables already holds (`taken`) gets this variable's own name prefixed.
+ * variables must never end up at one file — `.env` for both of them sanitises to the same name — so when the plain
+ * name is one another variable already holds (`taken`), a hash of this env name is appended. The hash, not the env
+ * name itself, because the name would collapse the same way the filename did: `_X` and `X` both sanitise to `X`.
+ * The result is checked against `taken` too, so what comes back is never a path another variable uses.
  */
 export function repoFilePath(config: SdlcConfig, repoName: string, env: string, filename: string, taken: string[] = []): string {
   const dir = repoFilesDir(config, repoName);
-  const abs = path.join(dir, safeComponent(filename || env));
+  const name = safeComponent(filename || env);
   const used = new Set(taken.map((p) => path.resolve(p)));
-  return used.has(path.resolve(abs)) ? path.join(dir, safeComponent(`${env}-${path.basename(abs)}`)) : abs;
+  const abs = path.join(dir, name);
+  if (!used.has(path.resolve(abs))) return abs;
+  // hex and `-` survive safeComponent untouched, and the stem is cut short enough that the cap cannot eat the suffix
+  const stem = `${name.slice(0, 100)}-${crypto.createHash('sha256').update(env).digest('hex').slice(0, 10)}`;
+  let candidate = path.join(dir, stem);
+  for (let n = 2; used.has(path.resolve(candidate)); n++) candidate = path.join(dir, `${stem}-${n}`);
+  return candidate;
 }
 
 /** Store (or replace) a file at a path from repoFilePath(): mode 0600 in a 0700 directory (both set explicitly, since the umask applies to the flags and an existing entry keeps its mode). */
