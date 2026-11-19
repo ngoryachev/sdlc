@@ -160,6 +160,16 @@ export type ReviewEvent = 'comment' | 'approve' | 'request_changes';
 export function defaultReviewEvent(p: HilPayload): ReviewEvent {
   return p.kind === 'approve_result' && p.focus === 'review' && p.review?.verdict === 'approve' && p.review.findings.every((f) => f.severity === 'nit') ? 'approve' : 'comment';
 }
+
+/** What the checkpoint proposes before the human touches anything: the implementer fixes real defects, a reviewer posts everything but nits. */
+export function defaultFindingActions(p: HilPayload, saved: HilResponse | null): Record<string, FindingAction> {
+  if (p.kind !== 'approve_result') return {};
+  if (saved?.findings) return saved.findings;
+  const out: Record<string, FindingAction> = {};
+  if (p.focus === 'qa') { (p.qa?.issues ?? []).forEach((f, i) => { out[`qa:${i}`] = p.canFix && f.severity !== 'nit' ? 'fix' : 'skip'; }); return out; }
+  (p.review?.findings ?? []).forEach((f, i) => { out[`review:${i}`] = p.role === 'reviewer' ? (p.canPost && f.severity !== 'nit' ? 'post' : 'skip') : p.canFix && f.severity !== 'nit' ? 'fix' : 'skip'; });
+  return out;
+}
 /** author: the task's segment contains the implementing phase (it fixes PR comments); reviewer: it only reviews (it re-reviews new commits). */
 export type TaskRole = 'author' | 'reviewer';
 
