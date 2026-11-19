@@ -12,7 +12,8 @@ export interface RepoAuth { user: string | null; token: string | null }
 export interface GhAccount { login: string; active: boolean }
 export interface GhRepo { slug: string; description: string; isFork: boolean; isPrivate: boolean; pushedAt: string | null; defaultBranch: string; canPush: boolean }
 /** `reviewDecision` is GitHub's verdict over the whole PR: `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED`, or empty when no review happened. */
-export interface PrInfo { number: number; url: string; title: string; body: string; headRefName: string; baseRefName: string; state: string; isDraft: boolean; headRefOid?: string; reviewDecision?: string }
+/** `author`: the GitHub account that opened the PR; GitHub refuses an approval from that same account (422). */
+export interface PrInfo { number: number; url: string; title: string; body: string; headRefName: string; baseRefName: string; state: string; isDraft: boolean; headRefOid?: string; reviewDecision?: string; author?: { login: string } }
 export interface PrComment { id: string; author: string; body: string; path?: string; line?: number; url: string; reviewState?: string; createdAt: string; association?: string }
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
 export type ReviewEventName = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
@@ -146,7 +147,7 @@ export class GhCli implements GitHub {
 
   async prView(cwd: string, number: number, auth: RepoAuth): Promise<PrInfo> {
     const repo = await this.prRepo(cwd, auth);
-    return JSON.parse(await gh(['pr', 'view', String(number), '--repo', repo, '--json', 'number,url,title,body,headRefName,baseRefName,state,isDraft,headRefOid,reviewDecision'], { token: auth.token })) as PrInfo;
+    return JSON.parse(await gh(['pr', 'view', String(number), '--repo', repo, '--json', 'number,url,title,body,headRefName,baseRefName,state,isDraft,headRefOid,reviewDecision,author'], { token: auth.token })) as PrInfo;
   }
 
   async prCreate(o: { cwd: string; head: string; base: string; title: string; body: string; draft: boolean }, auth: RepoAuth): Promise<{ url: string; number: number }> {

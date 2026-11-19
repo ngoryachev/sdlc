@@ -29,7 +29,7 @@ export class HilPhaseExecutor implements PhaseExecutor<HilPhaseSpec> {
     const { task, store, events } = ctx;
     const payload = await buildPayload(phase.hil, ctx);
     const title = `${task.title}`;
-    const auto = autoAnswer(payload, ctx);
+    const auto = await autoAnswer(payload, ctx);
     const summary = [summaryFor(payload), auto?.reason].filter(Boolean).join(' — ');
     const expiresAt = phase.timeout ? new Date(Date.now() + parseDuration(phase.timeout)).toISOString() : null;
     const hil = newHilRequest({ taskId: task.id, phaseRunId: pr.id, kind: phase.hil, title, summary, payload, expiresAt });
@@ -55,7 +55,7 @@ export class HilPhaseExecutor implements PhaseExecutor<HilPhaseSpec> {
  * The decision comes from the same defaults the UI proposes (`defaultFindingActions` / `defaultReviewEvent`),
  * so what is auto-approved is exactly what the human would have confirmed without touching anything.
  */
-function autoAnswer(payload: HilPayload, ctx: PhaseContext): { response: HilResponse; reason: string } | null {
+async function autoAnswer(payload: HilPayload, ctx: PhaseContext): Promise<{ response: HilResponse; reason: string } | null> {
   if (payload.kind === 'approve_result') {
     const findings = defaultFindingActions(payload, null);
     const reviewEvent = defaultReviewEvent(payload);
@@ -68,6 +68,9 @@ function autoAnswer(payload: HilPayload, ctx: PhaseContext): { response: HilResp
     // only a reviewer with a pull request publishes the approval; an author's `approve` is forced to COMMENT, and
     // without a PR `publish` has nothing to post on, so neither may claim it in the reason a human reads
     const approves = ctx.role === 'reviewer' && payload.canPost;
+    // GitHub rejects an approval of your own pull request (422) and `publish` has no on_fail: an unattended
+    // auto-approve would fail the task, so this one checkpoint is left to the human, who can downgrade the event
+    if (approves && await isOwnPr(ctx)) return null;
     const reason = `auto-approved: no finding needs fixing or publishing${approves ? '; approving the pull request' : ''}`;
     return { response: { decision: 'approve', findings, reviewEvent }, reason };
   }
@@ -79,6 +82,19 @@ function autoAnswer(payload: HilPayload, ctx: PhaseContext): { response: HilResp
     return { response: { decision: 'approve' }, reason: 'auto-approved: clarify had no questions' };
   }
   return null;
+}
+
+/**
+ * Was the pull request opened by the very account sdlc reviews it with? Only a known match counts: when the account
+ * or the author cannot be read, the approval is still attempted, and `publish` falls back to a comment if GitHub says no.
+ */
+async function isOwnPr(ctx: PhaseContext): Promise<boolean> {
+  const { task } = ctx;
+  if (!task.prNumber) return false;
+  const auth = await ctx.accounts.forRepo(task.repoPath).catch(() => null);
+  if (!auth?.user) return false;
+  const pr = await ctx.github.prView(task.repoPath, task.prNumber, auth).catch(() => null);
+  return pr?.author?.login === auth.user;
 }
 
 async function buildPayload(kind: HilPhaseSpec['hil'], ctx: PhaseContext): Promise<HilPayload> {

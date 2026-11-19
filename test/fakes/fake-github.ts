@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { GhAccount, GhRepo, GitHub, MergeMethod, PrComment, PrInfo, ReviewEventName, ReviewLineComment } from '../../server/src/git/gh.js';
+import type { GhAccount, GhRepo, GitHub, MergeMethod, PrComment, PrInfo, RepoAuth, ReviewEventName, ReviewLineComment } from '../../server/src/git/gh.js';
 
 const ENV = { ...process.env, GIT_AUTHOR_NAME: 'gh', GIT_AUTHOR_EMAIL: 'gh@test', GIT_COMMITTER_NAME: 'gh', GIT_COMMITTER_EMAIL: 'gh@test' };
 const g = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, env: ENV, stdio: 'pipe' }).toString().trim();
@@ -35,14 +35,15 @@ export class FakeGitHub implements GitHub {
   async prView(_cwd: string, n: number): Promise<PrInfo> { const p = this.pr(n); return { ...p, headRefOid: this.has(p.headRefName) ? g(this.bare, ['rev-parse', `refs/heads/${p.headRefName}`]) : undefined, reviewDecision: this.reviewDecisions.get(n) }; }
   /** Approve, request changes or drop the review decision of a PR, as a human would on GitHub. */
   setReviewDecision(n: number, decision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null): void { if (decision === null) this.reviewDecisions.delete(n); else this.reviewDecisions.set(n, decision); }
-  /** Open a PR for a branch that is already on the remote (someone else's pull request). */
-  openPr(head: string, base: string, title = head, body = ''): number { const number = this.next++; this.prs.set(number, { number, url: `https://github.test/test/repo/pull/${number}`, title, body, headRefName: head, baseRefName: base, state: 'OPEN', isDraft: false }); return number; }
+  /** Open a PR for a branch that is already on the remote (someone else's pull request, unless `author` says otherwise). */
+  openPr(head: string, base: string, title = head, body = '', author = 'alice'): number { const number = this.next++; this.prs.set(number, { number, url: `https://github.test/test/repo/pull/${number}`, title, body, headRefName: head, baseRefName: base, state: 'OPEN', isDraft: false, author: { login: author } }); return number; }
   comment(n: number, c: Partial<PrComment> & { body: string }): void { const list = this.feedback.get(n) ?? []; list.push({ id: `comment:${list.length + 1}`, author: 'alice', association: 'COLLABORATOR', url: `https://github.test/c/${list.length + 1}`, createdAt: new Date(Date.now() + list.length).toISOString(), ...c }); this.feedback.set(n, list); }
-  async prCreate(o: { head: string; base: string; title: string; body: string; draft: boolean }): Promise<{ url: string; number: number }> {
+  async prCreate(o: { head: string; base: string; title: string; body: string; draft: boolean }, auth?: RepoAuth): Promise<{ url: string; number: number }> {
     if (!this.has(o.head)) throw new Error(`head ${o.head} is not on the remote`);
     if (!this.has(o.base)) throw new Error(`base ${o.base} is not on the remote`);
     const number = this.next++; const url = `https://github.test/test/repo/pull/${number}`;
-    this.prs.set(number, { number, url, title: o.title, body: o.body, headRefName: o.head, baseRefName: o.base, state: 'OPEN', isDraft: o.draft });
+    // GitHub records the token's account as the author, which is what makes this PR sdlc's own
+    this.prs.set(number, { number, url, title: o.title, body: o.body, headRefName: o.head, baseRefName: o.base, state: 'OPEN', isDraft: o.draft, author: { login: auth?.user ?? 'tester' } });
     this.calls.push(`create #${number} ${o.head} -> ${o.base}`);
     return { url, number };
   }
@@ -68,7 +69,10 @@ export class FakeGitHub implements GitHub {
   async prEditBase(_cwd: string, n: number, base: string): Promise<void> { this.pr(n).baseRefName = base; this.calls.push(`retarget #${n} -> ${base}`); }
   async prClose(_cwd: string, n: number): Promise<void> { this.pr(n).state = 'CLOSED'; this.calls.push(`close #${n}`); }
   async prComment(_cwd: string, n: number): Promise<void> { this.calls.push(`comment #${n}`); }
-  async postReview(o: { number: number; event: ReviewEventName; body: string; comments: ReviewLineComment[] }): Promise<void> {
+  async postReview(o: { number: number; event: ReviewEventName; body: string; comments: ReviewLineComment[] }, auth?: RepoAuth): Promise<void> {
+    // what GitHub answers when you approve or request changes on a PR you opened yourself
+    const own = !!auth?.user && this.pr(o.number).author?.login === auth.user;
+    if (own && o.event !== 'COMMENT') throw new Error(`HTTP 422: Can not ${o.event === 'APPROVE' ? 'approve' : 'request changes on'} your own pull request (https://api.github.com/repos/test/repo/pulls/${o.number}/reviews)`);
     this.reviews.push({ number: o.number, event: o.event, body: o.body, comments: o.comments });
     this.calls.push(`review #${o.number} ${o.event} ${o.comments.length} inline`);
   }

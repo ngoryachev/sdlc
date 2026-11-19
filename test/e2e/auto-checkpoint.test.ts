@@ -4,6 +4,7 @@ import path from 'node:path';
 import { FakeRunner } from '../fakes/fake-runner.js';
 import { FakeGitHub } from '../fakes/fake-github.js';
 import { commitOnRemote, makeRemoteRepo, makeRepo, sh, testApp, tmpDir } from '../helpers.js';
+import { defaultReviewEvent } from '@sdlc/shared';
 
 const PASS = { verdict: 'pass', summary: 'ok', commands: [], tests_added: [], failures: [], notes: '' };
 const QA_OK = { verdict: 'pass', summary: 'works', checks: [], issues: [] };
@@ -13,13 +14,13 @@ const FINDING = { verdict: 'request_changes', summary: 'one thing', findings: [{
 const UNNAMED = { verdict: 'request_changes', summary: 'something is off and I cannot name it', findings: [] };
 
 /** A branch with one commit pushed to the remote and a pull request for it, as if a colleague opened it. */
-function someonesPr(repo: string, gh: FakeGitHub, branch = 'feature'): number {
+function someonesPr(repo: string, gh: FakeGitHub, branch = 'feature', author = 'alice'): number {
   sh(repo, ['checkout', '-q', '-b', branch]);
   fs.writeFileSync(path.join(repo, 'feature.txt'), 'one\ntwo\nthree\n');
   sh(repo, ['add', '-A']); sh(repo, ['commit', '-q', '-m', `${branch}: work`]);
   sh(repo, ['push', '-q', 'origin', branch]);
   sh(repo, ['checkout', '-q', 'main']); sh(repo, ['branch', '-q', '-D', branch]);
-  return gh.openPr(branch, 'main', 'Add the feature', 'Adds feature.txt.');
+  return gh.openPr(branch, 'main', 'Add the feature', 'Adds feature.txt.', author);
 }
 
 /** A reviewer task on somebody else's pull request, run to wherever it stops. */
@@ -147,6 +148,57 @@ describe('checkpoints with nothing to decide answer themselves', () => {
     expect(app.store.phaseRunsForTask(task.id).find((p) => p.id === gate.phaseRunId)!.phaseName).toBe('qa_gate');
     expect(app.store.listHil({ taskId: task.id }).filter((h) => h.answeredVia === 'auto').length).toBe(1);
     expect(app.store.getTask(task.id)!.status).toBe('waiting_hil');
+  });
+
+  it('a pull request sdlc opened itself is never auto-approved: GitHub would refuse the verdict', async () => {
+    const dir = tmpDir('sdlc-auto-own-pr-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    // the colleague here is sdlc's own account for this repo: GitHub rejects an approval from the PR's author (422)
+    const n = someonesPr(repo, gh, 'feature', 'tester');
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: CLEAN }) })), { repos: [{ name: 'r', path: repo, gh_user: 'tester' }] }, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+
+    // the human is asked instead, with `approve` still the proposed event: only they may downgrade it to a comment
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    expect([hil.kind, hil.status, hil.answeredVia]).toEqual(['approve_result', 'open', null]);
+    expect(defaultReviewEvent(hil.payload)).toBe('approve');
+    expect(requested(app, task.id).length).toBe(1);
+    expect(gh.reviews).toEqual([]);
+    expect(app.store.getTask(task.id)!.status).toBe('waiting_hil');
+
+    // the same PR opened by somebody else is auto-approved as usual
+    const other = someonesPr(repo, gh, 'feature2');
+    const t2 = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: other });
+    await app.engine.advance(t2.id);
+    expect(app.store.openHilForTask(t2.id)).toEqual([]);
+    expect(gh.reviews).toEqual([{ number: other, event: 'APPROVE', body: '', comments: [] }]);
+  });
+
+  it('publish degrades to a comment when GitHub refuses the verdict on sdlc\'s own pull request', async () => {
+    const dir = tmpDir('sdlc-auto-own-pr-publish-');
+    const { repo, bare } = makeRemoteRepo(dir);
+    const gh = new FakeGitHub(bare);
+    const n = someonesPr(repo, gh, 'feature', 'tester');
+    const app = testApp(dir, new FakeRunner(() => ({ act: () => ({ structured: NITS }) })), { repos: [{ name: 'r', path: repo, gh_user: 'tester' }] }, gh);
+
+    const task = await app.engine.createTask({ repoPath: repo, pipeline: 'review-pr', prNumber: n });
+    await app.engine.advance(task.id);
+    // the human answers with the proposed approve anyway (or the PR changed hands after the checkpoint opened)
+    const hil = app.store.openHilForTask(task.id)[0]!;
+    await app.engine.respondHil(hil.id, { decision: 'approve', findings: { 'review:0': 'post' }, reviewEvent: 'approve' }, 'web');
+    await app.engine.advance(task.id);
+
+    // the finding still reached the PR, as a comment, and the phase succeeded instead of failing the task
+    expect(gh.reviews).toEqual([{ number: n, event: 'COMMENT', body: '', comments: [{ path: 'feature.txt', line: 2, body: expect.stringContaining('Naming') }] }]);
+    const publish = app.store.phaseRunsForTask(task.id).find((p) => p.phaseName === 'publish')!;
+    expect(publish.status).toBe('succeeded');
+    expect(publish.resultText).toContain('as COMMENT (APPROVE refused: own pull request)');
+    expect(app.events.replay(0, task.id).filter((e) => e.type === 'engine.warning').map((e) => (e.payload as { message: string }).message))
+      .toEqual([`GitHub refused APPROVE on PR #${n} (sdlc opened it itself); posted the review as a comment instead`]);
+    expect(app.store.getTask(task.id)!.status).toBe('pr_open');
   });
 
   it('a reviewer task without a pull request does not claim it approved one', async () => {
