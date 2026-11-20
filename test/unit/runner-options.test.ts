@@ -42,4 +42,23 @@ describe('filteredEnv', () => {
     setShellEnv({ SDLC_HOME: '/the/users/own/sdlc' });   // a denylisted name cannot even get this far in practice
     expect(filteredEnv({}, ['SDLC_HOME']).SDLC_HOME).toBeUndefined();
   });
+
+  it('leaves PATH alone when the shell has none, and takes the shell PATH when the service has none', () => {
+    setShellEnv({ JAVA_HOME: '/opt/jdk' });
+    expect(filteredEnv().PATH).toBe(process.env.PATH);
+    const saved = process.env.PATH;
+    delete process.env.PATH;
+    try {
+      setShellEnv({ PATH: '/shell/bin' });
+      expect(filteredEnv().PATH).toBe('/shell/bin');
+    } finally { process.env.PATH = saved; }
+  });
+
+  it('reaches a Claude phase session: sdkOptions carries the three layers, not just the files', () => {
+    setShellEnv({ ANDROID_HOME: '/home/u/Android/Sdk' });
+    const o = sdkOptions({ cwd: '/wt', prompt: 'x', permissionMode: 'bypassPermissions', env: { KEYSTORE: '/files/key.jks' } }, new AbortController());
+    expect(o.env!.ANDROID_HOME).toBe('/home/u/Android/Sdk');
+    expect(o.env!.KEYSTORE).toBe('/files/key.jks');
+    expect(o.env!.PATH).toBe(process.env.PATH);
+  });
 });

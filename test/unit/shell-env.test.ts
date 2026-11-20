@@ -61,4 +61,18 @@ describe('login shell environment', () => {
   it('does not spawn a shell unless initShellEnv() is called: shellEnv() starts empty', () => {
     expect(shellEnv()).toEqual({});
   });
+
+  it('discards noise that looks like env output itself: only what follows the marker counts', () => {
+    expect(parseShellEnv(output('FAKE=1\0NOISE=2\0', { REAL: '3' }))).toEqual({ REAL: '3' });
+  });
+
+  it('skips a chunk with no name and keeps an empty value', () => {
+    expect(parseShellEnv(MARKER + 'NO_EQUALS\0=novalue\0EMPTY=\0OK=1\0')).toEqual({ EMPTY: '', OK: '1' });
+  });
+
+  it('falls back when every variable the shell reported is one that never carries over', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(initShellEnv(() => output('', { PWD: '/x', SDLC_HOME: '/y', PS1: '$' }))).toEqual({});
+    expect(String(warn.mock.calls[0]![0])).toMatch(/it reported no variables/);
+  });
 });

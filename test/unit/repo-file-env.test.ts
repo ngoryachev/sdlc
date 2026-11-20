@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { PhaseRun } from '@sdlc/shared';
@@ -8,6 +8,8 @@ import { ShellPhaseSchema } from '../../server/src/pipeline/schema.js';
 import type { PhaseContext } from '../../server/src/phases/executor.js';
 import { FakeRunner } from '../fakes/fake-runner.js';
 import { makeRepo, testApp, tmpDir } from '../helpers.js';
+import { repoFilesPrompt } from '../../server/src/config/repo-files.js';
+import { setShellEnv } from '../../server/src/claude/shell-env.js';
 
 /** A shell phase in a worktree of a repository that was given one file, bound to $KEYSTORE. */
 function shellPhase(prefix: string, opts: { store: boolean }) {
@@ -32,6 +34,8 @@ function shellPhase(prefix: string, opts: { store: boolean }) {
 }
 
 describe('files of a repository as phase env variables', () => {
+  afterEach(() => setShellEnv(null));
+
   it('gives a shell phase the absolute path of the stored file', async () => {
     const t = shellPhase('sdlc-file-env-', { store: true });
     expect(await t.run('printf %s "$KEYSTORE"; cat "$KEYSTORE"')).toEqual({ kind: 'ok' });
@@ -91,5 +95,30 @@ describe('files of a repository as phase env variables', () => {
     const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'auto', baseRemote: null, stopAfter: 'implement' });
     await app.engine.advance(task.id);
     expect(runner.specs[0]!.systemAppend).not.toContain('Files available as env vars');
+  });
+  it('gives a shell phase a variable only the login shell knows about', async () => {
+    setShellEnv({ ANDROID_HOME: '/home/u/Android/Sdk' });
+    const t = shellPhase('sdlc-file-env-shell-layer-', { store: true });
+    expect(await t.run('printf %s "$ANDROID_HOME"')).toEqual({ kind: 'ok' });
+    expect(t.pr.resultText).toBe('/home/u/Android/Sdk');
+  });
+
+  it('names every file that is on disk, in configuration order, and skips the one that is gone', () => {
+    const dir = tmpDir('sdlc-file-env-prompt-list-');
+    const keystore = path.join(dir, 'my-release-key.keystore');
+    const props = path.join(dir, 'key.properties');
+    fs.writeFileSync(keystore, 'x'); fs.writeFileSync(props, 'y');
+    const config = ConfigSchema.parse({ data_dir: path.join(dir, 'data'), repos: [{ name: 'shop', path: dir, files: [
+      { env: 'ANDROID_KEYSTORE', path: keystore }, { env: 'GONE', path: path.join(dir, 'nope') }, { env: 'ANDROID_KEY_PROPERTIES', path: props },
+    ] }] });
+    expect(repoFilesPrompt(config, dir)).toBe('Files available as env vars (absolute paths): `$ANDROID_KEYSTORE` (my-release-key.keystore), `$ANDROID_KEY_PROPERTIES` (key.properties). Use them when a build, signing or test needs them; copy them where the project expects them, never commit them.');
+  });
+
+  it('says nothing for a repository that is not in the configuration, or for a variable bound to a directory', () => {
+    const dir = tmpDir('sdlc-file-env-prompt-edge-');
+    const sub = path.join(dir, 'secrets'); fs.mkdirSync(sub);
+    expect(repoFilesPrompt(ConfigSchema.parse({ data_dir: path.join(dir, 'data') }), dir)).toBe('');
+    const config = ConfigSchema.parse({ data_dir: path.join(dir, 'data'), repos: [{ name: 'shop', path: dir, files: [{ env: 'SECRETS', path: sub }] }] });
+    expect(repoFilesPrompt(config, dir)).toBe('');
   });
 });
