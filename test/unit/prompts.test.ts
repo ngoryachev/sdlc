@@ -38,6 +38,14 @@ describe('prompt language rule', () => {
     expect(s).not.toMatch(/in the language of the developer's request/);
   });
 
+  it('common.md tells a phase to find a missing tool on the machine instead of installing one', () => {
+    const s = read('prompts/system/common.md');
+    expect(s).toMatch(/not on `PATH`/);
+    expect(s).toMatch(/environment variables/);
+    expect(s).toMatch(/Do not install system packages/);
+    expect(s).toMatch(/build configuration/);
+  });
+
   it.each(Object.entries(PUBLISHED))('%s states the rule (%s)', (file) => {
     const s = read(file);
     expect(s).toMatch(/Language: write .*\bin English\b/);

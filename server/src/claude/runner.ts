@@ -3,6 +3,7 @@ import type {
   CanUseTool, EffortLevel, Options, PermissionMode, Query, SDKMessage, SDKResultMessage, SDKUserMessage, SettingSource,
 } from '@anthropic-ai/claude-agent-sdk';
 import { buildHooks } from './hooks.js';
+import { shellEnv } from './shell-env.js';
 
 export interface ClaudeRunSpec {
   cwd: string;
@@ -80,14 +81,38 @@ export function userMessage(text: string): SDKUserMessage {
 
 const SDLC_ENV = /^SDLC_/;
 
-/** Copy of process.env for a phase. Everything is passed (API keys for MCP servers and skills included) except sdlc's own SDLC_* settings. */
+/**
+ * The environment of a phase process, in three layers: the user's login shell at the bottom (`shellEnv()`, so a
+ * toolchain that only `~/.bashrc` knows about is visible to a build), then the service's own `process.env` — API keys
+ * for MCP servers and skills included, `~/.sdlc/env` and the unit therefore win — then `extra` (the repository's
+ * files). sdlc's own `SDLC_*` settings are stripped: from the service's environment unless `allow` names one, from the
+ * shell's always — `allow` is about this installation's own settings, not about the user's. `PATH` is the one variable
+ * merged rather than replaced: the service's entries first, then the shell's entries that are not already there.
+ */
 export function filteredEnv(extra?: Record<string, string | undefined>, allow: string[] = []): Record<string, string | undefined> {
+  const shell = shellEnv();
   const out: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(shell)) {
+    if (SDLC_ENV.test(k)) continue;   // the shell's own SDLC_* never win over the service's, whatever `allow` says
+    out[k] = v;
+  }
   for (const [k, v] of Object.entries(process.env)) {
     if (SDLC_ENV.test(k) && !allow.includes(k)) continue;
     out[k] = v;
   }
+  if (shell.PATH && process.env.PATH) out.PATH = mergePath(process.env.PATH, shell.PATH);
   return { ...out, ...(extra ?? {}) };
+}
+
+/** `first` in front, then the entries of `second` it does not already contain; no duplicates, no empty entries. */
+function mergePath(first: string, second: string): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of [...first.split(':'), ...second.split(':')]) {
+    if (!p || seen.has(p)) continue;
+    seen.add(p); out.push(p);
+  }
+  return out.join(':');
 }
 
 // The SDK warns that canUseTool is shadowed in bypassPermissions mode; AskUserQuestion still reaches it, which is all we use it for.

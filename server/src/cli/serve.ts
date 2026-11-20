@@ -7,6 +7,7 @@ import type { Notifier } from '../notifiers/types.js';
 import { TelegramNotifier } from '../notifiers/telegram.js';
 import { loadConfig, parseDuration } from '../config/config.js';
 import { acquireServerLock } from './lock.js';
+import { initShellEnv } from '../claude/shell-env.js';
 
 export function registerServe(program: Command) {
   program.command('serve').description('Start the orchestrator: engine + API + UI')
@@ -17,6 +18,8 @@ export function registerServe(program: Command) {
       try { unlock = acquireServerLock(loadConfig().data_dir); }
       catch (e) { console.error(`[sdlc] ${e instanceof Error ? e.message : String(e)}`); process.exit(1); }
       process.on('exit', unlock);
+      // the bottom layer of every phase's environment, read once here and not in createApp(): the test suites must not spawn a shell
+      initShellEnv();
       const app = createApp();
       if (o.port) app.config.server.port = Number(o.port);
       if (o.host) app.config.server.host = o.host;

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Hono } from 'hono';
@@ -6,11 +6,14 @@ import { FakeRunner } from '../fakes/fake-runner.js';
 import { makeRepo, testApp, tmpDir } from '../helpers.js';
 import { HttpError } from '../../server/src/engine/engine.js';
 import { reposRoutes } from '../../server/src/http/routes/repos.js';
+import { setShellEnv } from '../../server/src/claude/shell-env.js';
 
 const runner = () => new FakeRunner(() => ({ act: () => ({ text: 'ok' }) }));
 
 /** The three executions the developer asked for are Claude phases, shell phases and `setup_command`. */
 describe('setup_command and the repository files', () => {
+  afterEach(() => setShellEnv(null));
+
   it('runs with the variable set to the stored file', async () => {
     const dir = tmpDir('sdlc-file-env-setup-');
     const repo = makeRepo(dir, { 'a.txt': 'x\n', '.gitignore': 'setup-env.txt\n' }, 'setup_command: printf %s "$KEYSTORE" > setup-env.txt\n');
@@ -35,6 +38,16 @@ describe('setup_command and the repository files', () => {
     expect(fs.readFileSync(path.join(task.worktreePath, 'setup-env.txt'), 'utf8')).toBe('[]');   // unset, not the literal path
     expect(warnings).toEqual([`file for $KEYSTORE is missing at ${gone}; the variable is not set`]);
     expect(app.store.getTask(task.id)!.status).not.toBe('failed');
+  });
+
+  it('runs with the login shell underneath, like every other phase process', async () => {
+    // setup_command used to get a hand-built { ...process.env, ...fileEnv }; it goes through filteredEnv now
+    setShellEnv({ ANDROID_HOME: '/home/u/Android/Sdk' });
+    const dir = tmpDir('sdlc-file-env-setup-shell-');
+    const repo = makeRepo(dir, { 'a.txt': 'x\n', '.gitignore': 'setup-env.txt\n' }, 'setup_command: printf %s "$ANDROID_HOME" > setup-env.txt\n');
+    const app = testApp(dir, runner(), { repos: [{ name: 'shop', path: repo }] });
+    const task = await app.engine.createTask({ prompt: 'x', repoPath: repo, pipeline: 'auto', baseRemote: null, startAt: 'end' });
+    expect(fs.readFileSync(path.join(task.worktreePath, 'setup-env.txt'), 'utf8')).toBe('/home/u/Android/Sdk');
   });
 });
 
