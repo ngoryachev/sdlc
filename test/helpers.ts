@@ -39,7 +39,7 @@ export function makeRemoteRepo(dir: string, files: Record<string, string> = { 'R
 
 /** Commit a file directly on a branch of the bare remote (someone else pushing, or a PR merged on GitHub). */
 export function commitOnRemote(bare: string, branch: string, file: string, content = 'remote\n'): void {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-remote-'));
+  const tmp = tmpDir('sdlc-remote-');
   sh(tmp, ['clone', '-q', bare, '.']);
   sh(tmp, ['checkout', '-q', branch]);
   fs.writeFileSync(path.join(tmp, file), content);

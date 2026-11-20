@@ -22,3 +22,4 @@ A live sdlc server runs on this machine from its own checkout (`~/.sdlc/app`) wi
 - A task run stores a snapshot of its pipeline (`pipelineSnapshot`). Old snapshots must keep loading: new pipeline and phase fields need defaults.
 - A new field in an HTTP body must be added to the zod schema of its route, or it is silently dropped.
 - Prompts are read from disk when a phase starts; pipelines when a task is created.
+- Temp directories in tests are created only through `tmpDir()` (`test/helpers.ts`), never with `mkdtempSync`/`os.tmpdir()`: they must land in the per-run root that `test/global-setup.ts` creates and removes.
