@@ -1,9 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import type { GhAccount, GhRepo, GitHub, MergeMethod, PrComment, PrInfo, RepoAuth, ReviewEventName, ReviewLineComment } from '../../server/src/git/gh.js';
 import { reviewBody } from '../../server/src/git/gh.js';
+import { tmpDir } from '../helpers.js';
 
 const ENV = { ...process.env, GIT_AUTHOR_NAME: 'gh', GIT_AUTHOR_EMAIL: 'gh@test', GIT_COMMITTER_NAME: 'gh', GIT_COMMITTER_EMAIL: 'gh@test' };
 const g = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, env: ENV, stdio: 'pipe' }).toString().trim();
@@ -58,7 +57,7 @@ export class FakeGitHub implements GitHub {
   }
   /** Merge head into base inside the bare repository (what GitHub does on merge). */
   mergeInRemote(head: string, base: string, method: MergeMethod = 'merge', message = 'merge'): void {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fakegh-'));
+    const tmp = tmpDir('fakegh-');
     try {
       g(tmp, ['clone', '-q', this.bare, '.']);
       g(tmp, ['checkout', '-q', base]);
