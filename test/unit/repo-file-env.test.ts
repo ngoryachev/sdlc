@@ -56,4 +56,40 @@ describe('files of a repository as phase env variables', () => {
     await app.engine.advance(task.id);
     expect(runner.specs[0]!.env).toEqual({ KEYSTORE: stored });
   });
+
+  it('tells a Claude phase which files it has, by env name and file name only', async () => {
+    const dir = tmpDir('sdlc-file-env-prompt-');
+    const repo = makeRepo(dir, { 'a.txt': 'x\n' });
+    const stored = path.join(dir, 'my-release-key.keystore');
+    fs.writeFileSync(stored, 'keystore bytes\n');
+    const runner = new FakeRunner(() => ({ act: () => ({ text: 'ok' }) }));
+    const app = testApp(dir, runner, { repos: [{ name: 'shop', path: repo, files: [{ env: 'KEYSTORE', path: stored }] }] });
+    const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'auto', baseRemote: null, stopAfter: 'implement' });
+    await app.engine.advance(task.id);
+    const sys = runner.specs[0]!.systemAppend!;
+    expect(sys).toContain('Files available as env vars (absolute paths): `$KEYSTORE` (my-release-key.keystore).');
+    expect(sys).toContain('never commit them');
+    expect(sys).not.toContain(stored);            // the path is in the variable, not in the prompt
+    expect(sys).toContain('SDLC orchestrator rules');   // next to prompts/system/common.md
+  });
+
+  it('says nothing about files to a repository that has none', async () => {
+    const dir = tmpDir('sdlc-file-env-none-');
+    const repo = makeRepo(dir, { 'a.txt': 'x\n' });
+    const runner = new FakeRunner(() => ({ act: () => ({ text: 'ok' }) }));
+    const app = testApp(dir, runner, { repos: [{ name: 'shop', path: repo }] });
+    const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'auto', baseRemote: null, stopAfter: 'implement' });
+    await app.engine.advance(task.id);
+    expect(runner.specs[0]!.systemAppend).not.toContain('Files available as env vars');
+  });
+
+  it('says nothing about a file that is gone from disk', async () => {
+    const dir = tmpDir('sdlc-file-env-prompt-missing-');
+    const repo = makeRepo(dir, { 'a.txt': 'x\n' });
+    const runner = new FakeRunner(() => ({ act: () => ({ text: 'ok' }) }));
+    const app = testApp(dir, runner, { repos: [{ name: 'shop', path: repo, files: [{ env: 'KEYSTORE', path: path.join(dir, 'gone.jks') }] }] });
+    const task = await app.engine.createTask({ prompt: 'change a', repoPath: repo, pipeline: 'auto', baseRemote: null, stopAfter: 'implement' });
+    await app.engine.advance(task.id);
+    expect(runner.specs[0]!.systemAppend).not.toContain('Files available as env vars');
+  });
 });

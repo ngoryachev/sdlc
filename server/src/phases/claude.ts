@@ -14,6 +14,7 @@ import { nowIso } from '../store/ids.js';
 import type { PhaseContext, PhaseExecutor, PhaseOutcome } from './executor.js';
 import { catchUpTaskBranch } from './catchup.js';
 import { repoFileEnvFor } from './file-env.js';
+import { repoFilesPrompt } from '../config/repo-files.js';
 
 export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
   async run(phase: ClaudePhaseSpec, pr: PhaseRun, ctx: PhaseContext): Promise<PhaseOutcome> {
@@ -40,7 +41,8 @@ export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
     const basePrompt = renderTemplate(fs.readFileSync(resolvePipelineFile(loaded, promptFile), 'utf8'), ctx.tpl);
     const common = fs.readFileSync(resolvePipelineFile(loaded, 'prompts/system/common.md'), 'utf8');
     const extra = phase.system_append ? renderTemplate(fs.readFileSync(resolvePipelineFile(loaded, phase.system_append), 'utf8'), ctx.tpl) : '';
-    const systemAppend = [common, extra].filter(Boolean).join('\n\n');
+    const files = repoFilesPrompt(config, task.repoPath);
+    const systemAppend = [common, files, extra].filter(Boolean).join('\n\n');
 
     // session resolution
     let resume: string | undefined;

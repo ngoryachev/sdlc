@@ -105,6 +105,19 @@ export function repoFileEnv(config: SdlcConfig, repoPath: string): { env: Record
   return { env, missing };
 }
 
+/**
+ * A line for the Claude phase's system prompt naming the files this repository has on disk: the env variable and the
+ * original file name, never a path (the variable holds it) and never any contents. Empty when the repository has no
+ * files, or none of them is on disk — the agent is then told nothing instead of being told about what it cannot use.
+ */
+export function repoFilesPrompt(config: SdlcConfig, repoPath: string): string {
+  const { env } = repoFileEnv(config, repoPath);
+  const entry = config.repos.find((r) => path.resolve(r.path) === path.resolve(repoPath));
+  const items = (entry?.files ?? []).filter((f) => env[f.env]).map((f) => `\`$${f.env}\` (${path.basename(f.path)})`);
+  if (!items.length) return '';
+  return `Files available as env vars (absolute paths): ${items.join(', ')}. Use them when a build, signing or test needs them; copy them where the project expects them, never commit them.`;
+}
+
 export const missingFileWarning = (f: RepoFile) => `file for $${f.env} is missing at ${f.path}; the variable is not set`;
 
 function statOrNull(p: string): fs.Stats | null {

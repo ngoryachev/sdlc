@@ -9,7 +9,7 @@ import { ACTIVE_STATUSES, FINISHED_STATUSES } from '@sdlc/shared';
 import type { SdlcConfig } from '../config/config.js';
 import { loadRepoConfig, parseDuration } from '../config/config.js';
 import { missingFileWarning, repoFileEnv } from '../config/repo-files.js';
-import type { ClaudeRunner } from '../claude/runner.js';
+import { filteredEnv, type ClaudeRunner } from '../claude/runner.js';
 import { findPipelineFile, loadPipeline, phaseIndex, resolvePipelineFile, roleOf, segmentOf, type LoadedPipeline } from '../pipeline/loader.js';
 import type { PhaseSpec, PipelineSpec, RepoConfig } from '../pipeline/schema.js';
 import { PipelineSchema } from '../pipeline/schema.js';
@@ -138,7 +138,7 @@ export class Engine {
       : await createWorktree({ repo: repoPath, worktreesDir, taskId: id, baseRemote, baseBranch, copyUntracked: repoConfig.copy_untracked, auth });
     // the repository's configured files reach setup_command too (a build that needs a keystore)
     const fileEnv = repoFileEnv(config, repoPath);
-    try { await runSetup(repoConfig, wt.worktreePath, fileEnv.env); }
+    try { await runSetup(repoConfig, wt.worktreePath, fileEnv.env, config.env_allow); }
     catch (e) { await removeWorktree(repoPath, wt.worktreePath, wt.branch, { deleteBranchIfEmpty: wt.baseRef }).catch(() => {}); throw e; }
     if (summarise) prompt = await this.describeBranch(wt.worktreePath, baseRef);
     // the key goes on the branch at once: naming runs in the background, may fail, and may produce no slug at all
@@ -1289,7 +1289,7 @@ You already went over this branch at commit \`${prev.headSha.slice(0, 12)}\`. Si
     if (fs.existsSync(path.join(task.worktreePath, '.git'))) return;
     const repoConfig = loadRepoConfig(task.repoPath);
     await recreateWorktree({ repo: task.repoPath, worktreePath: task.worktreePath, branch: task.branch, remote: task.baseRemote ?? (await defaultRemote(task.repoPath)), copyUntracked: repoConfig.copy_untracked, auth: await this.d.accounts.forRepo(task.repoPath) });
-    await runSetup(repoConfig, task.worktreePath, this.fileEnvFor(task));
+    await runSetup(repoConfig, task.worktreePath, this.fileEnvFor(task), this.d.config.env_allow);
     this.d.events.emit('task.worktree', { taskId: task.id, action: 'recreated' }, { taskId: task.id });
   }
 
@@ -1346,10 +1346,11 @@ You already went over this branch at commit \`${prev.headSha.slice(0, 12)}\`. Si
   }
 }
 
-async function runSetup(repoConfig: RepoConfig, cwd: string, fileEnv: Record<string, string> = {}): Promise<void> {
+async function runSetup(repoConfig: RepoConfig, cwd: string, fileEnv: Record<string, string> = {}, envAllow: string[] = []): Promise<void> {
   if (!repoConfig.setup_command) return;
   try {
-    await execFileP('sh', ['-c', repoConfig.setup_command], { cwd, timeout: repoConfig.setup_timeout_sec * 1000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, ...fileEnv } });
+    // the same environment a phase gets: login shell, then the service's own, then the repository's files
+    await execFileP('sh', ['-c', repoConfig.setup_command], { cwd, timeout: repoConfig.setup_timeout_sec * 1000, maxBuffer: 16 * 1024 * 1024, env: filteredEnv(fileEnv, envAllow) as NodeJS.ProcessEnv });
   } catch (e) {
     const err = e as { stderr?: string; message: string };
     throw new HttpError(500, `setup_command failed in worktree: ${(err.stderr || err.message).slice(0, 2000)}`);
