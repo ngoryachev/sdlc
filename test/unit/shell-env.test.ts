@@ -58,6 +58,14 @@ describe('login shell environment', () => {
     } finally { delete process.env.SERVICE_ONLY; }
   });
 
+  it('ignores what a timed-out read already printed: a partial answer is no answer', () => {
+    // what execFileSync throws when it kills the shell: the error carries whatever reached stdout so far
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const killed = Object.assign(new Error('spawnSync /bin/bash ETIMEDOUT'), { signal: 'SIGKILL', stdout: output('', { JAVA_HOME: '/opt/jdk21' }) });
+    expect(initShellEnv(() => { throw killed; })).toEqual({});
+    expect(String(warn.mock.calls[0]![0])).toMatch(/ETIMEDOUT/);
+  });
+
   it('does not spawn a shell unless initShellEnv() is called: shellEnv() starts empty', () => {
     expect(shellEnv()).toEqual({});
   });

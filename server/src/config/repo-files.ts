@@ -111,9 +111,9 @@ export function repoFileEnv(config: SdlcConfig, repoPath: string): { env: Record
  * files, or none of them is on disk — the agent is then told nothing instead of being told about what it cannot use.
  */
 export function repoFilesPrompt(config: SdlcConfig, repoPath: string): string {
+  // every value of the env map is the configured path of a file that is on disk, so its basename is the file's name
   const { env } = repoFileEnv(config, repoPath);
-  const entry = config.repos.find((r) => path.resolve(r.path) === path.resolve(repoPath));
-  const items = (entry?.files ?? []).filter((f) => env[f.env]).map((f) => `\`$${f.env}\` (${path.basename(f.path)})`);
+  const items = Object.entries(env).map(([name, p]) => `\`$${name}\` (${path.basename(p)})`);
   if (!items.length) return '';
   return `Files available as env vars (absolute paths): ${items.join(', ')}. Use them when a build, signing or test needs them; copy them where the project expects them, never commit them.`;
 }

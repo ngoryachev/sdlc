@@ -37,6 +37,8 @@ export type ShellEnvReader = () => string;
 /**
  * `$SHELL -ilc '<marker + env -0>'` from `$HOME`, with a short timeout. stdin is /dev/null (`ignore`), so an rc file
  * that prompts cannot block the startup, and stderr is dropped rather than piped: its noise is not the server's log.
+ * `killSignal` has to be SIGKILL for the timeout to bound anything: an interactive bash (`-i`) ignores SIGTERM, which
+ * is what spawnSync sends by default, so an rc file running `sleep 20` kept the call blocked for the whole 20 s.
  */
 const defaultShellEnvReader: ShellEnvReader = () => {
   const shell = process.env.SHELL || 'bash';
@@ -45,6 +47,7 @@ const defaultShellEnvReader: ShellEnvReader = () => {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
     timeout: TIMEOUT_MS,
+    killSignal: 'SIGKILL',
     maxBuffer: 4 * 1024 * 1024,
   });
 };
