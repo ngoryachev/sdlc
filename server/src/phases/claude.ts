@@ -118,6 +118,12 @@ export class ClaudePhaseExecutor implements PhaseExecutor<ClaudePhaseSpec> {
     pr.numTurns = result.num_turns;
     pr.resultSubtype = result.subtype;
     pr.endedAt = nowIso();
+    // An API error (an unsupported model, a bad request) arrives as a "success" result whose text is the error message:
+    // the turn ended normally from the SDK's point of view. Taken at face value the phase would pass having done nothing.
+    if (result.subtype === 'success' && (result.is_error || (result as { terminal_reason?: string }).terminal_reason === 'api_error')) {
+      pr.error = result.result?.trim() || 'the API returned an error';
+      return { kind: 'failed', error: pr.error };
+    }
     if (result.subtype === 'success') {
       pr.resultText = result.result;
       pr.structuredOutput = normalizeVerdict(normalizeStrings(result.structured_output ?? null));

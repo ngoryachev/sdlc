@@ -3,7 +3,7 @@ import type { ClaudeRunHandle, ClaudeRunner, ClaudeRunSpec } from '../../server/
 
 export interface FakeTurn {
   /** Called when the phase starts; may write files. Returns the final text and optional structured output. */
-  act: (spec: ClaudeRunSpec, api: { injected: string[] }) => Promise<{ text?: string; structured?: unknown; subtype?: SDKResultMessage['subtype']; cost?: number; toolCalls?: { name: string; input: Record<string, unknown> }[] }> | { text?: string; structured?: unknown; subtype?: SDKResultMessage['subtype']; cost?: number; toolCalls?: { name: string; input: Record<string, unknown> }[] };
+  act: (spec: ClaudeRunSpec, api: { injected: string[] }) => Promise<{ text?: string; structured?: unknown; subtype?: SDKResultMessage['subtype']; /** The API refused the request: the SDK reports it as a "success" result carrying the error text. */ apiError?: string; cost?: number; toolCalls?: { name: string; input: Record<string, unknown> }[] }> | { text?: string; structured?: unknown; subtype?: SDKResultMessage['subtype']; cost?: number; toolCalls?: { name: string; input: Record<string, unknown> }[] };
 }
 
 let sessionCounter = 0;
@@ -31,7 +31,9 @@ export class FakeRunner implements ClaudeRunner {
       yield { type: 'assistant', uuid: 'a2', session_id: sessionId, parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: r.text ?? 'done' }] } } as unknown as SDKMessage;
       const subtype = r.subtype ?? 'success';
       const base = { type: 'result', uuid: 'r', session_id: sessionId, duration_ms: 1, duration_api_ms: 1, is_error: subtype !== 'success', num_turns: 1, stop_reason: null, total_cost_usd: r.cost ?? 0.01, usage: {}, modelUsage: {}, permission_denials: [] };
-      yield (subtype === 'success'
+      yield (r.apiError
+        ? { ...base, subtype: 'success', is_error: true, terminal_reason: 'api_error', total_cost_usd: 0, result: r.apiError }
+        : subtype === 'success'
         ? { ...base, subtype, result: r.text ?? 'done', structured_output: r.structured }
         : { ...base, subtype, errors: ['fake failure'] }) as unknown as SDKResultMessage;
     }

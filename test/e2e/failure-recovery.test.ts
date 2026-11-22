@@ -38,6 +38,20 @@ describe('failures that used to end a task for good', () => {
     expect(app.store.getTask(task.id)!.status).toBe('succeeded');
   });
 
+  it('an API error reported as a successful result fails the phase with the error text, not with a missing artifact', async () => {
+    const dir = tmpDir('sdlc-apierror-');
+    const repo = makeRepo(dir, { 'a.txt': 'x\n' });
+    const message = 'API Error: 400 Claude Code 2.1.268 does not support this model';
+    const runner = new FakeRunner(() => ({ act: () => ({ apiError: message }) }));
+    const app = testApp(dir, runner);
+    const task = await app.engine.createTask({ prompt: 'x', repoPath: repo, pipeline: 'auto', baseRemote: null });
+    await app.engine.advance(task.id);
+    const impl = app.store.phaseRunsForTask(task.id).filter((p) => p.phaseName === 'implement');
+    expect(impl.length).toBeGreaterThan(0);
+    expect(impl.every((p) => p.status === 'failed' && p.error === message)).toBe(true);
+    expect(app.store.getTask(task.id)!.status).toBe('failed');
+  });
+
   it('a phase stopped by its cap escalates instead of looping back; resume continues the same session', async () => {
     const dir = tmpDir('sdlc-capped-');
     const repo = makeRepo(dir, { 'a.txt': 'x\n' });
