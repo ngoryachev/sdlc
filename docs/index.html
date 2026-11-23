@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sdlc — a good description in, good-quality code out</title>
+<meta name="description" content="sdlc: thin SDLC orchestration on top of Claude Code. A pitch deck for developers.">
+<!--
+  sdlc pitch deck — one self-contained file. No build step, no CDN, no network requests; opens offline.
+  Palette is lifted from ui/src/styles.css so it reads as the same product. Dark by default, press T for light.
+
+  Navigation: arrows / space / PageUp / PageDown / Home / End, click the screen (left third goes back),
+  Esc for the overview, N for speaker notes, T for the theme. The URL hash keeps the slide (#7).
+
+  Three slides are driven by the viewer: 4 (phase stepper, up/down), 5 (checkpoint toggles, 1-3),
+  7 (finding triage, up/down + 1-3). Interactive controls never swallow slide navigation.
+
+  Intended pacing — about 5 minutes end to end (per-slide seconds are in data-sec and shown in the notes view):
+    1 title 15s · 2 thesis 25s · 3 roles 25s · 4 pipeline 40s · 5 autonomy 30s · 6 plan checkpoint 20s
+    7 triage 35s · 8 control surface 20s · 9 tooling 25s · 10 proof 25s · 11 disclaimer 25s · 12 try it 15s · 13 CTA 15s
+-->
+<style>
+/* palette: ui/src/styles.css */
+:root {
+  --bg:#0f1115; --card:#171a21; --text:#e5e7eb; --muted:#9ca3af; --line:#2a2f3a;
+  --accent:#60a5fa; --ok:#4ade80; --warn:#fbbf24; --err:#f87171; --hil:#a78bfa;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+[data-theme="light"] {
+  --bg:#f7f7f8; --card:#fff; --text:#1d1d1f; --muted:#5b616e; --line:#e5e7eb;
+  --accent:#2563eb; --ok:#16a34a; --warn:#b45309; --err:#dc2626; --hil:#7c3aed;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans);
+  font-size: clamp(15px, 1.25vw, 23px); line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+code, .mono { font-family: var(--mono); }
+a { color: var(--accent); text-decoration: none; }
+a:hover, a:focus-visible { text-decoration: underline; }
+
+/* ---------- deck shell ---------- */
+#deck { position: relative; height: 100%; }
+.slide {
+  position: absolute; inset: 0; display: none;
+  flex-direction: column; justify-content: center; gap: 2.4vmin;
+  padding: 5vmin 7vw 9.5vh;
+}
+.slide.on { display: flex; }
+.slide.on > * { animation: rise .32s ease both; }
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .slide.on > * { animation: none; } }
+
+h1 { font-size: clamp(32px, 4.3vw, 78px); line-height: 1.08; letter-spacing: -.02em; margin: 0; font-weight: 650; }
+h2 { font-size: clamp(24px, 2.9vw, 52px); line-height: 1.12; letter-spacing: -.015em; margin: 0; font-weight: 620; }
+.kicker { font-family: var(--mono); font-size: clamp(12px, .95vw, 17px); letter-spacing: .14em;
+  text-transform: uppercase; color: var(--accent); margin: 0; }
+.lead { font-size: clamp(17px, 1.75vw, 31px); line-height: 1.35; color: var(--text); margin: 0; max-width: 46ch; }
+.sub { color: var(--muted); max-width: 62ch; margin: 0; }
+.big { font-size: clamp(30px, 3.6vw, 64px); font-weight: 650; letter-spacing: -.02em; line-height: 1.1; }
+strong { color: var(--text); font-weight: 650; }
+
+/* ---------- blocks ---------- */
+.cards { display: grid; gap: 1.6vmin; }
+.c4 { grid-template-columns: repeat(4, 1fr); }
+.c3 { grid-template-columns: repeat(3, 1fr); }
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 2.1vmin 2.3vmin; min-width: 0;
+}
+.card h3 { margin: 0 0 .5em; font-size: clamp(16px, 1.45vw, 26px); font-weight: 620; }
+.card p { margin: 0; color: var(--muted); }
+.card .who { font-family: var(--mono); font-size: .78em; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-bottom: .6em; }
+.card.hil { border-color: color-mix(in srgb, var(--hil) 55%, var(--line)); }
+.card.hil .who { color: var(--hil); }
+ul.plain { list-style: none; margin: 0; padding: 0; display: grid; gap: 1.1vmin; max-width: 56ch; }
+ul.plain li { padding-left: 1.6em; position: relative; }
+ul.plain li::before { content: "—"; position: absolute; left: 0; color: var(--accent); }
+.chip { display: inline-block; border: 1px solid var(--line); border-radius: 999px;
+  padding: .1em .75em; font-family: var(--mono); font-size: .8em; color: var(--muted); }
+.chip.hil { color: var(--hil); border-color: var(--hil); }
+.chip.ok { color: var(--ok); border-color: var(--ok); }
+.kbd { border: 1px solid var(--line); border-radius: 5px; padding: .05em .45em;
+  font-family: var(--mono); font-size: .85em; color: var(--muted); background: var(--card); }
+.hint { color: var(--muted); font-size: .85em; }
+.hint .kbd { font-size: .95em; }
+
+/* ---------- 1: title ---------- */
+.title-wrap { gap: 3vmin; }
+.wordmark { font-family: var(--mono); font-size: clamp(44px, 7vw, 132px); font-weight: 600;
+  letter-spacing: -.04em; line-height: 1.12; }
+.wordmark .caret { color: var(--accent); animation: blink 1.1s step-end infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ---------- 2: thesis ---------- */
+.io { display: grid; grid-template-columns: 1fr auto 1fr; gap: 2vmin; align-items: stretch; }
+.io .arrow { align-self: center; color: var(--muted); font-family: var(--mono); font-size: clamp(16px, 1.5vw, 26px); }
+.io .box { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 2.2vmin; }
+.io .box.bad { border-color: color-mix(in srgb, var(--err) 45%, var(--line)); }
+.io .box.good { border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); }
+.io .label { font-family: var(--mono); font-size: .8em; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+.io .bad .label { color: var(--err); } .io .good .label { color: var(--ok); }
+.io .box p { margin: .5em 0 0; }
+
+/* ---------- 4: stepper ---------- */
+.stepper { display: flex; flex-wrap: wrap; gap: .8vmin; }
+.step {
+  font-family: var(--mono); font-size: clamp(11px, 1vw, 18px);
+  border: 1px solid var(--line); border-radius: 8px; padding: .35em .7em;
+  background: var(--card); color: var(--muted); cursor: pointer;
+}
+.step[data-kind="hil"] { color: var(--hil); border-color: color-mix(in srgb, var(--hil) 45%, var(--line)); }
+.step.done { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.step.cur { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--card)); font-weight: 600; }
+.detail { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 12px; padding: 2.2vmin; min-height: 11em; }
+.detail[data-kind="hil"] { border-left-color: var(--hil); }
+.detail .who { font-family: var(--mono); font-size: .8em; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); }
+.detail[data-kind="hil"] .who { color: var(--hil); }
+.detail h3 { margin: .25em 0 .4em; font-size: clamp(19px, 2vw, 34px); font-weight: 620; }
+.detail p { margin: 0; color: var(--muted); max-width: 60ch; }
+.detail .out { margin-top: .9em; font-family: var(--mono); font-size: .82em; color: var(--text); opacity: .8; }
+
+/* ---------- 5: autonomy ---------- */
+.track { display: flex; gap: 3px; align-items: stretch; }
+.track .cell { flex: 1; min-width: 0; height: 5vmin; border-radius: 5px; display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--accent) 22%, var(--card)); border: 1px solid var(--line);
+  font-family: var(--mono); font-size: clamp(9px, .74vw, 14px); color: var(--muted); overflow: hidden; }
+.track .gate { flex: 0 0 1.5vmin; border-radius: 5px; background: var(--hil); }
+.toggles { display: flex; flex-wrap: wrap; gap: 1.2vmin; }
+.toggle { display: flex; gap: .6em; align-items: baseline; background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; padding: .6em 1em; cursor: pointer; color: var(--muted); font: inherit; text-align: left; }
+.toggle .mark { font-family: var(--mono); color: var(--muted); }
+.toggle.on { border-color: var(--hil); color: var(--text); }
+.toggle.on .mark { color: var(--hil); }
+.toggle small { display: block; color: var(--muted); font-size: .8em; }
+.verdict { font-size: clamp(17px, 1.7vw, 30px); min-height: 2.6em; }
+
+/* ---------- 6 / 7: UI mock-ups ---------- */
+.mock { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.mock .bar { display: flex; gap: .8em; align-items: center; padding: .7em 1.1em; border-bottom: 1px solid var(--line); font-size: .85em; }
+.mock .bar b { font-weight: 650; letter-spacing: .04em; }
+.mock .body { padding: 1.6vmin 1.8vmin; display: grid; gap: 1.1vmin; }
+.mock .plan { font-family: var(--mono); font-size: .82em; color: var(--muted); display: grid; gap: .35em; }
+.mock .acts { display: flex; flex-wrap: wrap; gap: .7em; padding: 1.2vmin 1.8vmin; border-top: 1px solid var(--line); }
+.btn { font: inherit; font-size: .85em; border: 1px solid var(--line); background: var(--bg); color: var(--text);
+  border-radius: 7px; padding: .4em .9em; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #0b1020; font-weight: 600; }
+[data-theme="light"] .btn.primary { color: #fff; }
+.btn.danger { color: var(--err); }
+.finding { display: grid; grid-template-columns: 1fr auto; gap: 1em; align-items: center;
+  border: 1px solid var(--line); border-radius: 10px; padding: .6em 1em; background: var(--bg); }
+.finding.focus { border-color: var(--accent); }
+.finding .txt { min-width: 0; }
+.finding .sev { font-family: var(--mono); font-size: .72em; text-transform: uppercase; letter-spacing: .08em; margin-right: .9em; }
+.sev.blocking { color: var(--err); } .sev.should_fix { color: var(--warn); } .sev.nit { color: var(--muted); }
+.finding .where { font-family: var(--mono); font-size: .78em; color: var(--muted); }
+.seg { display: flex; gap: 3px; }
+.seg button { font: inherit; font-family: var(--mono); font-size: .78em; cursor: pointer;
+  border: 1px solid var(--line); background: var(--card); color: var(--muted); border-radius: 6px; padding: .25em .8em; }
+.seg button.on { background: var(--accent); border-color: var(--accent); color: #0b1020; font-weight: 600; }
+[data-theme="light"] .seg button.on { color: #fff; }
+.outcome { font-size: clamp(15px, 1.4vw, 25px); min-height: 1.6em; }
+.outcome b { color: var(--accent); }
+
+/* ---------- 10: proof ---------- */
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.8vmin; }
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 2.2vmin; }
+.stat .n { font-size: clamp(30px, 3.8vw, 68px); font-weight: 650; letter-spacing: -.03em; line-height: 1; }
+.stat .n.was { color: var(--muted); text-decoration: line-through; text-decoration-thickness: 2px; }
+.stat .n.now { color: var(--ok); }
+.stat .k { color: var(--muted); margin-top: .5em; }
+
+/* ---------- 12: install ---------- */
+pre.cmd { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--ok);
+  border-radius: 12px; padding: 1.8vmin 2vmin; margin: 0; overflow-x: auto; }
+pre.cmd code { font-size: clamp(12px, 1.05vw, 19px); white-space: pre; }
+pre.cmd .p { color: var(--ok); }
+
+/* ---------- chrome ---------- */
+#chrome { position: fixed; inset: auto 0 0 0; pointer-events: none; z-index: 10; }
+#bar { height: 3px; background: var(--line); }
+#bar i { display: block; height: 100%; background: var(--accent); transition: width .25s ease; }
+#chrome .row { display: flex; align-items: center; gap: 1em; padding: .55em 2vw; font-size: clamp(11px, .8vw, 15px); color: var(--muted); }
+#chrome .row .grow { flex: 1; }
+#count { font-family: var(--mono); }
+
+#notes { position: fixed; left: 0; right: 0; bottom: 0; z-index: 12; display: none;
+  background: var(--card); border-top: 1px solid var(--line); padding: 1.2em 2vw 2.2em;
+  font-size: clamp(12px, .95vw, 18px); color: var(--muted); max-height: 34vh; overflow: auto; }
+body.notes #notes { display: block; }
+#notes b { color: var(--text); }
+#notes .sec { font-family: var(--mono); color: var(--accent); }
+
+#overview { position: fixed; inset: 0; z-index: 14; display: none; background: var(--bg); padding: 4vmin 4vw; overflow: auto; }
+body.overview #overview { display: block; }
+#overview h2 { margin-bottom: 2vmin; }
+#overview .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 1.4vmin; }
+#overview button { font: inherit; text-align: left; cursor: pointer; background: var(--card);
+  border: 1px solid var(--line); border-radius: 12px; padding: 1.2em; color: var(--text); display: grid; gap: .3em; }
+#overview button:hover, #overview button:focus-visible { border-color: var(--accent); outline: none; }
+#overview button.cur { border-color: var(--accent); }
+#overview .num { font-family: var(--mono); font-size: .8em; color: var(--accent); }
+#overview .ttl { font-weight: 600; }
+#overview .sec { font-family: var(--mono); font-size: .78em; color: var(--muted); }
+
+@media (max-width: 900px) {
+  .c4, .c3, .stats { grid-template-columns: 1fr 1fr; }
+  .io { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div id="deck">
+
+  <!-- 1 -->
+  <section class="slide title-wrap" data-title="A good description in, good-quality code out" data-sec="15"
+    data-notes="Open on the thesis, not on the tool. Say the one sentence and stop talking for a beat.">
+    <p class="kicker">github.com/ngoryachev/sdlc</p>
+    <div class="wordmark">sdlc<span class="caret">_</span></div>
+    <h1>A good description in.<br>Good-quality code out.</h1>
+    <p class="sub">Thin SDLC orchestration on top of Claude Code. Your repo, your git, your tools —
+      run through explicit phases, with the developer at the wheel.</p>
+  </section>
+
+  <!-- 2 -->
+  <section class="slide" data-title="The bottleneck is the spec" data-sec="25"
+    data-notes="The concept, before any feature. Everyone has pasted a one-line task at a model and been disappointed. The fix is not a better model, it is a better description — and a process that forces you to write one.">
+    <p class="kicker">the concept</p>
+    <h2>Prompting is not the bottleneck.<br>The description is.</h2>
+    <div class="io">
+      <div class="box bad">
+        <div class="label">vague in</div>
+        <p class="mono">&ldquo;add export to the report page&rdquo;</p>
+        <p class="sub">Three unstated decisions, two missing edge cases, no definition of done.</p>
+      </div>
+      <div class="arrow">vs</div>
+      <div class="box good">
+        <div class="label">specified in</div>
+        <p class="mono">What, where, why, how to verify, what must not change.</p>
+        <p class="sub">The same model, the same repo — a different outcome.</p>
+      </div>
+    </div>
+    <p class="lead">So sdlc makes the description the unit of work: it is questioned, refined, approved,
+      and only then implemented.</p>
+  </section>
+
+  <!-- 3 -->
+  <section class="slide" data-title="Four roles, not one assistant" data-sec="25"
+    data-notes="Role separation is why the output holds up. A single session that writes code and then reviews its own code approves everything. Each role here is a fresh session with its own prompt and its own verdict.">
+    <p class="kicker">role separation</p>
+    <h2>Four roles. Each a fresh session.</h2>
+    <div class="cards c4">
+      <div class="card">
+        <div class="who">design &amp; planning</div>
+        <h3>Analyst, architect</h3>
+        <p>Asks what is missing, then writes the plan: files, steps, how it will be verified.</p>
+      </div>
+      <div class="card">
+        <div class="who">implementation</div>
+        <h3>Developer</h3>
+        <p>Own worktree and branch. Writes the code, re-reads its own diff, never commits.</p>
+      </div>
+      <div class="card">
+        <div class="who">testing</div>
+        <h3>QA engineer</h3>
+        <p>New session, no memory of writing it. Runs the suite, then the thing itself. Defects go back.</p>
+      </div>
+      <div class="card">
+        <div class="who">review &amp; quality</div>
+        <h3>Reviewer</h3>
+        <p>New session again. A verdict plus findings with severities — not a pat on the back.</p>
+      </div>
+    </div>
+    <p class="sub">The orchestrator owns git: commits, pushes, the pull request. Agents are not allowed to.</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="slide" id="s-pipeline" data-title="The pipeline, phase by phase" data-sec="40"
+    data-notes="Step through four or five phases live — do not read all twelve. Point out the three purple ones: those are the only places it stops for you. Press the down arrow (or click a phase).">
+    <p class="kicker">the pipeline · press <span class="kbd">&darr;</span> or click a phase</p>
+    <h2>Twelve phases. Three of them are yours.</h2>
+    <div class="stepper" id="steps"></div>
+    <div class="detail" id="detail"></div>
+  </section>
+
+  <!-- 5 -->
+  <section class="slide" id="s-autonomy" data-title="Autonomy between checkpoints" data-sec="30"
+    data-notes="This is the pitch to a developer who has tried agent tooling and hated the babysitting. Toggle a checkpoint off live, show the count drop, then put them back and say: three stops for a day of work.">
+    <p class="kicker">fewer interruptions · press <span class="kbd">1</span> <span class="kbd">2</span> <span class="kbd">3</span></p>
+    <h2>It runs on its own between your checkpoints.</h2>
+    <div class="track" id="track"></div>
+    <div class="toggles" id="gates"></div>
+    <p class="verdict" id="gverdict"></p>
+  </section>
+
+  <!-- 6 -->
+  <section class="slide" data-title="Checkpoint: the plan" data-sec="20"
+    data-notes="The cheapest place to change your mind is before any code exists. The plan is editable text — you can rewrite it and the implementer gets your version, not the model's.">
+    <p class="kicker">human in the loop · 1 of 3</p>
+    <h2>Approve the plan — or rewrite it.</h2>
+    <div class="mock">
+      <div class="bar"><span class="chip hil">approve_plan</span><b>export CSV from the report page</b><span class="chip">shop</span></div>
+      <div class="body">
+        <div class="plan">
+          <span># Plan</span>
+          <span>## Files</span>
+          <span>- ui/src/pages/Report.tsx &mdash; toolbar button, filename from the active filter</span>
+          <span>- server/src/api/report.ts &mdash; GET /report.csv, streams, reuses the list query</span>
+          <span>## Verify</span>
+          <span>- unit: filter &rarr; rows; e2e: download under the 10k-row fixture</span>
+        </div>
+      </div>
+      <div class="acts">
+        <button class="btn primary" disabled>Approve</button>
+        <button class="btn" disabled>Edit plan</button>
+        <button class="btn" disabled>Request changes</button>
+        <button class="btn danger" disabled>Abort task</button>
+      </div>
+    </div>
+    <p class="sub">Edited text wins. From here the pipeline implements, self-checks, commits and tests without you.</p>
+  </section>
+
+  <!-- 7 -->
+  <section class="slide" id="s-triage" data-title="Checkpoint: decide each finding" data-sec="35"
+    data-notes="The most honest slide in the deck. Set one to fix, one to post, skip a nit — the button label shows exactly what will happen. Nothing is auto-applied and nothing is silently dropped.">
+    <p class="kicker">human in the loop · 2 of 3 · <span class="kbd">&darr;</span> row, <span class="kbd">1</span> fix <span class="kbd">2</span> post <span class="kbd">3</span> skip</p>
+    <h2>Every finding is your call.</h2>
+    <div class="mock">
+      <div class="bar"><span class="chip hil">approve_result</span><b>review · 4 findings</b><span class="chip ok">tests green</span></div>
+      <div class="body" id="findings"></div>
+      <div class="acts"><button class="btn primary" id="triage-btn">Continue</button><span class="hint" id="triage-hint"></span></div>
+    </div>
+    <p class="outcome" id="triage-out"></p>
+  </section>
+
+  <!-- 8 -->
+  <section class="slide" data-title="You hold the wheel" data-sec="20"
+    data-notes="Say it plainly: nothing here is fire-and-forget. Six controls, available while the run is live, from the web UI or Telegram.">
+    <p class="kicker">control surface</p>
+    <h2>You hold the wheel the whole way.</h2>
+    <div class="cards c3">
+      <div class="card hil"><div class="who">approve</div><h3>or edit</h3><p>The plan and the prompt are text you can rewrite in place.</p></div>
+      <div class="card hil"><div class="who">decide</div><h3>fix / post / skip</h3><p>Per review finding and per QA issue. No blanket accept.</p></div>
+      <div class="card hil"><div class="who">inject</div><h3>a message mid-run</h3><p>&ldquo;Use the existing helper.&rdquo; It lands in the running session.</p></div>
+      <div class="card hil"><div class="who">pause</div><h3>and resume</h3><p>Stop it mid-phase, look at the diff, let it continue.</p></div>
+      <div class="card hil"><div class="who">abort</div><h3>any time</h3><p>The worktree and the branch stay; any pull request it opened is yours to land or close.</p></div>
+      <div class="card hil"><div class="who">watch</div><h3>live</h3><p>Every tool call, every file, every cost — streamed. Or from Telegram.</p></div>
+    </div>
+  </section>
+
+  <!-- 9 -->
+  <section class="slide" data-title="Your tooling comes along" data-sec="25"
+    data-notes="The part people do not expect. Phases load your settings, skills, plugins and MCP servers exactly like an interactive claude — so the planner can read the Jira ticket and the Figma frame, and QA can check Sentry.">
+    <p class="kicker">access to your tooling</p>
+    <h2>It plans with the ticket, the design and the errors in hand.</h2>
+    <div class="cards c3">
+      <div class="card"><div class="who">mcp</div><h3>Jira</h3><p>The task comes from the ticket, with its acceptance criteria and comments.</p></div>
+      <div class="card"><div class="who">mcp</div><h3>Figma</h3><p>The plan references the actual frame instead of guessing at spacing.</p></div>
+      <div class="card"><div class="who">mcp</div><h3>Sentry</h3><p>A fix starts from the real stack trace and ends with the event gone.</p></div>
+    </div>
+    <p class="lead">Claude Code phases load your settings, skills, plugins and MCP servers like an interactive
+      <code>claude</code> — whatever you have already set up is simply there.</p>
+  </section>
+
+  <!-- 10 -->
+  <section class="slide" data-title="Proof: three weeks, delivered in days" data-sec="25"
+    data-notes="Anonymized on purpose — no customer, no repo. The point is the last number: the bug tail was the size of one human pass, not a new class of mess.">
+    <p class="kicker">proof</p>
+    <h2>One task. Estimated at three weeks.</h2>
+    <div class="stats">
+      <div class="stat"><div class="n was">3 weeks</div><div class="k">estimated the usual way</div></div>
+      <div class="stat"><div class="n now">days</div><div class="k">actually delivered, end to end</div></div>
+      <div class="stat"><div class="n">1 pass</div><div class="k">a few UI bugs, each fixed on the first attempt</div></div>
+    </div>
+    <p class="lead">A tail the size of one human developer's pass — not a pile of plausible-looking code
+      nobody wants to own.</p>
+    <p class="sub">Anonymized account: no customer or repository specifics.</p>
+  </section>
+
+  <!-- 11 -->
+  <section class="slide" data-title="Not a silver bullet" data-sec="25"
+    data-notes="Credibility slide. Do not soften it. The readiness skill is a real finding from the work, not a roadmap promise.">
+    <p class="kicker">disclaimer</p>
+    <h2>Not a silver bullet.</h2>
+    <ul class="plain">
+      <li><strong>A good spec is required.</strong> Garbage in still gets you garbage out, only faster and with more of it.</li>
+      <li><strong>Readiness is its own problem.</strong> The work surfaced an idea we now want: a skill that judges whether a task is ready to implement at all — and refuses otherwise.</li>
+      <li><strong>Management still matters.</strong> Someone has to decide what is worth building, in what order, and when the answer is &ldquo;not like this&rdquo;. That is still a human.</li>
+    </ul>
+    <p class="sub">What changes is where your attention goes: into the description and the decisions, not the typing.</p>
+  </section>
+
+  <!-- 12 -->
+  <section class="slide" data-title="Try it" data-sec="15"
+    data-notes="One command, own data directory, systemd unit, web UI. Mention it develops itself — this deck went through the pipeline.">
+    <p class="kicker">try it</p>
+    <h2>One command on your own box.</h2>
+    <pre class="cmd"><code><span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/ngoryachev/sdlc/main/deploy/install.sh | bash</code></pre>
+    <p class="lead">Node, <code>gh</code>, Claude Code, a service that starts at boot, a web UI on <code>:7337</code>.
+      Your repos stay yours — each task gets its own worktree and branch.</p>
+    <p class="sub">It develops itself: this deck was planned, implemented, tested and reviewed by the pipeline.</p>
+  </section>
+
+  <!-- 13 -->
+  <section class="slide" data-title="Developer call — coming soon" data-sec="15"
+    data-notes="Close on the invitation. No date yet on purpose: say 'watch the repo, the announcement lands there'.">
+    <p class="kicker">what's next</p>
+    <h1>A developer call<br>is coming soon.</h1>
+    <p class="lead">No date yet. Watch the repo — the announcement goes there first.</p>
+    <p class="big mono"><a href="https://github.com/ngoryachev/sdlc">github.com/ngoryachev/sdlc</a></p>
+    <p class="sub">A good description in. Good-quality code out. Bring a task you have been putting off.</p>
+  </section>
+
+</div>
+
+<div id="overview"><h2>Overview</h2><div class="grid" id="ov-grid"></div></div>
+
+<div id="notes"></div>
+
+<div id="chrome">
+  <div class="row">
+    <span class="hint"><span class="kbd">&larr;</span> <span class="kbd">&rarr;</span> move ·
+      <span class="kbd">Esc</span> overview · <span class="kbd">N</span> notes · <span class="kbd">T</span> theme</span>
+    <span class="grow"></span>
+    <span id="count"></span>
+  </div>
+  <div id="bar"><i></i></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var N = slides.length, cur = 0;
+  var bar = document.querySelector('#bar i'), count = document.getElementById('count');
+  var notes = document.getElementById('notes'), ovGrid = document.getElementById('ov-grid');
+
+  /* ---------- 4: phase stepper ---------- */
+  var PHASES = [
+    { n: 'clarify',    k: 'claude', who: 'analyst',      t: 'Reads the task and asks only what it cannot answer itself.', out: 'questions + a suggested title' },
+    { n: 'refine',     k: 'hil',    who: 'you',          t: 'You answer the questions and rewrite the prompt until it says what you mean.', out: 'the approved description' },
+    { n: 'plan',       k: 'claude', who: 'architect',    t: 'Turns the description into files to touch, steps, and how the result will be verified.', out: '.sdlc/plan.md' },
+    { n: 'approve',    k: 'hil',    who: 'you',          t: 'Approve the plan, edit it in place, send it back, or abort. Cheapest place to change your mind.', out: 'go / no-go' },
+    { n: 'implement',  k: 'claude', who: 'developer',    t: 'Writes the code in the task’s own worktree and branch. Cannot commit, push, or write outside it.', out: 'a working tree' },
+    { n: 'self_check', k: 'claude', who: 'developer',    t: 'Re-reads its own diff against the plan and fixes the obvious before anyone else looks.', out: 'a tidier diff' },
+    { n: 'commit',     k: 'git',    who: 'orchestrator', t: 'The orchestrator commits — agents never touch git history.', out: 'one commit per attempt' },
+    { n: 'test',       k: 'claude', who: 'qa engineer',  t: 'A fresh session with no memory of writing the code. Runs the suite, then the feature itself.', out: 'verdict + defects' },
+    { n: 'review',     k: 'claude', who: 'reviewer',     t: 'Another fresh session. Correctness first, then simplification, with severities attached.', out: 'verdict + findings' },
+    { n: 'approve',    k: 'hil',    who: 'you',          t: 'Decide each finding and each QA issue: fix, post to the PR, or skip. Fixes loop back to implement.', out: 'your decisions' },
+    { n: 'PR',         k: 'git',    who: 'orchestrator', t: 'Pushes the branch, opens the pull request, posts the findings you marked post. Later passes update it.', out: 'a pull request' },
+    { n: 'qa',         k: 'claude', who: 'qa engineer',  t: 'Uses the thing like a user would. Issues come back to the same checkpoint, where you decide what happens.', out: 'a QA comment' }
+  ];
+  var pcur = 0, stepsEl = document.getElementById('steps'), detailEl = document.getElementById('detail');
+  PHASES.forEach(function (p, i) {
+    var b = document.createElement('button');
+    b.className = 'step'; b.type = 'button'; b.dataset.kind = p.k; b.textContent = p.n;
+    b.addEventListener('click', function () { pcur = i; drawPhases(); });
+    stepsEl.appendChild(b);
+  });
+  function drawPhases() {
+    var kids = stepsEl.children;
+    for (var i = 0; i < kids.length; i++) {
+      kids[i].className = 'step' + (i < pcur ? ' done' : i === pcur ? ' cur' : '');
+    }
+    var p = PHASES[pcur];
+    detailEl.dataset.kind = p.k;
+    detailEl.innerHTML = '<div class="who">' + p.who + ' &middot; ' + p.k + '</div>' +
+      '<h3>' + p.n + '</h3><p>' + p.t + '</p>' +
+      '<div class="out">&rarr; ' + p.out + '</div>';
+  }
+  drawPhases();
+
+  /* ---------- 5: checkpoint toggles ---------- */
+  var RUN = PHASES.filter(function (p) { return p.k !== 'hil'; });
+  var GATES = [
+    { n: 'refine', d: 'the description', at: 1, on: true },          // before plan
+    { n: 'approve_plan', d: 'the plan', at: 2, on: true },           // before implement
+    { n: 'approve_result', d: 'review + QA findings', at: 7, on: true } // before the pull request
+  ];
+  var trackEl = document.getElementById('track'), gatesEl = document.getElementById('gates'),
+      gvEl = document.getElementById('gverdict');
+  GATES.forEach(function (g) {
+    var b = document.createElement('button');
+    b.className = 'toggle'; b.type = 'button';
+    b.addEventListener('click', function () { g.on = !g.on; drawGates(); });
+    gatesEl.appendChild(b);
+    g.el = b; g.on0 = g.on;
+  });
+  function drawGates() {
+    GATES.forEach(function (g) {
+      g.el.className = 'toggle' + (g.on ? ' on' : '');
+      g.el.setAttribute('aria-pressed', g.on ? 'true' : 'false');
+      g.el.innerHTML = '<span class="mark">' + (g.on ? '[x]' : '[ ]') + '</span>' +
+        '<span><code>' + g.n + '</code><small>' + g.d + '</small></span>';
+    });
+    trackEl.innerHTML = '';
+    RUN.forEach(function (p, i) {
+      GATES.forEach(function (g) {
+        if (!g.on || g.at !== i) return;
+        var m = document.createElement('span');
+        m.className = 'gate'; m.title = g.n;
+        trackEl.appendChild(m);
+      });
+      var c = document.createElement('span');
+      c.className = 'cell'; c.title = p.who; c.textContent = p.n;
+      trackEl.appendChild(c);
+    });
+    var on = GATES.filter(function (g) { return g.on; }).length;
+    gvEl.innerHTML = on === 0
+      ? '<strong>0 stops.</strong> Fully autonomous — it plans, builds, tests, reviews and opens the PR while you do something else. Your review is the PR itself.'
+      : '<strong>' + on + ' stop' + (on > 1 ? 's' : '') + '.</strong> Everything in between — worktree, branch, code, suite, commits, review, pull request — happens without asking you anything.';
+  }
+  drawGates();
+
+  /* ---------- 7: finding triage ---------- */
+  var FINDINGS = [
+    { sev: 'blocking',   t: 'CSV export streams the unfiltered query', w: 'server/src/api/report.ts:88', a: 'fix' },
+    { sev: 'should_fix', t: 'Filename ignores the active date range',  w: 'ui/src/pages/Report.tsx:140', a: 'fix' },
+    { sev: 'should_fix', t: 'The 10k-row fixture is never exercised',  w: 'test/e2e/report.test.ts',     a: 'post' },
+    { sev: 'nit',        t: 'Duplicate escaping helper could be reused', w: 'server/src/lib/csv.ts:12',  a: 'skip' }
+  ];
+  var ACTS = ['fix', 'post', 'skip'], frow = 0;
+  var fEl = document.getElementById('findings'), btnEl = document.getElementById('triage-btn'),
+      hintEl = document.getElementById('triage-hint'), outEl = document.getElementById('triage-out');
+  FINDINGS.forEach(function (f, i) {
+    var d = document.createElement('div');
+    d.className = 'finding';
+    d.innerHTML = '<div class="txt"><div><span class="sev ' + f.sev + '">' + f.sev.replace('_', ' ') + '</span>' +
+      f.t + '</div><div class="where">' + f.w + '</div></div>';
+    var seg = document.createElement('div');
+    seg.className = 'seg';
+    ACTS.forEach(function (a) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.textContent = a;
+      b.addEventListener('click', function () { f.a = a; frow = i; drawTriage(); });
+      seg.appendChild(b);
+    });
+    d.appendChild(seg);
+    fEl.appendChild(d);
+    f.el = d; f.a0 = f.a;
+  });
+  function drawTriage() {
+    FINDINGS.forEach(function (f, i) {
+      f.el.className = 'finding' + (i === frow ? ' focus' : '');
+      var bs = f.el.querySelectorAll('.seg button');
+      for (var j = 0; j < bs.length; j++) bs[j].className = (ACTS[j] === f.a ? 'on' : '');
+    });
+    var c = { fix: 0, post: 0, skip: 0 };
+    FINDINGS.forEach(function (f) { c[f.a]++; });
+    var tail = c.skip ? ', skip ' + c.skip : '';
+    btnEl.textContent = c.fix
+      ? 'Send ' + c.fix + ' to fix' + (c.post ? ', post ' + c.post + ' later' : '') + tail
+      : c.post ? 'Continue, post ' + c.post + tail : 'Continue' + tail;
+    hintEl.textContent = c.fix ? 'back to implement, then review again' : 'on to the pull request';
+    outEl.innerHTML = '<b>fix</b> &rarr; back to the implementer &middot; <b>post</b> &rarr; published on the pull request &middot; ' +
+      '<b>skip</b> &rarr; nothing happens.';
+  }
+  drawTriage();
+
+  /* ---------- per-slide keys ---------- */
+  var handlers = {
+    's-pipeline': function (k) {
+      if (k === 'ArrowDown' && pcur < PHASES.length - 1) { pcur++; drawPhases(); return true; }
+      if (k === 'ArrowUp' && pcur > 0) { pcur--; drawPhases(); return true; }
+      return false;   // at either end the arrow falls through to the next/previous slide
+    },
+    's-autonomy': function (k) {
+      var i = ['1', '2', '3'].indexOf(k);
+      if (i < 0) return false;
+      GATES[i].on = !GATES[i].on; drawGates(); return true;
+    },
+    's-triage': function (k) {
+      if (k === 'ArrowDown' && frow < FINDINGS.length - 1) { frow++; drawTriage(); return true; }
+      if (k === 'ArrowUp' && frow > 0) { frow--; drawTriage(); return true; }
+      var i = ['1', '2', '3'].indexOf(k);
+      if (i < 0) return false;
+      FINDINGS[frow].a = ACTS[i]; drawTriage(); return true;
+    }
+  };
+
+  /* ---------- navigation ---------- */
+  var BACK_ZONE = 0.32;   // a click in the left third of the screen goes back, the rest advances
+  var shown = -1;
+
+  /* An interactive slide opens in its demo state every time it is entered: a presenter who steps
+     through the pipeline, backs up and comes again gets the demo, not the state they left behind. */
+  var resets = {
+    's-pipeline': function () { pcur = 0; drawPhases(); },
+    's-autonomy': function () { GATES.forEach(function (g) { g.on = g.on0; }); drawGates(); },
+    's-triage': function () { frow = 0; FINDINGS.forEach(function (f) { f.a = f.a0; }); drawTriage(); }
+  };
+
+  function show(i, push) {
+    cur = Math.max(0, Math.min(N - 1, i));
+    if (cur !== shown) { shown = cur; var reset = resets[slides[cur].id]; if (reset) reset(); }
+    slides.forEach(function (s, j) { s.classList.toggle('on', j === cur); });
+    bar.style.width = ((cur + 1) / N * 100) + '%';
+    count.textContent = (cur + 1) + ' / ' + N;
+    var s = slides[cur];
+    notes.innerHTML = '<span class="sec">&asymp;' + s.dataset.sec + 's</span> &middot; <b>' +
+      s.dataset.title + '</b><br>' + s.dataset.notes;
+    for (var j = 0; j < ovGrid.children.length; j++) ovGrid.children[j].classList.toggle('cur', j === cur);
+    if (push !== false) {
+      var h = '#' + (cur + 1);
+      // opening the file from disk is an opaque origin in some browsers, where this throws
+      try { if (location.hash !== h) history.replaceState(null, '', h); } catch (err) { /* no hash for this slide */ }
+    }
+  }
+  function go(d) { show(cur + d); }
+
+  slides.forEach(function (s, i) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.innerHTML = '<span class="num">' + (i + 1) + '</span><span class="ttl">' + s.dataset.title +
+      '</span><span class="sec">&asymp;' + s.dataset.sec + 's</span>';
+    b.addEventListener('click', function () { document.body.classList.remove('overview'); show(i); });
+    ovGrid.appendChild(b);
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var k = e.key;
+    if (k === 'Escape') { document.body.classList.toggle('overview'); e.preventDefault(); return; }
+    if (document.body.classList.contains('overview')) {
+      if (k === 'Enter' || k === ' ') { document.body.classList.remove('overview'); e.preventDefault(); }
+      return;
+    }
+    var h = handlers[slides[cur].id];
+    if (h && h(k)) { e.preventDefault(); return; }
+    if (k === 'ArrowRight' || k === ' ' || k === 'PageDown' || k === 'ArrowDown') { go(1); e.preventDefault(); }
+    else if (k === 'ArrowLeft' || k === 'PageUp' || k === 'ArrowUp' || k === 'Backspace') { go(-1); e.preventDefault(); }
+    else if (k === 'Home') { show(0); e.preventDefault(); }
+    else if (k === 'End') { show(N - 1); e.preventDefault(); }
+    else if (k === 'n' || k === 'N') { document.body.classList.toggle('notes'); }
+    else if (k === 't' || k === 'T') {
+      var r = document.documentElement;
+      r.dataset.theme = r.dataset.theme === 'light' ? 'dark' : 'light';
+    }
+  });
+
+  document.getElementById('deck').addEventListener('click', function (e) {
+    if (e.target.closest('button, a, .mock, pre')) return;
+    if (String(getSelection())) return;              // selecting text is not a click-through
+    go(e.clientX < window.innerWidth * BACK_ZONE ? -1 : 1);
+  });
+
+  window.addEventListener('hashchange', function () {
+    var i = parseInt(location.hash.slice(1), 10);
+    if (i >= 1 && i <= N) show(i - 1, false);
+  });
+
+  var start = parseInt(location.hash.slice(1), 10);
+  show(start >= 1 && start <= N ? start - 1 : 0, false);
+})();
+</script>
+</body>
+</html>

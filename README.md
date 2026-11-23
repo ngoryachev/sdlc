@@ -4,6 +4,8 @@ Runs a coding task through explicit phases (`clarify → refine → plan → app
 Each task gets its own git worktree and branch; every phase is one Claude Code session (via the Agent SDK) running inside that worktree.
 Humans step in only at declared checkpoints (HIL), from a web UI or Telegram. Everything is observable live.
 
+**[What this is, in 5 minutes →](https://ngoryachev.github.io/sdlc/)** — an interactive pitch deck (also `docs/index.html`, opens offline).
+
 ## Requirements
 
 - Node 22.x (uses `node:sqlite`), npm
