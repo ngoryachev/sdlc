@@ -178,6 +178,29 @@ export function defaultFindingActions(p: HilPayload, saved: HilResponse | null):
   (p.review?.findings ?? []).forEach((f, i) => { out[`review:${i}`] = p.role === 'reviewer' ? (p.canPost && f.severity !== 'nit' ? 'post' : 'skip') : p.canFix && f.severity !== 'nit' ? 'fix' : 'skip'; });
   return out;
 }
+/** Heading of the section an approval comment is appended to the plan under (`approve_plan` + approve). */
+export const HUMAN_ADDITIONS_HEADING = '## Human additions';
+
+/**
+ * Where the comment of an answer ends up: `agent` — a later phase sees it; `pr` — it is published on the pull request as
+ * the review text; `none` — nothing reads it. The server refuses a comment that would go nowhere, the UI uses the same
+ * answer to hint, relabel and disable. `hasFix`: at least one item of the checkpoint is marked `fix`.
+ * `abort` is never refused: there is nobody to deliver to, and an abort must always go through.
+ */
+export function commentDelivery(p: HilPayload, decision: HilDecision, hasFix: boolean): 'agent' | 'pr' | 'none' {
+  if (decision === 'abort') return 'none';
+  switch (p.kind) {
+    case 'approve_plan': return decision === 'approve' || decision === 'request_changes' ? 'agent' : 'none';
+    case 'refine_prompt': return decision === 'approve' ? 'agent' : 'none';
+    case 'approve_result':
+      if (decision === 'request_changes' || hasFix) return 'agent';
+      return decision === 'approve' && p.canPost ? 'pr' : 'none';
+    case 'pr_feedback': return decision === 'approve' ? 'agent' : 'none';
+    case 'question': return decision === 'answer' ? 'agent' : 'none';
+    case 'escalation': return decision === 'resume' ? 'agent' : 'none';
+  }
+}
+
 /** author: the task's segment contains the implementing phase (it fixes PR comments); reviewer: it only reviews (it re-reviews new commits). */
 export type TaskRole = 'author' | 'reviewer';
 

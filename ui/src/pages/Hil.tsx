@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'wouter';
 import type { FindingAction, HilDecision, HilPayload, HilResponse, ReviewEvent, TranslateLang } from '@sdlc/shared';
-import { TRANSLATE_LANGS, TRANSLATE_LANG_NAMES, defaultFindingActions, defaultReviewEvent } from '@sdlc/shared';
+import { TRANSLATE_LANGS, TRANSLATE_LANG_NAMES, commentDelivery, defaultFindingActions, defaultReviewEvent } from '@sdlc/shared';
 import { api, ApiError, type HilRow } from '../lib/api.js';
 import { useStore } from '../lib/store.js';
 import { requestNotifyPermission } from '../lib/notify.js';
@@ -118,10 +118,17 @@ export function HilPage() {
   const counts = { fix: 0, post: 0, skip: 0 };
   for (const a of Object.values(actions)) counts[a]++;
   const granular = h?.payload.kind === 'approve_result';
+  const hasComment = !!comment.trim();
+  /** A result checkpoint with nothing marked fix and nowhere to post: a typed comment alone goes back to the implementer. */
+  const commentOnlyBack = !!h && h.payload.kind === 'approve_result' && !counts.fix && hasComment && !h.payload.canPost && h.payload.canFix;
+  /** Whether a typed comment reaches anyone with this decision (the server refuses it otherwise). */
+  const delivers = (d: HilDecision) => (h ? commentDelivery(h.payload, d, counts.fix > 0) : 'none');
+  const dropsComment = (d: HilDecision) => hasComment && d !== 'abort' && delivers(d) === 'none';
   const respond = async (decision: HilDecision) => {
     if (!h || h.id !== id || busy || confirm) return;
     // at a result checkpoint the items decide: anything marked fix sends the run back, otherwise it goes on
-    if (granular && decision !== 'abort') decision = counts.fix ? 'request_changes' : 'approve';
+    if (granular && decision !== 'abort') decision = counts.fix || commentOnlyBack ? 'request_changes' : 'approve';
+    if (dropsComment(decision)) { toast(`a comment is not delivered with ${label(decision)}; clear it first`, 'error'); return; }
     if (decision === 'request_changes' && !comment.trim() && !counts.fix) { toast('a comment is required for request changes', 'error'); return; }
     setBusy(true);
     const body: HilResponse = { decision, comment: comment.trim() || undefined, edited: Object.keys(edited).length ? edited : undefined, answers: Object.keys(answers).length ? answers : undefined,
@@ -168,6 +175,9 @@ export function HilPage() {
   // the card of the previous checkpoint is never shown for the new id: that is what makes an answer land visibly
   if (!h || h.id !== id) return <div className="muted">loading…</div>;
   const p = h.payload;
+  // only where some decision passes the comment on; abort reads nothing
+  const showComment = h.kind !== 'question' && (p.kind === 'approve_result' ? p.canFix || p.canPost : h.allowedDecisions.some((d) => d !== 'abort' && delivers(d) !== 'none'));
+  const planAdditions = p.kind === 'approve_plan' && hasComment;
   return (
     <div className="card hil-card" key={h.id}>
       <div className="row"><span className="kind">{h.kind}</span><h2 className="grow hil-title" style={{ margin: 0 }}><Link href={`/tasks/${h.taskId}`}>{h.task.title}</Link></h2>{h.task.jiraUrl && <a className="small" href={h.task.jiraUrl} target="_blank" rel="noreferrer">🧩 Jira</a>}{h.task.branchUrl && <a className="small" href={h.task.branchUrl} target="_blank" rel="noreferrer">🌿 branch</a>}<span className="small muted">{ago(h.createdAt)} ago</span></div>
@@ -191,15 +201,15 @@ export function HilPage() {
       )}
       {h.status === 'open' && (
         <>
-          {h.allowedDecisions.some((d) => ['request_changes', 'resume', 'deny', 'approve'].includes(d)) && h.kind !== 'question' && (
-            <div style={{ marginTop: 10 }}><label className="small muted">{granular && p.kind === 'approve_result' ? (p.canPost && p.role === 'reviewer' ? 'Review text (posted to the PR together with the findings marked post; optional)' : counts.fix ? 'Comment for the implementer (optional; the items marked fix are sent anyway)' : p.canPost ? 'Comment (optional; with items marked post it is posted to the PR as the review text)' : 'Comment (optional)') : `Comment ${h.allowedDecisions.includes('request_changes') ? '(required for request changes)' : '(optional)'}`}</label><textarea id="hil-comment" value={comment} onChange={(e) => setComment(e.target.value)} style={{ minHeight: 64 }} /></div>
+          {showComment && (
+            <div style={{ marginTop: 10 }}><label className="small muted">{granular && p.kind === 'approve_result' ? (p.canPost && p.role === 'reviewer' ? 'Review text (posted to the PR together with the findings marked post; optional)' : counts.fix ? 'Comment for the implementer (optional; the items marked fix are sent anyway)' : p.canPost ? 'Comment (optional; with items marked post it is posted to the PR as the review text)' : 'Comment (optional)') : commentLabel(h.kind, h.allowedDecisions)}</label><textarea id="hil-comment" value={comment} onChange={(e) => setComment(e.target.value)} style={{ minHeight: 64 }} /></div>
           )}
           <div className={`actions${fresh ? ' locked' : ''}`}>
             {granular && p.kind === 'approve_result' && (
-              <div className="act"><button className="primary" disabled={locked} onClick={() => respond('approve')}>{counts.fix ? `Send ${counts.fix} to fix${counts.post ? `, post ${counts.post} later` : ''}${counts.skip ? `, skip ${counts.skip}` : ''}` : counts.post ? `Continue, post ${counts.post}${counts.skip ? `, skip ${counts.skip}` : ''}` : `Continue${counts.skip ? `, skip ${counts.skip}` : ''}`}</button><small>{counts.fix ? h.next.request_changes : h.next.approve}</small></div>
+              <div className="act"><button className="primary" disabled={locked || (!commentOnlyBack && dropsComment(counts.fix ? 'request_changes' : 'approve'))} title={!commentOnlyBack && dropsComment(counts.fix ? 'request_changes' : 'approve') ? 'a comment is not delivered here; clear it first' : undefined} onClick={() => respond('approve')}>{commentOnlyBack ? 'Send comment to implementer' : counts.fix ? `Send ${counts.fix} to fix${counts.post ? `, post ${counts.post} later` : ''}${counts.skip ? `, skip ${counts.skip}` : ''}` : counts.post ? `Continue, post ${counts.post}${counts.skip ? `, skip ${counts.skip}` : ''}` : `Continue${counts.skip ? `, skip ${counts.skip}` : ''}`}</button><small>{counts.fix || commentOnlyBack ? h.next.request_changes : h.next.approve}</small></div>
             )}
             {h.allowedDecisions.filter((d) => d !== 'abort' && !(granular && (d === 'approve' || d === 'request_changes'))).map((d) => (
-              <div className="act" key={d}><button className={['approve', 'answer', 'allow', 'retry'].includes(d) ? 'primary' : ''} disabled={locked} onClick={() => respond(d)}>{label(d)}</button><small>{h.next[d]}</small></div>
+              <div className="act" key={d}><button className={['approve', 'answer', 'allow', 'retry'].includes(d) ? 'primary' : ''} disabled={locked || dropsComment(d)} title={dropsComment(d) ? `a comment is not delivered with ${label(d)}; clear it first` : undefined} onClick={() => respond(d)}>{planAdditions && d === 'approve' ? 'Approve with additions' : label(d)}</button><small>{planAdditions && d === 'approve' ? 'comment is appended to .sdlc/plan.md and passed to the agent' : h.next[d]}</small></div>
             ))}
             <div className="act" style={{ marginLeft: 'auto' }}><ArmedAbort onClick={() => respond('abort')} disabled={locked} /><small>{h.next.abort}</small></div>
           </div>
@@ -210,6 +220,13 @@ export function HilPage() {
   );
 }
 
+function commentLabel(kind: HilPayload['kind'], allowed: HilDecision[]): string {
+  if (kind === 'approve_plan') return 'Comment (required for request changes; with Approve it is appended to the plan as Human additions and passed to the implementer)';
+  if (kind === 'refine_prompt') return 'Notes (optional; appended to the task prompt)';
+  if (kind === 'escalation') return 'Comment (used with Resume; Retry and Skip take no comment)';
+  if (kind === 'pr_feedback') return 'Additional guidance for the implementer (optional; used with Approve)';
+  return `Comment ${allowed.includes('request_changes') ? '(required for request changes)' : '(optional)'}`;
+}
 function label(d: HilDecision): string { return ({ approve: 'Approve', request_changes: 'Request changes', abort: 'Abort', allow: 'Allow', allow_session: 'Allow for session', deny: 'Deny', answer: 'Send answers', retry: 'Retry', resume: 'Resume with comment', skip: 'Skip' } as Record<HilDecision, string>)[d]; }
 
 function ArmedAbort({ onClick, disabled }: { onClick: () => void; disabled: boolean }) {

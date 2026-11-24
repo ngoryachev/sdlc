@@ -5,7 +5,7 @@ const execFileP = promisify(execFile);
 import path from 'node:path';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import type { AskUserQuestionItem, ClarifyQuestion, HilRequest, HilResponse, ModelOverrides, PhaseRun, PipelineRun, Task, TaskRole, TaskStatus } from '@sdlc/shared';
-import { ACTIVE_STATUSES, FINISHED_STATUSES } from '@sdlc/shared';
+import { ACTIVE_STATUSES, FINISHED_STATUSES, HUMAN_ADDITIONS_HEADING, commentDelivery } from '@sdlc/shared';
 import type { SdlcConfig } from '../config/config.js';
 import { loadRepoConfig, parseDuration } from '../config/config.js';
 import { missingFileWarning, repoFileEnv } from '../config/repo-files.js';
@@ -900,6 +900,11 @@ export class Engine {
     const task = store.getTask(hil.taskId)!;
     const run = store.latestRunForTask(task.id)!;
     if (hil.payload.kind === 'approve_result' && (response.decision === 'request_changes' || fixKeys.length) && !hil.payload.canFix) throw new HttpError(400, 'this task has no implementing phase in its segment: findings can be published or skipped, not fixed');
+    // a comment nothing would read is refused rather than dropped: the human believes it was passed on
+    if (response.comment?.trim() && response.decision !== 'abort') {
+      if (commentDelivery(hil.payload, response.decision, fixKeys.length > 0) === 'none') throw new HttpError(400, `${hil.kind}: a comment is not delivered with ${response.decision}; ${COMMENT_INSTEAD[hil.kind]}`);
+      if (hil.kind === 'approve_plan' && response.decision === 'approve' && !latestArtifact(store, run.id, 'plan_md')) throw new HttpError(400, 'approve_plan: this pipeline has no plan artifact to carry the comment; request changes instead, or clear the comment');
+    }
     hil.status = 'answered'; hil.response = response; hil.answeredVia = via; hil.answeredAt = nowIso();
     store.updateHil(hil);
     events.emit('hil.answered', { hil }, { taskId: task.id, phaseRunId: hil.phaseRunId });
@@ -952,6 +957,7 @@ export class Engine {
         // an unanswered question is a legal answer in itself: the developer left that call to the implementer, so say so in the prompt
         const asked = (q: ClarifyQuestion) => `- **${q.header}**: ${q.question}\n  → ${response.answers?.[q.question]?.trim() || NO_ANSWER}`;
         task.refinedPrompt = p.questions.length ? `${base}\n\n## Clarifying questions\n${p.questions.map(asked).join('\n')}` : base;
+        if (response.comment?.trim()) task.refinedPrompt = `${task.refinedPrompt}\n\n## Additional notes from the human\n${response.comment.trim()}`;
         task.title = response.edited?.title?.trim() || p.suggestedTitle || task.title;
         if (!task.jiraKey) task.jiraKey = jiraKeyFrom(task.refinedPrompt);
         if (p.suggestedBranch) await this.renameBranchTo(task, p.suggestedBranch);
@@ -965,6 +971,14 @@ export class Engine {
           if (response.edited?.planMd !== undefined) {
             const planPath = latestArtifact(store, run.id, 'plan_md');
             if (planPath) fs.writeFileSync(planPath, response.edited.planMd);
+          }
+          // approved "with a couple of fixes": the fixes travel in the plan itself, so implement, review and qa all read them
+          if (response.comment?.trim()) {
+            const planPath = latestArtifact(store, run.id, 'plan_md');
+            if (planPath) {
+              const current = fs.existsSync(planPath) ? fs.readFileSync(planPath, 'utf8') : '';
+              fs.writeFileSync(planPath, `${current.trimEnd()}${current.trim() ? '\n\n' : ''}${humanAdditions(response.comment)}`);
+            }
           }
           closePhase('succeeded', opts?.resultText ?? 'approved'); run.cursor++;
         } else { closePhase('succeeded', 'request_changes'); goBack(backTarget(['plan']), `The human reviewed your plan and requested changes:\n\n${response.comment}\n\nUpdate .sdlc/plan.md accordingly and reply with a short summary of what changed.`); }
@@ -990,6 +1004,8 @@ export class Engine {
           task.prFeedbackCursor = p.comments.at(-1)?.id ?? task.prFeedbackCursor;
           // per comment: fix (default) or skip; skipped ones are marked read and never come back
           const picked = p.comments.filter((c) => response.comments?.[c.id] !== 'skip');
+          // every comment skipped but guidance typed: the guidance alone still goes to the implementer, it is not dropped
+          if (!picked.length && response.comment?.trim()) { goBack(backTarget(['implement']), `The human reviewed the pull request comments and left guidance. Address it, keep changes minimal, then stop.\n\n${response.comment.trim()}`); break; }
           if (!picked.length) { closePhase('skipped', 'skipped'); store.updateTask(task); run.status = 'succeeded'; this.saveRun(run); this.setTaskStatus(task, 'pr_open'); return { done: true }; }
           const text = picked.map((c) => `- ${c.author}${c.path ? ` (${c.path}${c.line ? `:${c.line}` : ''})` : ''}: ${c.body}`).join('\n');
           goBack(backTarget(['implement']), `Reviewers left comments on the pull request. Address each one, keep changes minimal, then stop.\n\n${text}${response.comment ? `\n\nAdditional guidance: ${response.comment}` : ''}`);
@@ -1006,7 +1022,7 @@ export class Engine {
         if (!consumed) {
           // phase was paused meanwhile: resume its session with the answers as text
           const p = hil.payload as Extract<typeof hil.payload, { kind: 'question' }>;
-          const answers = Object.entries(response.answers ?? {}).map(([q, a]) => `Q: ${q}\nA: ${a}`).join('\n\n') || response.comment || '';
+          const answers = [...Object.entries(response.answers ?? {}).map(([q, a]) => `Q: ${q}\nA: ${a}`), response.comment?.trim() ?? ''].filter(Boolean).join('\n\n');
           const target = phaseRun?.phaseName ?? spec.phases[run.cursor]?.name;
           if (target) goBack(target, `Answers to your questions:\n\n${answers || p.questions.map((q) => q.question).join('\n')}`);
         }
@@ -1363,6 +1379,21 @@ export function snapshot(run: PipelineRun): { spec: PipelineSpec; loaded: Loaded
   const s = run.pipelineSnapshot as { spec: unknown; baseDir: string; filePath: string; from?: string; to?: string };
   const spec = PipelineSchema.parse(s.spec);
   return { spec, loaded: { spec, baseDir: s.baseDir, filePath: s.filePath }, seg: segmentOf(spec, s.from, s.to) };
+}
+
+/** What to do instead, when a comment is refused for a decision that does not deliver it. */
+const COMMENT_INSTEAD: Record<HilRequest['kind'], string> = {
+  refine_prompt: 'approve to append it to the task prompt, or clear the comment',
+  approve_plan: 'approve or request changes to pass it on, or clear the comment',
+  approve_result: 'mark items fix or request changes to send it to the implementer, or clear the comment',
+  pr_feedback: 'approve to send it to the implementer with the comments, or clear the comment',
+  question: 'answer to pass it on, or clear the comment',
+  escalation: 'use resume to pass it to the phase, or clear the comment',
+};
+
+/** The section an approval comment becomes at the end of the plan. */
+function humanAdditions(comment: string): string {
+  return `${HUMAN_ADDITIONS_HEADING}\n\nThe human approved the plan with these additions; they take precedence over the plan where they conflict:\n\n${comment.trim()}\n`;
 }
 
 function latestArtifact(store: Store, runId: string, name: string): string | null {
